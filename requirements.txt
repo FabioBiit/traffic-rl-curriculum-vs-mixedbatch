@@ -1,0 +1,30 @@
+# Traffic RL - Curriculum vs Mixed-Batch
+# pip install -r requirements.txt
+
+# -- Settimana 1-2: Prototipazione MetaDrive --
+metadrive-simulator>=0.4.2
+stable-baselines3>=2.3.0
+gymnasium>=0.29.0
+
+# -- Deep Learning --
+torch>=2.1.0
+
+# -- Logging --
+tensorboard>=2.15.0
+wandb>=0.16.0
+
+# -- Utilities --
+numpy>=1.24.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+pandas>=2.1.0
+pyyaml>=6.0
+tqdm>=4.66.0
+
+# -- Settimana 3-4: CARLA + RLlib (installare quando serve) --
+# ray[rllib]==2.10.0
+# pettingzoo>=1.24.0
+# supersuit>=3.9.0
+
+# -- Opzionale: GNN (solo se gate G5 superato) --
+# torch-geometric>=2.4.0

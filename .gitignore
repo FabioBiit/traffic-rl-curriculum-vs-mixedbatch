@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv*/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Experiments (risultati troppo grandi per git)
+experiments/*/run_*
+experiments/*/checkpoints/
+experiments/**/best_model/
+!experiments/**/config.yaml
+
+# CARLA
+*.log
+*.whl
+
+# Weights & Biases
+wandb/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Models (troppo grandi)
+*.zip
+*.pt
+*.pth
+*.onnx
+
+# Data
+*.hdf5
+*.pkl
