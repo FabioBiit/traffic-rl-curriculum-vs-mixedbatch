@@ -45,3 +45,5 @@ wandb/
 # Data
 *.hdf5
 *.pkl
+
+docs/
