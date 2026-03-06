@@ -6,8 +6,12 @@ Il tuo "hello world" del Reinforcement Learning.
 Esegui con:
     python .\training/train_metadrive.py
 
-Visualizza risultati:
+Visualizza risultati: ?
     tensorboard --logdir=experiments/metadrive_baseline/
+
+Visualizza il modello in azione (con grafica)
+    python training/train_metadrive.py --eval experiments/metadrive_baseline/run_XXXX/final_model.zip
+
 """
 
 import os
@@ -16,7 +20,7 @@ import argparse
 from datetime import datetime
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import EvalCallback, BaseCallback
+from stable_baselines3.common.callbacks import EvalCallback, BaseCallback # ? EvalCallback da lasciare?
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -155,7 +159,7 @@ def train(config):
     total_steps = config["training"]["total_timesteps"]
     print(f"\n[3/4] Training per {total_steps:,} timesteps...")
     print(f"TensorBoard: tensorboard --logdir={run_dir}")
-    print("      " + "=" * 50)
+    print("" + "=" * 50)
 
     model.learn(
         total_timesteps=total_steps,
@@ -177,6 +181,15 @@ def train(config):
     print(f"Modello: {final_path}")
     print(f"Run dir: {run_dir}")
     print("=" * 50)
+
+    # Salva report su file
+    with open(os.path.join(run_dir, "report.txt"), "w") as f:
+        f.write(f"Episodi totali: {metrics_cb.total_episodes}\n")
+        if metrics_cb.total_episodes > 0:
+            f.write(f"Success rate: {metrics_cb.successes / metrics_cb.total_episodes:.1%}\n")
+            f.write(f"Collision rate: {metrics_cb.collisions / metrics_cb.total_episodes:.1%}\n")
+        f.write(f"Timesteps: {total_steps}\n")
+        f.write(f"Modello: {final_path}\n")
 
     env.close()
     return model, run_dir
