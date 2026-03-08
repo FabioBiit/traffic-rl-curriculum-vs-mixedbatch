@@ -25,6 +25,11 @@ def main():
 
     print("\n-- FASE 1: Prototipazione MetaDrive --")
     all_ok &= check("Python", lambda: f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+    if not ((3, 11) <= sys.version_info[:2] < (3, 12)):
+        print(f"  [X] Python version: Serve 3.11.x, hai {sys.version_info.major}.{sys.version_info.minor}")
+        all_ok = False
+    else:
+        print("  [OK] Python version: 3.11.x confermato")
     all_ok &= check("PyTorch", lambda: __import__("torch").__version__)
     all_ok &= check("CUDA", lambda: f"{'Si - ' + __import__('torch').cuda.get_device_name(0) if __import__('torch').cuda.is_available() else 'No (CPU only)'}")
     all_ok &= check("Gymnasium", lambda: __import__("gymnasium").__version__)
@@ -33,7 +38,7 @@ def main():
     all_ok &= check("NumPy", lambda: __import__("numpy").__version__)
     all_ok &= check("Matplotlib", lambda: __import__("matplotlib").__version__)
     all_ok &= check("TensorBoard", lambda: __import__("tensorboard").__version__)
-    all_ok &= check("W&B", lambda: __import__("wandb").__version__)
+    check("W&B", lambda: __import__("wandb").__version__, optional=True)
     all_ok &= check("PyYAML", lambda: __import__("yaml").__version__ if hasattr(__import__("yaml"), "__version__") else "installato")
     all_ok &= check("tqdm", lambda: __import__("tqdm").__version__)
 

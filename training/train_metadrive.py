@@ -226,7 +226,9 @@ def train(config):
         print("=" * 50)
 
         # Salva report su file
+        status = "COMPLETATO" if metrics_cb.total_episodes > 0 else "FALLITO"
         with open(os.path.join(run_dir, "report.txt"), "w") as f:
+            f.write(f"Status: {status}\n")
             f.write(f"Episodi totali: {metrics_cb.total_episodes}\n")
             if metrics_cb.total_episodes > 0:
                 f.write(f"Success rate: {metrics_cb.successes / metrics_cb.total_episodes:.1%}\n")

@@ -3,6 +3,12 @@
 # Python 3.11.9 | PyTorch CUDA 12.6 | RTX 3080
 # Ultimo aggiornamento: 5 Marzo 2026
 
+# Per installare PyTorch con CUDA
+# Aggiorna Driver NVIDIA e CUDA Toolkit 12.6, poi esegui:
+
+# -- PyTorch con CUDA 12.6 --
+--extra-index-url https://download.pytorch.org/whl/cu126
+
 # -- Core RL --
 stable_baselines3==2.7.1
 gymnasium==1.2.3
@@ -110,6 +116,7 @@ psutil==7.2.2
 tzdata==2025.3
 
 # -- NOTE: Per installare PyTorch con CUDA su Windows --
+# -- NB: Solo se da problemi con pip normale, altrimenti pip dovrebbe risolvere da solo la versione corretta in base alla tua GPU e CUDA installati
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
 # -- Settimana 3-4: CARLA + RLlib (da installare quando serve) --
