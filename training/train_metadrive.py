@@ -195,12 +195,14 @@ def train(config):
     print(f"      TensorBoard: tensorboard --logdir={run_dir}")
     print("      " + "=" * 50)
 
+    training_complete = False
     try:
         model.learn(
             total_timesteps=total_steps,
             callback=[metrics_cb, checkpoint_cb],
             progress_bar=True,
         )
+        training_complete = True
     except KeyboardInterrupt:
         print("\n\nTraining interrotto! Salvataggio modello parziale...")
     except Exception as e:
@@ -236,7 +238,7 @@ def train(config):
 
         env.close()
 
-    return model, run_dir
+    return model, run_dir, training_complete
 
 
 # ============================================================
@@ -302,9 +304,13 @@ if __name__ == "__main__":
         if args.render:
             CONFIG["env"]["use_render"] = True
 
-        model, run_dir = train(CONFIG)
+        model, run_dir, training_complete = train(CONFIG)
 
-        print("\nProssimi step:")
-        print(f"  1. TensorBoard: tensorboard --logdir={run_dir}")
-        print(f"  2. Guarda il modello: python training/train_metadrive.py --eval {run_dir}/final_model.zip")
-        print(f"  3. Piu timesteps: python training/train_metadrive.py --timesteps 2000000")
+        if training_complete:
+            print("\nProssimi step:")
+            print(f"  1. TensorBoard: tensorboard --logdir={run_dir}")
+            print(f"  2. Guarda il modello: python training/train_metadrive.py --eval {run_dir}/final_model.zip")
+            print(f"  3. Piu timesteps: python training/train_metadrive.py --timesteps 2000000")
+        else:
+            print(f"\nModello parziale salvato in: {run_dir}/final_model.zip")
+            print(f"TensorBoard: tensorboard --logdir={run_dir}")
