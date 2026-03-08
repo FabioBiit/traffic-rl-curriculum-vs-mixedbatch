@@ -24,7 +24,6 @@ Thumbs.db
 experiments/*/run_*
 experiments/*/checkpoints/
 experiments/**/best_model/
-!experiments/**/config.yaml
 
 # CARLA
 *.log
@@ -46,4 +45,5 @@ wandb/
 *.hdf5
 *.pkl
 
+# Documentazione track in locale
 docs/

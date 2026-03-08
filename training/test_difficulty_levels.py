@@ -5,7 +5,7 @@ Lancia 3 training con difficolta crescente per verificare
 che la domanda sperimentale (curriculum vs batch) ha senso.
 
 Esegui con:
-    python training/test_difficulty_levels.py
+    python ./training/test_difficulty_levels.py
 
 Confronta i risultati su TensorBoard:
     tensorboard --logdir=experiments/difficulty_test/
@@ -24,6 +24,10 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from metadrive.envs import MetaDriveEnv
 
+SEED = 42 # Seed globale per riproducibilita
+TIMESTEPS = 500_000 # LastTrain: 500000 # Timesteps per ogni livello (da aumentare per performance migliori)
+DEVICE = "cpu" # "cpu" per MLP semplice, "cuda" per reti più grandi (da modificare quando passeremo a RLlib + CARLA)
+LOG_DIR = "experiments/difficulty_test"
 
 # ============================================================
 # SEED
@@ -49,21 +53,21 @@ LEVELS = {
         "traffic_density": 0.05,
         "num_scenarios": 5,
         "accident_prob": 0.0,
-        "start_seed": 0,
+        "start_seed": 0
     },
     "medium": {
         "map": "SCSC",
         "traffic_density": 0.15,
         "num_scenarios": 10,
         "accident_prob": 0.1,
-        "start_seed": 0,
+        "start_seed": 0
     },
     "hard": {
         "map": "SCRCSRC",
         "traffic_density": 0.3,
         "num_scenarios": 15,
         "accident_prob": 0.2,
-        "start_seed": 0,
+        "start_seed": 0
     },
 }
 
@@ -77,13 +81,8 @@ PPO_CONFIG = {
     "clip_range": 0.2,
     "ent_coef": 0.01,
     "verbose": 0,
-    "device": "cpu",
+    "device": DEVICE
 }
-
-TIMESTEPS = 500_000
-SEED = 42
-LOG_DIR = "experiments/difficulty_test"
-
 
 # ============================================================
 # CALLBACK
@@ -118,15 +117,16 @@ class MetricsCallback(BaseCallback):
 # ============================================================
 
 def train_level(level_name, env_config):
-    print(f"\n{'='*60}")
-    print(f"  LIVELLO: {level_name.upper()}")
-    print(f"  Mappa: {env_config['map']} | Traffico: {env_config['traffic_density']}")
-    print(f"  Scenari: {env_config['num_scenarios']} | Incidenti: {env_config['accident_prob']}")
-    print(f"{'='*60}")
+    print("=" *50)
+    print(f"LIVELLO: {level_name.upper()}")
+    print(f"Mappa: {env_config['map']} | Traffico: {env_config['traffic_density']}")
+    print(f"Scenari: {env_config['num_scenarios']} | Incidenti: {env_config['accident_prob']}")
+    print("=" *50)
 
     set_global_seed(SEED)
 
-    run_dir = os.path.join(LOG_DIR, level_name)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(LOG_DIR,f"{level_name}",f"{level_name}_run_{timestamp}")
     os.makedirs(run_dir, exist_ok=True)
 
     # Salva config
@@ -144,20 +144,20 @@ def train_level(level_name, env_config):
     # Training
     model = PPO("MlpPolicy", env, tensorboard_log=run_dir, **PPO_CONFIG)
 
-    print(f"  Training per {TIMESTEPS:,} timesteps...")
+    print(f"Training per {TIMESTEPS:,} timesteps...")
     try:
         model.learn(total_timesteps=TIMESTEPS, callback=[metrics_cb], progress_bar=True)
     except KeyboardInterrupt:
-        print("  Interrotto!")
+        print("Interrotto!")
     finally:
         # Report
         sr = metrics_cb.successes / max(metrics_cb.total_episodes, 1)
         cr = metrics_cb.collisions / max(metrics_cb.total_episodes, 1)
 
-        print(f"\n  RISULTATI {level_name.upper()}:")
-        print(f"    Episodi:        {metrics_cb.total_episodes}")
-        print(f"    Success rate:   {sr:.1%}")
-        print(f"    Collision rate: {cr:.1%}")
+        print(f"\nRISULTATI {level_name.upper()}:")
+        print(f"Episodi: {metrics_cb.total_episodes}")
+        print(f"Success rate: {sr:.1%}")
+        print(f"Collision rate: {cr:.1%}")
 
         # Salva report
         with open(os.path.join(run_dir, "report.txt"), "w") as f:
@@ -181,11 +181,11 @@ def train_level(level_name, env_config):
 # ============================================================
 
 if __name__ == "__main__":
-    print("=" * 60)
+    print("=" * 50)
     print("TEST LIVELLI DI DIFFICOLTA - Validazione Domanda Sperimentale")
     print(f"Timesteps per livello: {TIMESTEPS:,}")
     print(f"Livelli: {list(LEVELS.keys())}")
-    print("=" * 60)
+    print("=" * 50)
 
     results = []
     for name, config in LEVELS.items():
@@ -193,17 +193,16 @@ if __name__ == "__main__":
         results.append(result)
 
     # Confronto finale
-    print("\n\n" + "=" * 60)
+    print("\n\n" + "=" * 50)
     print("CONFRONTO FINALE")
-    print("=" * 60)
-    print(f"  {'Livello':<10} {'Episodi':<10} {'Success':<12} {'Collision':<12}")
-    print(f"  {'-'*44}")
+    print("=" * 50)
+    print(f"{'Livello':<10} {'Episodi':<10} {'Success':<12} {'Collision':<12}")
+    print("=" * 50)
     for r in results:
-        print(f"  {r['level']:<10} {r['episodes']:<10} {r['success_rate']:<12.1%} {r['collision_rate']:<12.1%}")
+        print(f"{r['level']:<10} {r['episodes']:<10} {r['success_rate']:<12.1%} {r['collision_rate']:<12.1%}")
 
-    print(f"\n  Se i numeri sono diversi tra i livelli,")
-    print(f"  la domanda sperimentale (curriculum vs batch) ha senso!")
-    print("=" * 60)
+    print(f"\nSe i numeri sono diversi tra i livelli, la domanda sperimentale (curriculum vs batch) ha senso!")
+    print("=" * 50)
 
     # Salva confronto
     with open(os.path.join(LOG_DIR, "comparison.txt"), "w") as f:

@@ -31,8 +31,9 @@ from metadrive.envs import MetaDriveEnv
 # ============================================================
 
 SEED = 42  # Seed globale per riproducibilita
-TOTAL_TIMESTEPS = 100_000  # Timesteps totali per il training
+TOTAL_TIMESTEPS = 2_000_000  # LastTrain: 2000000 # Timesteps totali per il training (da aumentare per performance migliori)
 DEVICE = "cpu" # "cpu" per MLP semplice, "cuda" per reti più grandi (da modificare quando passeremo a RLlib + CARLA)
+LOG_DIR = "experiments/metadrive_baseline" # Directory per log e modelli
 
 CONFIG = {
     # MetaDrive environment
@@ -64,7 +65,6 @@ CONFIG = {
         "total_timesteps": TOTAL_TIMESTEPS,
         "eval_freq": 5_000,
         "n_eval_episodes": 5,
-        "log_dir": "experiments/metadrive_baseline",
         "checkpoint_freq": 50_000 # Salva checkpoint ogni N step
     },
 }
@@ -142,9 +142,8 @@ def train(config):
     """Lancia il training PPO su MetaDrive."""
 
     # Setup directory
-    log_dir = config["training"]["log_dir"]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(log_dir, f"run_{timestamp}")
+    run_dir = os.path.join(LOG_DIR, f"run_{timestamp}")
     os.makedirs(run_dir, exist_ok=True)
 
     # Seed globale per riproducibilita
@@ -311,8 +310,8 @@ if __name__ == "__main__":
         if training_complete:
             print("\nProssimi step:")
             print(f"1. TensorBoard: tensorboard --logdir={run_dir}")
-            print(f"2. Guarda il modello: python .\training/train_metadrive.py --eval {run_dir}/final_model.zip")
-            print(f"3. Piu timesteps: python .\training/train_metadrive.py --timesteps 2000000") # Aumenta timesteps per migliorare performance
+            print(f"2. Guarda il modello: python ./training/train_metadrive.py --eval {run_dir}/final_model.zip")
+            print(f"3. Piu timesteps: python ./training/train_metadrive.py --timesteps <inserisci_numero>") # Aumenta timesteps per migliorare performance
         else:
             print(f"\nModello parziale salvato in: {run_dir}/final_model.zip")
             print(f"TensorBoard: tensorboard --logdir={run_dir}")
