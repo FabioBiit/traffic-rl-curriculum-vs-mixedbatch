@@ -1,0 +1,7 @@
+Level: easy
+Map: SSS
+Traffic: 0.05
+Episodi: 2654
+Success rate: 33.9%
+Collision rate: 10.6%
+Timesteps: 500000
