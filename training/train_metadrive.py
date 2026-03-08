@@ -2,10 +2,10 @@
 Settimana 1 - Primo Training PPO su MetaDrive
 ==============================================
 Esegui con:
-    python training/train_metadrive.py
-    python training/train_metadrive.py --timesteps 500000
-    python training/train_metadrive.py --eval <path_modello.zip>
-    python training/train_metadrive.py --render --timesteps 50000
+    python .\training/train_metadrive.py
+    python .\training/train_metadrive.py --timesteps 500000
+    python .\training/train_metadrive.py --eval <path_modello.zip>
+    python .\training/train_metadrive.py --render --timesteps 50000
 
 Visualizza risultati:
     tensorboard --logdir=experiments/metadrive_baseline/
@@ -30,6 +30,10 @@ from metadrive.envs import MetaDriveEnv
 # CONFIGURAZIONE
 # ============================================================
 
+SEED = 42  # Seed globale per riproducibilita
+TOTAL_TIMESTEPS = 100_000  # Timesteps totali per il training
+DEVICE = "cpu" # "cpu" per MLP semplice, "cuda" per reti più grandi (da modificare quando passeremo a RLlib + CARLA)
+
 CONFIG = {
     # MetaDrive environment
     "env": {
@@ -38,7 +42,7 @@ CONFIG = {
         "map": "SSS",              # 3 segmenti dritti (mappa semplice)
         "start_seed": 0,           # Seed di MetaDrive per generazione mappa
         "num_scenarios": 5,        # Varianti della mappa (rotazione ad ogni reset)
-        "accident_prob": 0.0,      # Nessun incidente random
+        "accident_prob": 0.0      # Nessun incidente random
     },
 
     # PPO hyperparameters (valori standard dal paper Schulman 2017)
@@ -52,17 +56,16 @@ CONFIG = {
         "clip_range": 0.2,         # PPO clipping (limita update della policy)
         "ent_coef": 0.01,          # Entropy bonus (incentiva esplorazione)
         "verbose": 1,              # Stampa metriche durante training
-        "device": "cpu",           # cpu per MLP piccola, cuda per reti grandi (Da modificare quando passeremo a RLlib + CARLA)
+        "device": DEVICE          # cpu per MLP piccola, cuda per reti grandi (Da modificare quando passeremo a RLlib + CARLA)
     },
 
     # Training settings
     "training": {
-        "total_timesteps": 100_000,
+        "total_timesteps": TOTAL_TIMESTEPS,
         "eval_freq": 5_000,
         "n_eval_episodes": 5,
         "log_dir": "experiments/metadrive_baseline",
-        "seed": 42,                # Seed globale per riproducibilita
-        "checkpoint_freq": 50_000, # Salva checkpoint ogni N step
+        "checkpoint_freq": 50_000 # Salva checkpoint ogni N step
     },
 }
 
@@ -145,8 +148,7 @@ def train(config):
     os.makedirs(run_dir, exist_ok=True)
 
     # Seed globale per riproducibilita
-    seed = config["training"]["seed"]
-    set_global_seed(seed)
+    set_global_seed(SEED)
 
     # Salva config per riproducibilita
     with open(os.path.join(run_dir, "config.yaml"), "w") as f:
@@ -176,7 +178,6 @@ def train(config):
     )
     print(f"Device: {model.device}")
     print(f"Policy: {model.policy.__class__.__name__}")
-    print(f"Seed: {seed}")
     print(f"Observation space: {env.observation_space.shape}")
     print(f"Action space: {env.action_space.shape}")
 
@@ -234,7 +235,7 @@ def train(config):
                 f.write(f"Success rate: {metrics_cb.successes / metrics_cb.total_episodes:.1%}\n")
                 f.write(f"Collision rate: {metrics_cb.collisions / metrics_cb.total_episodes:.1%}\n")
             f.write(f"Timesteps: {total_steps}\n")
-            f.write(f"Seed: {seed}\n")
+            f.write(f"Seed: {SEED}\n")
             f.write(f"Modello: {final_path}\n")
 
         env.close()
