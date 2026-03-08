@@ -155,14 +155,13 @@ def train(config):
     # Crea environment
     print("\n[1/4] Creazione environment MetaDrive...")
     env = DummyVecEnv([make_env(config["env"])])
-    print("      OK!")
+    print("OK!")
 
     # Crea modello PPO
     print("\n[2/4] Creazione modello PPO...")
     model = PPO(
         "MlpPolicy",
         env,
-        seed=seed,
         learning_rate=config["ppo"]["learning_rate"],
         n_steps=config["ppo"]["n_steps"],
         batch_size=config["ppo"]["batch_size"],
@@ -175,11 +174,11 @@ def train(config):
         tensorboard_log=run_dir,
         device=config["ppo"]["device"],
     )
-    print(f"      Device: {model.device}")
-    print(f"      Policy: {model.policy.__class__.__name__}")
-    print(f"      Seed: {seed}")
-    print(f"      Observation space: {env.observation_space.shape}")
-    print(f"      Action space: {env.action_space.shape}")
+    print(f"Device: {model.device}")
+    print(f"Policy: {model.policy.__class__.__name__}")
+    print(f"Seed: {seed}")
+    print(f"Observation space: {env.observation_space.shape}")
+    print(f"Action space: {env.action_space.shape}")
 
     # Callbacks
     metrics_cb = ThesisMetricsCallback()
@@ -192,8 +191,8 @@ def train(config):
     # Training con crash recovery
     total_steps = config["training"]["total_timesteps"]
     print(f"\n[3/4] Training per {total_steps:,} timesteps...")
-    print(f"      TensorBoard: tensorboard --logdir={run_dir}")
-    print("      " + "=" * 50)
+    print(f"TensorBoard: tensorboard --logdir={run_dir}")
+    print("=" * 50)
 
     training_complete = False
     try:
@@ -218,12 +217,12 @@ def train(config):
         # Report a schermo
         print("\n[4/4] REPORT FINALE")
         print("=" * 50)
-        print(f"  Episodi totali:  {metrics_cb.total_episodes}")
+        print(f"Episodi totali: {metrics_cb.total_episodes}")
         if metrics_cb.total_episodes > 0:
-            print(f"  Success rate:    {metrics_cb.successes / metrics_cb.total_episodes:.1%}")
-            print(f"  Collision rate:  {metrics_cb.collisions / metrics_cb.total_episodes:.1%}")
-        print(f"  Modello:         {final_path}")
-        print(f"  Run dir:         {run_dir}")
+            print(f"Success rate: {metrics_cb.successes / metrics_cb.total_episodes:.1%}")
+            print(f"Collision rate: {metrics_cb.collisions / metrics_cb.total_episodes:.1%}")
+        print(f"Modello: {final_path}")
+        print(f"Run dir: {run_dir}")
         print("=" * 50)
 
         # Salva report su file
@@ -308,9 +307,9 @@ if __name__ == "__main__":
 
         if training_complete:
             print("\nProssimi step:")
-            print(f"  1. TensorBoard: tensorboard --logdir={run_dir}")
-            print(f"  2. Guarda il modello: python training/train_metadrive.py --eval {run_dir}/final_model.zip")
-            print(f"  3. Piu timesteps: python training/train_metadrive.py --timesteps 2000000")
+            print(f"1. TensorBoard: tensorboard --logdir={run_dir}")
+            print(f"2. Guarda il modello: python .\training/train_metadrive.py --eval {run_dir}/final_model.zip")
+            print(f"3. Piu timesteps: python .\training/train_metadrive.py --timesteps 2000000") # Aumenta timesteps per migliorare performance
         else:
             print(f"\nModello parziale salvato in: {run_dir}/final_model.zip")
             print(f"TensorBoard: tensorboard --logdir={run_dir}")
