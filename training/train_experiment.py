@@ -218,7 +218,10 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
         current_block = min(block_size, remaining)
 
         # Scegli livello random
-        level = random.choice(levels)
+        # Per garantire una distribuzione più uniforme cicliamo con round-robin tra i livelli
+        # level = random.choice(levels) non garantiva una distribuzione equilibrata, soprattutto con pochi blocchi
+
+        level = levels[(block_num - 1) % len(levels)]
         level_history.append(level)
 
         print(f"\nBlocco {block_num}: {level.upper()} ({current_block:,} step, "
@@ -243,7 +246,7 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
                 total_timesteps=current_block,
                 callback=[callback],
                 reset_num_timesteps=False,
-                progress_bar=False,
+                progress_bar=True,
             )
         except Exception as e:
             print(f"ERRORE nel blocco {block_num}: {e}")
@@ -362,7 +365,7 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
                 total_timesteps=current_block,
                 callback=[callback],
                 reset_num_timesteps=False,
-                progress_bar=False,
+                progress_bar=True,
             )
         except Exception as e:
             print(f"ERRORE nel blocco {block_num}: {e}")
