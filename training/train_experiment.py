@@ -222,7 +222,9 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
         # level = random.choice(levels) non garantiva una distribuzione equilibrata
 
         """
-        Il batch usa round robin deterministico e non random puro per garantire che ogni livello venga rappresentato in modo equilibrato, 
+        Il batch usa round robin deterministico 
+        e non random puro per garantire che ogni 
+        livello venga rappresentato in modo equilibrato, 
         indipendentemente dal numero di blocchi. 
         
         Es funzionamento Round Robin deterministico:
