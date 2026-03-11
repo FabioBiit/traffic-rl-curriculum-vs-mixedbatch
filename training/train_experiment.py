@@ -219,7 +219,21 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
 
         # Scegli livello random
         # Per garantire una distribuzione più uniforme cicliamo con round-robin tra i livelli
-        # level = random.choice(levels) non garantiva una distribuzione equilibrata, soprattutto con pochi blocchi
+        # level = random.choice(levels) non garantiva una distribuzione equilibrata
+
+        """
+        Il batch usa round robin deterministico e non random puro per garantire che ogni livello venga rappresentato in modo equilibrato, 
+        indipendentemente dal numero di blocchi. 
+        
+        Es funzionamento Round Robin deterministico:
+            Blocco 1: (1-1) % 3 = 0 → levels[0] = easy
+            Blocco 2: (2-1) % 3 = 1 → levels[1] = medium
+            Blocco 3: (3-1) % 3 = 2 → levels[2] = hard
+            Blocco 4: (4-1) % 3 = 0 → levels[0] = easy
+            Blocco 5: (5-1) % 3 = 1 → levels[1] = medium
+            Blocco 6: (6-1) % 3 = 2 → levels[2] = hard
+            ...
+        """
 
         level = levels[(block_num - 1) % len(levels)]
         level_history.append(level)
