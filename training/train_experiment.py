@@ -1,5 +1,5 @@
 """
-Settimana 2 - Esperimento Curriculum vs Batch su MetaDrive
+        Esperimento Curriculum vs Batch su MetaDrive
 ==========================================================
 Lancia i due approcci di training e salva i risultati per il confronto.
 
@@ -583,7 +583,7 @@ def run_experiment(mode, run_dir):
     wall_clock_start = time.time()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    experiment_dir = os.path.join(run_dir, f"{mode}_run_{timestamp}")
+    experiment_dir = os.path.join(run_dir, mode, f"{mode}_run_{timestamp}")
     os.makedirs(experiment_dir, exist_ok=True)
 
     set_global_seed(SEED)

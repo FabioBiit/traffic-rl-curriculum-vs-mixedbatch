@@ -1,11 +1,11 @@
 """
-Settimana 1 - Primo Training PPO su MetaDrive
+        Primo Training PPO su MetaDrive
 ==============================================
 Esegui con:
-    python .\training/train_metadrive.py
-    python .\training/train_metadrive.py --timesteps 500000
-    python .\training/train_metadrive.py --eval <path_modello.zip>
-    python .\training/train_metadrive.py --render --timesteps 50000
+    python ./training/train_metadrive.py
+    python ./training/train_metadrive.py --timesteps 500000
+    python ./training/train_metadrive.py --eval <path_modello.zip>
+    python ./training/train_metadrive.py --render --timesteps 50000
 
 Visualizza risultati:
     tensorboard --logdir=experiments/metadrive_baseline/

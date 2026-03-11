@@ -1,8 +1,8 @@
 """
-Settimana 1 - Test Livelli di Difficolta su MetaDrive
+        Test Livelli di Difficolta su MetaDrive
 =====================================================
 Lancia 3 training con difficolta crescente per verificare
-che la domanda sperimentale (curriculum vs batch) ha senso.
+che la domanda sperimentale (curriculum vs batch) abbia senso.
 
 Esegui con:
     python ./training/test_difficulty_levels.py
