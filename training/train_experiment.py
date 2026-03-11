@@ -467,25 +467,25 @@ def evaluate_model(model, levels_to_test, n_episodes=20):
 
         successes = 0
         collisions = 0
-        total_reward = 0
+        total_reward = 0.0
         episode_lengths = []
 
         obs = env.reset()
         episodes_done = 0
-        ep_reward = 0
+        ep_reward = 0.0
         ep_steps = 0
 
         while episodes_done < n_episodes:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, info = env.step(action)
-            ep_reward += reward[0]
+            ep_reward += float(reward[0])
             ep_steps += 1
 
             if done[0]:
                 episodes_done += 1
                 total_reward += ep_reward
                 episode_lengths.append(ep_steps)
-                ep_reward = 0
+                ep_reward = 0.0
                 ep_steps = 0
 
                 episode_info = info[0]
@@ -501,7 +501,7 @@ def evaluate_model(model, levels_to_test, n_episodes=20):
         results[level] = {
             "success_rate": round(successes / n_episodes, 4),
             "collision_rate": round(collisions / n_episodes, 4),
-            "avg_reward": round(total_reward / n_episodes, 2),
+            "avg_reward": round(float(total_reward / n_episodes), 2),
             "avg_episode_length": round(float(np.mean(episode_lengths)), 1),
             "episodes": n_episodes,
         }
@@ -564,9 +564,16 @@ def save_results_json(run_dir, mode, summary, timeseries, evaluation,
         results["training_summary"]["levels_completed"] = summary.get("levels_completed")
         results["training_summary"]["total_levels"] = summary.get("total_levels")
 
+    def _json_default(obj):
+        if isinstance(obj, np.generic):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
     json_path = os.path.join(run_dir, "results.json")
     with open(json_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results, f, indent=2, default=_json_default)
 
     print(f"JSON salvato: {json_path}")
     return json_path
