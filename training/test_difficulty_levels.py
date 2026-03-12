@@ -12,6 +12,7 @@ Confronta i risultati su TensorBoard:
 """
 
 import os
+import sys
 import yaml
 import numpy as np
 from copy import deepcopy
@@ -24,62 +25,24 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from metadrive.envs import MetaDriveEnv
 
+# Aggiungi la root del progetto al path per gli import condivisi.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from envs.multi_level_env import LEVEL_CONFIGS
+from training.common import set_global_seed, PPO_CONFIG_BASE
+
 SEED = 42 # Seed globale per riproducibilita
 TIMESTEPS = 500_000 # LastTrain: 500000 # Timesteps per ogni livello (da aumentare per performance migliori)
 DEVICE = "cpu" # "cpu" per MLP semplice, "cuda" per reti più grandi (da modificare quando passeremo a RLlib + CARLA)
 LOG_DIR = "experiments/difficulty_test"
 
 # ============================================================
-# SEED
-# ============================================================
-
-def set_global_seed(seed):
-    import random
-    import torch
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-# ============================================================
 # 3 LIVELLI DI DIFFICOLTA
 # ============================================================
 
-LEVELS = {
-    "easy": {
-        "map": "SSS",
-        "traffic_density": 0.05,
-        "num_scenarios": 5,
-        "accident_prob": 0.0,
-        "start_seed": 0
-    },
-    "medium": {
-        "map": "SCSC",
-        "traffic_density": 0.15,
-        "num_scenarios": 10,
-        "accident_prob": 0.1,
-        "start_seed": 0
-    },
-    "hard": {
-        "map": "SCRCSRC",
-        "traffic_density": 0.3,
-        "num_scenarios": 15,
-        "accident_prob": 0.2,
-        "start_seed": 0
-    },
-}
+LEVELS = deepcopy(LEVEL_CONFIGS)
 
 PPO_CONFIG = {
-    "learning_rate": 3e-4,
-    "n_steps": 2048,
-    "batch_size": 64,
-    "n_epochs": 10,
-    "gamma": 0.99,
-    "gae_lambda": 0.95,
-    "clip_range": 0.2,
-    "ent_coef": 0.01,
+    **PPO_CONFIG_BASE,
     "verbose": 0,
     "device": DEVICE
 }
@@ -143,12 +106,17 @@ def train_level(level_name, env_config):
 
     # Training
     model = PPO("MlpPolicy", env, tensorboard_log=run_dir, **PPO_CONFIG)
+    training_status = "COMPLETATO"
 
     print(f"Training per {TIMESTEPS:,} timesteps...")
     try:
         model.learn(total_timesteps=TIMESTEPS, callback=[metrics_cb], progress_bar=True)
     except KeyboardInterrupt:
+        training_status = "INTERROTTO"
         print("Interrotto!")
+    except Exception as e:
+        training_status = "ERRORE"
+        print(f"Errore durante training {level_name}: {e}")
     finally:
         # Report
         sr = metrics_cb.successes / max(metrics_cb.total_episodes, 1)
@@ -161,6 +129,7 @@ def train_level(level_name, env_config):
 
         # Salva report
         with open(os.path.join(run_dir, "report.txt"), "w") as f:
+            f.write(f"Status: {training_status}\n")
             f.write(f"Level: {level_name}\n")
             f.write(f"Map: {env_config['map']}\n")
             f.write(f"Traffic: {env_config['traffic_density']}\n")
@@ -173,7 +142,7 @@ def train_level(level_name, env_config):
         env.close()
 
     return {"level": level_name, "episodes": metrics_cb.total_episodes,
-            "success_rate": sr, "collision_rate": cr}
+            "success_rate": sr, "collision_rate": cr, "status": training_status}
 
 
 # ============================================================

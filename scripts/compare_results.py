@@ -56,7 +56,7 @@ FONT_SIZE_LEGEND = 11
 # CARICAMENTO DATI
 # ============================================================
 
-def load_results(json_path):
+def load_results(json_path, strict_status=False):
     """
     Carica un file results.json e valida la struttura.
     
@@ -84,6 +84,15 @@ def load_results(json_path):
 
     if "mode" not in data["meta"]:
         raise KeyError(f"Campo 'meta.mode' mancante in {json_path}")
+
+    status = data["meta"].get("status")
+    if status is None:
+        print(f"ATTENZIONE: campo 'meta.status' mancante in {json_path} (schema legacy?)")
+    elif status != "COMPLETATO":
+        msg = f"Run non completata in {json_path}: status={status}"
+        if strict_status:
+            raise ValueError(msg)
+        print(f"ATTENZIONE: {msg}")
 
     if len(data["timeseries"]) == 0:
         print(f"ATTENZIONE: timeseries vuota in {json_path}")
@@ -175,11 +184,15 @@ def plot_metric_over_time(batch_data, curriculum_data, field, ylabel, title,
     # Batch
     ts_b, vals_b = extract_timeseries(batch_data, field)
     ax.plot(ts_b, vals_b, color=COLOR_BATCH, linewidth=2, label="Batch", alpha=0.85)
+    if np.all(np.isnan(vals_b)):
+        print(f"ATTENZIONE: metrica '{field}' tutta NaN per Batch.")
 
     # Curriculum
     ts_c, vals_c = extract_timeseries(curriculum_data, field)
     ax.plot(ts_c, vals_c, color=COLOR_CURRICULUM, linewidth=2,
             label="Curriculum", alpha=0.85)
+    if np.all(np.isnan(vals_c)):
+        print(f"ATTENZIONE: metrica '{field}' tutta NaN per Curriculum.")
 
     # Promozioni
     add_promotion_lines(ax, curriculum_data,
@@ -215,6 +228,8 @@ def plot_reward_over_time(batch_data, curriculum_data, output_path):
         _, stds = extract_timeseries(data, "reward_std")
 
         ax.plot(ts, means, color=color, linewidth=2, label=label, alpha=0.85)
+        if np.all(np.isnan(means)):
+            print(f"ATTENZIONE: reward_mean tutta NaN per {label}.")
 
         # Banda std (solo dove i dati sono validi)
         valid = ~np.isnan(means) & ~np.isnan(stds)
@@ -449,6 +464,8 @@ Esempio:
                         help="Path al results.json del training Curriculum")
     parser.add_argument("--output", type=str, default="results/plots",
                         help="Directory di output per i grafici (default: results/plots)")
+    parser.add_argument("--strict-status", action="store_true",
+                        help="Se attivo, fallisce quando trova run con meta.status != COMPLETATO")
     args = parser.parse_args()
 
     # Carica dati
@@ -457,13 +474,13 @@ Esempio:
     print("=" * 60)
 
     print(f"\nCaricamento Batch: {args.batch}")
-    batch_data = load_results(args.batch)
+    batch_data = load_results(args.batch, strict_status=args.strict_status)
     print(f"  Mode: {batch_data['meta']['mode']}, "
           f"Timesteps: {batch_data['meta']['total_timesteps_actual']:,}, "
           f"Episodes: {batch_data['meta']['total_episodes']:,}")
 
     print(f"\nCaricamento Curriculum: {args.curriculum}")
-    curriculum_data = load_results(args.curriculum)
+    curriculum_data = load_results(args.curriculum, strict_status=args.strict_status)
     print(f"  Mode: {curriculum_data['meta']['mode']}, "
           f"Timesteps: {curriculum_data['meta']['total_timesteps_actual']:,}, "
           f"Episodes: {curriculum_data['meta']['total_episodes']:,}")

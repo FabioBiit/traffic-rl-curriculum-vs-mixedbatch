@@ -15,7 +15,7 @@ Confronta su TensorBoard:
     tensorboard --logdir=experiments/
 
 Confronta risultati:
-    python ./evaluation/compare_results.py
+    python ./scripts/compare_results.py
 
 Changelog v2.0 (12 Marzo 2026):
 - Curriculum training con replay mechanism (revisione livelli precedenti)
@@ -32,6 +32,7 @@ import sys
 import json
 import yaml
 import time
+import math
 import random
 import argparse
 import numpy as np
@@ -49,6 +50,7 @@ from envs.multi_level_env import (
     EpisodeTracker,
     CurriculumManager,
 )
+from training.common import set_global_seed, PPO_CONFIG_BASE
 
 
 # ============================================================
@@ -70,18 +72,7 @@ BLOCK_SIZE = 50_000
 EVAL_EPISODES = 50
 
 # PPO — identico per batch e curriculum (variabile sperimentale isolata)
-PPO_CONFIG = {
-    "learning_rate": 3e-4,
-    "n_steps": 2048,
-    "batch_size": 64,
-    "n_epochs": 10,
-    "gamma": 0.99,
-    "gae_lambda": 0.95,
-    "clip_range": 0.2,
-    "ent_coef": 0.01,
-    "verbose": 0,
-    "device": DEVICE,
-}
+PPO_CONFIG = {**PPO_CONFIG_BASE, "verbose": 0, "device": DEVICE}
 
 # Curriculum — soglie di promozione v2.0
 CURRICULUM_CONFIG = {
@@ -92,19 +83,6 @@ CURRICULUM_CONFIG = {
     "window_size": 50,
     "replay_ratio": 0.2,           # v2.0: nuovo — 20% blocchi dedicati a revisione
 }
-
-
-# ============================================================
-# SEED
-# ============================================================
-
-def set_global_seed(seed):
-    import torch
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 # ============================================================
@@ -123,7 +101,7 @@ class ProgressTracker:
         self.mode = mode
         self.total_steps = total_steps
         self.block_size = block_size
-        self.total_blocks = total_steps // block_size
+        self.total_blocks = math.ceil(total_steps / block_size)
         self.start_time = time.time()
         self.block_times = []  # durata di ogni blocco per stima ETA
 
@@ -221,48 +199,103 @@ class ProgressTracker:
 class ExperimentCallback(BaseCallback):
     """
     Callback che traccia metriche per l'esperimento.
-    Aggiorna l'EpisodeTracker ad ogni fine episodio.
+    Aggiorna i tracker ad ogni fine episodio e raccoglie
+    metriche di reward/lunghezza episodio per blocco.
     """
 
-    def __init__(self, tracker, level_name="unknown"):
+    def __init__(
+        self,
+        global_tracker,
+        level_name="unknown",
+        promotion_tracker=None,
+        track_promotion=False,
+    ):
         super().__init__()
-        self.tracker = tracker
+        self.global_tracker = global_tracker
+        self.promotion_tracker = promotion_tracker
+        self.track_promotion = track_promotion
         self.level_name = level_name
         self.block_episodes = 0
         self.block_successes = 0
         self.block_collisions = 0
+        self.block_rewards = []
+        self.block_episode_lengths = []
 
     def _on_step(self):
         for i, done in enumerate(self.locals.get("dones", [])):
-            if done:
-                info = self.locals["infos"][i]
-                self.tracker.record(info)
-                self.block_episodes += 1
+            if not done:
+                continue
 
-                if info.get("arrive_dest", False):
-                    self.block_successes += 1
-                if info.get("crash", False) or info.get("crash_vehicle", False):
-                    self.block_collisions += 1
+            info = self.locals["infos"][i]
 
-                # Log su TensorBoard
-                if self.tracker.total_episodes % 10 == 0:
-                    self.logger.record("thesis/success_rate",
-                                       self.tracker.cumulative_success_rate)
-                    self.logger.record("thesis/collision_rate",
-                                       self.tracker.cumulative_collision_rate)
-                    self.logger.record("thesis/window_success_rate",
-                                       self.tracker.window_success_rate)
-                    self.logger.record("thesis/window_collision_rate",
-                                       self.tracker.window_collision_rate)
-                    self.logger.record("thesis/current_level",
-                                       self.level_name)
+            # Sempre aggiorna metriche globali del run.
+            self.global_tracker.record(info)
+
+            # Aggiorna metriche di promozione solo su blocchi non-replay.
+            if self.track_promotion and self.promotion_tracker is not None:
+                self.promotion_tracker.record(info)
+
+            self.block_episodes += 1
+
+            if info.get("arrive_dest", False):
+                self.block_successes += 1
+            if info.get("crash", False) or info.get("crash_vehicle", False):
+                self.block_collisions += 1
+
+            # Metriche episodio dal Monitor wrapper (SB3).
+            episode_info = info.get("episode")
+            if episode_info is not None:
+                reward = episode_info.get("r")
+                ep_len = episode_info.get("l")
+                if reward is not None:
+                    self.block_rewards.append(float(reward))
+                if ep_len is not None:
+                    self.block_episode_lengths.append(float(ep_len))
+
+            # Log su TensorBoard
+            if self.global_tracker.total_episodes % 10 == 0:
+                self.logger.record("thesis/success_rate",
+                                   self.global_tracker.cumulative_success_rate)
+                self.logger.record("thesis/collision_rate",
+                                   self.global_tracker.cumulative_collision_rate)
+                self.logger.record("thesis/window_success_rate",
+                                   self.global_tracker.window_success_rate)
+                self.logger.record("thesis/window_collision_rate",
+                                   self.global_tracker.window_collision_rate)
+                self.logger.record("thesis/current_level", self.level_name)
+
+                if self.promotion_tracker is not None:
+                    self.logger.record("thesis/promotion_window_success_rate",
+                                       self.promotion_tracker.window_success_rate)
+                    self.logger.record("thesis/promotion_window_collision_rate",
+                                       self.promotion_tracker.window_collision_rate)
         return True
+
+    @property
+    def block_reward_mean(self):
+        if not self.block_rewards:
+            return None
+        return float(np.mean(self.block_rewards))
+
+    @property
+    def block_reward_std(self):
+        if not self.block_rewards:
+            return None
+        return float(np.std(self.block_rewards))
+
+    @property
+    def block_ep_length_mean(self):
+        if not self.block_episode_lengths:
+            return None
+        return float(np.mean(self.block_episode_lengths))
 
     def reset_block_stats(self):
         """Resetta i contatori del blocco corrente."""
         self.block_episodes = 0
         self.block_successes = 0
         self.block_collisions = 0
+        self.block_rewards = []
+        self.block_episode_lengths = []
 
 
 # ============================================================
@@ -319,9 +352,11 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
     model = None
     block_num = 0
     level_history = []
+    training_status = "COMPLETATO"
 
     _cycle = list(levels)  # inizializzazione prima del while
     while steps_done < total_steps:
+        block_start_steps = steps_done
         block_num += 1
         remaining = total_steps - steps_done
         current_block = min(block_size, remaining)
@@ -344,7 +379,10 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
         else:
             model.set_env(env)
 
-        callback = ExperimentCallback(tracker, level_name=level)
+        callback = ExperimentCallback(
+            global_tracker=tracker,
+            level_name=level,
+        )
 
         try:
             model.learn(
@@ -354,14 +392,25 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
                 progress_bar=True,
             )
         except Exception as e:
+            training_status = "ERRORE"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
             print(f"ERRORE nel blocco {block_num}: {e}")
             import traceback
             traceback.print_exc()
             env.close()
             break
+        except KeyboardInterrupt:
+            training_status = "INTERROTTO"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
+            print("\nTraining interrotto da tastiera.")
+            env.close()
+            break
 
         block_duration = progress.block_end()
-        steps_done += current_block
+        steps_done = int(model.num_timesteps)
+        current_block = max(0, steps_done - block_start_steps)
 
         # Calcola metriche blocco
         block_sr = None
@@ -384,6 +433,9 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
             level=level,
             tracker=tracker,
             callback=callback,
+            reward_mean=callback.block_reward_mean,
+            reward_std=callback.block_reward_std,
+            ep_length_mean=callback.block_ep_length_mean,
         )
 
         env.close()
@@ -402,8 +454,9 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
     }
     summary["wall_clock_seconds"] = time.time() - progress.start_time
     summary["timeseries"] = timeseries.data
+    summary["status"] = training_status
 
-    return model, summary
+    return model, summary, training_status
 
 
 # ============================================================
@@ -431,7 +484,8 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
     print(f"Replay ratio: {curriculum_config['replay_ratio']:.0%}")
     print("=" * 60)
 
-    tracker = EpisodeTracker(window_size=curriculum_config["window_size"])
+    global_tracker = EpisodeTracker(window_size=curriculum_config["window_size"])
+    promotion_tracker = EpisodeTracker(window_size=curriculum_config["window_size"])
     manager = CurriculumManager(
         promotion_threshold=curriculum_config["promotion_threshold"],
         collision_threshold=curriculum_config["collision_threshold"],
@@ -448,11 +502,13 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
     block_num = 0
     current_env = None
     current_env_level = None  # quale livello ha l'env aperto attualmente
+    training_status = "COMPLETATO"
 
     # Tracking distribuzione livelli
     level_timesteps = {lv: 0 for lv in LEVEL_CONFIGS.keys()}
 
     while steps_done < total_steps:
+        block_start_steps = steps_done
         block_num += 1
         remaining = total_steps - steps_done
         current_block = min(block_size, remaining)
@@ -474,9 +530,12 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
             else:
                 model.set_env(current_env)
 
-        # Callback — per blocchi di replay, non aggiorniamo il tracker del livello corrente
-        # ma loggiamo comunque le metriche
-        callback = ExperimentCallback(tracker, level_name=block_level)
+        callback = ExperimentCallback(
+            global_tracker=global_tracker,
+            promotion_tracker=promotion_tracker,
+            track_promotion=(not is_replay),
+            level_name=block_level,
+        )
 
         try:
             model.learn(
@@ -486,20 +545,32 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
                 progress_bar=True,
             )
         except Exception as e:
+            training_status = "ERRORE"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
             print(f"ERRORE nel blocco {block_num}: {e}")
             import traceback
             traceback.print_exc()
             if current_env is not None:
                 current_env.close()
             break
+        except KeyboardInterrupt:
+            training_status = "INTERROTTO"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
+            print("\nTraining interrotto da tastiera.")
+            if current_env is not None:
+                current_env.close()
+            break
 
-        steps_done += current_block
+        steps_done = int(model.num_timesteps)
+        current_block = max(0, steps_done - block_start_steps)
         level_timesteps[block_level] = level_timesteps.get(block_level, 0) + current_block
 
-        # Aggiorna timesteps del tracker SOLO se non e' replay
-        # (il tracker misura il progresso sul livello corrente per promozione)
+        # Aggiorna timesteps SOLO sul tracker usato per promozione
+        # (i blocchi replay non contano per avanzare livello).
         if not is_replay:
-            tracker.add_timesteps(current_block)
+            promotion_tracker.add_timesteps(current_block)
 
         block_duration = progress.block_end()
 
@@ -517,23 +588,26 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
             block_episodes=callback.block_episodes,
             block_sr=block_sr, block_cr=block_cr,
             curriculum_manager=manager,
-            tracker=tracker,
+            tracker=promotion_tracker,
         )
 
         # Timeseries
         timeseries.record(
             timestep=steps_done,
-            episode=tracker.total_episodes,
+            episode=global_tracker.total_episodes,
             level=block_level,
-            tracker=tracker,
+            tracker=global_tracker,
             callback=callback,
+            reward_mean=callback.block_reward_mean,
+            reward_std=callback.block_reward_std,
+            ep_length_mean=callback.block_ep_length_mean,
             is_replay=is_replay,
         )
 
         # Controlla promozione (solo se il blocco era sul livello corrente, non replay)
-        if not is_replay and manager.should_promote(tracker):
+        if not is_replay and manager.should_promote(promotion_tracker):
             old_level = manager.current_level
-            new_level = manager.promote(tracker, global_timestep=steps_done)
+            new_level = manager.promote(promotion_tracker, global_timestep=steps_done)
             print(f"\n{'>'*20} PROMOZIONE: {old_level.upper()} -> {new_level.upper()} {'<'*20}")
             promo = manager.promotion_history[-1]
             print(f"  SR alla promozione: {promo['success_rate_at_promotion']:.1%}")
@@ -557,15 +631,16 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
         model.save(os.path.join(run_dir, "final_model"))
 
     # Report finale
-    summary = tracker.summary()
+    summary = global_tracker.summary()
     summary["mode"] = "curriculum"
     summary["total_steps"] = steps_done
     summary["curriculum"] = manager.summary()
     summary["level_distribution"] = level_timesteps
     summary["wall_clock_seconds"] = time.time() - progress.start_time
     summary["timeseries"] = timeseries.data
+    summary["status"] = training_status
 
-    return model, summary
+    return model, summary, training_status
 
 
 # ============================================================
@@ -650,7 +725,7 @@ def evaluate_model(model, levels_to_test, n_episodes=None):
 # SALVATAGGIO RISULTATI (v2.0 — JSON + TXT)
 # ============================================================
 
-def save_results(run_dir, mode, train_summary, eval_results, config):
+def save_results(run_dir, mode, train_summary, eval_results, config, training_status):
     """
     Salva tutti i risultati in formato strutturato.
     
@@ -670,6 +745,7 @@ def save_results(run_dir, mode, train_summary, eval_results, config):
             "total_timesteps_actual": train_summary["total_steps"],
             "total_episodes": train_summary["total_episodes"],
             "wall_clock_seconds": round(train_summary.get("wall_clock_seconds", 0), 2),
+            "status": training_status,
             "timestamp": timestamp_str,
         },
         "config": {
@@ -707,7 +783,7 @@ def save_results(run_dir, mode, train_summary, eval_results, config):
         f.write(f"REPORT: {mode.upper()} TRAINING v2.0\n")
         f.write(f"{'=' * 60}\n\n")
 
-        f.write(f"Status: COMPLETATO\n")
+        f.write(f"Status: {training_status}\n")
         f.write(f"Mode: {mode}\n")
         f.write(f"Total steps: {train_summary['total_steps']:,}\n")
         f.write(f"Total episodes: {train_summary['total_episodes']}\n")
@@ -784,11 +860,11 @@ def run_experiment(mode, run_dir):
     print("#" * 60)
 
     if mode == "batch":
-        model, train_summary = train_batch(
+        model, train_summary, training_status = train_batch(
             TOTAL_TIMESTEPS, BLOCK_SIZE, PPO_CONFIG, experiment_dir
         )
     elif mode == "curriculum":
-        model, train_summary = train_curriculum(
+        model, train_summary, training_status = train_curriculum(
             TOTAL_TIMESTEPS, BLOCK_SIZE, PPO_CONFIG, CURRICULUM_CONFIG, experiment_dir
         )
     else:
@@ -800,10 +876,14 @@ def run_experiment(mode, run_dir):
     print("=" * 60)
 
     eval_levels = ["easy", "medium", "hard", "test"]
-    eval_results = evaluate_model(model, eval_levels)
+    if model is None:
+        print("Training non ha prodotto un modello. Valutazione saltata.")
+        eval_results = {}
+    else:
+        eval_results = evaluate_model(model, eval_levels)
 
     # Salva tutto
-    save_results(experiment_dir, mode, train_summary, eval_results, config)
+    save_results(experiment_dir, mode, train_summary, eval_results, config, training_status)
 
     return experiment_dir, train_summary, eval_results
 
@@ -844,15 +924,19 @@ if __name__ == "__main__":
         print("  CONFRONTO FINALE: BATCH vs CURRICULUM")
         print("=" * 60)
 
-        print(f"\n{'Livello':<10} {'Batch SR':<12} {'Curric SR':<12} {'Batch CR':<12} {'Curric CR':<12}")
-        print("-" * 60)
+        levels = ["easy", "medium", "hard", "test"]
+        if all(level in batch_eval for level in levels) and all(level in curriculum_eval for level in levels):
+            print(f"\n{'Livello':<10} {'Batch SR':<12} {'Curric SR':<12} {'Batch CR':<12} {'Curric CR':<12}")
+            print("-" * 60)
 
-        for level in ["easy", "medium", "hard", "test"]:
-            b_sr = batch_eval[level]["success_rate"]
-            c_sr = curriculum_eval[level]["success_rate"]
-            b_cr = batch_eval[level]["collision_rate"]
-            c_cr = curriculum_eval[level]["collision_rate"]
-            print(f"{level:<10} {b_sr:<12.1%} {c_sr:<12.1%} {b_cr:<12.1%} {c_cr:<12.1%}")
+            for level in levels:
+                b_sr = batch_eval[level]["success_rate"]
+                c_sr = curriculum_eval[level]["success_rate"]
+                b_cr = batch_eval[level]["collision_rate"]
+                c_cr = curriculum_eval[level]["collision_rate"]
+                print(f"{level:<10} {b_sr:<12.1%} {c_sr:<12.1%} {b_cr:<12.1%} {c_cr:<12.1%}")
+        else:
+            print("\nConfronto metriche per livello non disponibile (una delle due run non ha valutazione completa).")
 
         # Training summary
         print(f"\nTraining Summary:")
@@ -880,14 +964,17 @@ if __name__ == "__main__":
             f.write(f"Budget per esperimento: {TOTAL_TIMESTEPS:,} step\n")
             f.write(f"Eval episodes: {EVAL_EPISODES}\n")
             f.write(f"Seed: {SEED}\n\n")
-            f.write(f"{'Livello':<10} {'Batch SR':<12} {'Curric SR':<12} {'Batch CR':<12} {'Curric CR':<12}\n")
-            f.write(f"{'-'*58}\n")
-            for level in ["easy", "medium", "hard", "test"]:
-                b_sr = batch_eval[level]["success_rate"]
-                c_sr = curriculum_eval[level]["success_rate"]
-                b_cr = batch_eval[level]["collision_rate"]
-                c_cr = curriculum_eval[level]["collision_rate"]
-                f.write(f"{level:<10} {b_sr:<12.1%} {c_sr:<12.1%} {b_cr:<12.1%} {c_cr:<12.1%}\n")
+            if all(level in batch_eval for level in levels) and all(level in curriculum_eval for level in levels):
+                f.write(f"{'Livello':<10} {'Batch SR':<12} {'Curric SR':<12} {'Batch CR':<12} {'Curric CR':<12}\n")
+                f.write(f"{'-'*58}\n")
+                for level in levels:
+                    b_sr = batch_eval[level]["success_rate"]
+                    c_sr = curriculum_eval[level]["success_rate"]
+                    b_cr = batch_eval[level]["collision_rate"]
+                    c_cr = curriculum_eval[level]["collision_rate"]
+                    f.write(f"{level:<10} {b_sr:<12.1%} {c_sr:<12.1%} {b_cr:<12.1%} {c_cr:<12.1%}\n")
+            else:
+                f.write("Confronto per livello non disponibile: valutazione incompleta in almeno una run.\n")
 
         print(f"\nConfronto salvato in: {comparison_path}")
 
@@ -896,4 +983,4 @@ if __name__ == "__main__":
 
     print("\n\nProssimi step:")
     print("1. TensorBoard: tensorboard --logdir=experiments/")
-    print("2. Confronto dettagliato: python evaluation/compare_results.py")
+    print("2. Confronto dettagliato: python ./scripts/compare_results.py")

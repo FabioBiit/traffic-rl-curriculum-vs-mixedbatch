@@ -12,6 +12,7 @@ Visualizza risultati:
 """
 
 import os
+import sys
 import yaml
 import argparse
 import numpy as np
@@ -24,6 +25,10 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from metadrive.envs import MetaDriveEnv
+
+# Aggiungi la root del progetto al path per gli import condivisi.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from training.common import set_global_seed, PPO_CONFIG_BASE
 
 
 # ============================================================
@@ -48,14 +53,7 @@ CONFIG = {
 
     # PPO hyperparameters (valori standard dal paper Schulman 2017)
     "ppo": {
-        "learning_rate": 3e-4,     # Standard PPO - Dice al modello quanto aggiornare i pesi ad ogni step
-        "n_steps": 2048,           # Step raccolti prima di ogni update
-        "batch_size": 64,          # Mini-batch per gradient descent
-        "n_epochs": 10,            # Passate sui dati per ogni update
-        "gamma": 0.99,             # Discount factor (alto = pianifica a lungo)
-        "gae_lambda": 0.95,        # GAE lambda (bias-variance tradeoff)
-        "clip_range": 0.2,         # PPO clipping (limita update della policy)
-        "ent_coef": 0.01,          # Entropy bonus (incentiva esplorazione)
+        **PPO_CONFIG_BASE,
         "verbose": 1,              # Stampa metriche durante training
         "device": DEVICE          # cpu per MLP piccola, cuda per reti grandi (Da modificare quando passeremo a RLlib + CARLA)
     },
@@ -68,21 +66,6 @@ CONFIG = {
         "checkpoint_freq": 50_000 # Salva checkpoint ogni N step
     },
 }
-
-
-# ============================================================
-# SEED GLOBALE - Riproducibilita
-# ============================================================
-
-def set_global_seed(seed):
-    """Fissa tutti i seed per garantire risultati riproducibili."""
-    import random
-    import torch
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 # ============================================================
@@ -155,7 +138,7 @@ def train(config):
 
     # Crea environment
     print("\n[1/4] Creazione environment MetaDrive...")
-    env = DummyVecEnv([make_env(config["env"])])
+    env = DummyVecEnv([make_env(config["env"], render=config["env"].get("use_render", False))])
     print("OK!")
 
     # Crea modello PPO
@@ -195,6 +178,7 @@ def train(config):
     print("=" * 50)
 
     training_complete = False
+    training_status = "ERRORE"
     try:
         model.learn(
             total_timesteps=total_steps,
@@ -202,9 +186,12 @@ def train(config):
             progress_bar=True,
         )
         training_complete = True
+        training_status = "COMPLETATO"
     except KeyboardInterrupt:
+        training_status = "INTERROTTO"
         print("\n\nTraining interrotto! Salvataggio modello parziale...")
     except Exception as e:
+        training_status = "ERRORE"
         print(f"\n\nErrore durante il training: {e}")
         import traceback
         traceback.print_exc()
@@ -226,9 +213,8 @@ def train(config):
         print("=" * 50)
 
         # Salva report su file
-        status = "COMPLETATO" if metrics_cb.total_episodes > 0 else "FALLITO"
         with open(os.path.join(run_dir, "report.txt"), "w") as f:
-            f.write(f"Status: {status}\n")
+            f.write(f"Status: {training_status}\n")
             f.write(f"Episodi totali: {metrics_cb.total_episodes}\n")
             if metrics_cb.total_episodes > 0:
                 f.write(f"Success rate: {metrics_cb.successes / metrics_cb.total_episodes:.1%}\n")
