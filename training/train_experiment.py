@@ -377,20 +377,22 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
         level_block_counts[level] = level_block_counts.get(level, 0) + 1
         progress.block_start()
 
-        # Crea ambiente per questo livello
-        env = create_env(level)
-
-        if model is None:
-            model = PPO("MlpPolicy", env, tensorboard_log=run_dir, **ppo_config)
-        else:
-            model.set_env(env)
-
-        callback = ExperimentCallback(
-            global_tracker=tracker,
-            level_name=level,
-        )
-
+        env = None
+        callback = None
         try:
+            # Crea ambiente per questo livello
+            env = create_env(level)
+
+            if model is None:
+                model = PPO("MlpPolicy", env, tensorboard_log=run_dir, **ppo_config)
+            else:
+                model.set_env(env)
+
+            callback = ExperimentCallback(
+                global_tracker=tracker,
+                level_name=level,
+            )
+
             model.learn(
                 total_timesteps=current_block,
                 callback=[callback],
@@ -402,7 +404,8 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
             if model is not None:
                 steps_done = int(model.num_timesteps)
             print("\nTraining interrotto da tastiera.")
-            env.close()
+            if env is not None:
+                env.close()
             break
         except Exception as e:
             training_status = "ERRORE"
@@ -411,7 +414,8 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
             print(f"ERRORE nel blocco {block_num}: {e}")
             import traceback
             traceback.print_exc()
-            env.close()
+            if env is not None:
+                env.close()
             break
 
         progress.block_end()
@@ -526,26 +530,34 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
 
         progress.block_start()
 
-        # Crea/cambia ambiente se necessario
-        if current_env_level != block_level:
-            if current_env is not None:
-                current_env.close()
-            current_env = create_env(block_level)
-            current_env_level = block_level
-
-            if model is None:
-                model = PPO("MlpPolicy", current_env, tensorboard_log=run_dir, **ppo_config)
-            else:
-                model.set_env(current_env)
-
-        callback = ExperimentCallback(
-            global_tracker=global_tracker,
-            promotion_tracker=promotion_tracker,
-            track_promotion=(not is_replay),
-            level_name=block_level,
-        )
-
+        pending_env = None
+        callback = None
         try:
+            # Crea/cambia ambiente se necessario
+            if current_env_level != block_level:
+                if current_env is not None:
+                    current_env.close()
+                    current_env = None
+                    current_env_level = None
+
+                pending_env = create_env(block_level)
+
+                if model is None:
+                    model = PPO("MlpPolicy", pending_env, tensorboard_log=run_dir, **ppo_config)
+                else:
+                    model.set_env(pending_env)
+
+                current_env = pending_env
+                current_env_level = block_level
+                pending_env = None
+
+            callback = ExperimentCallback(
+                global_tracker=global_tracker,
+                promotion_tracker=promotion_tracker,
+                track_promotion=(not is_replay),
+                level_name=block_level,
+            )
+
             model.learn(
                 total_timesteps=current_block,
                 callback=[callback],
@@ -557,8 +569,12 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
             if model is not None:
                 steps_done = int(model.num_timesteps)
             print("\nTraining interrotto da tastiera.")
+            if pending_env is not None:
+                pending_env.close()
             if current_env is not None:
                 current_env.close()
+                current_env = None
+                current_env_level = None
             break
         except Exception as e:
             training_status = "ERRORE"
@@ -567,8 +583,12 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
             print(f"ERRORE nel blocco {block_num}: {e}")
             import traceback
             traceback.print_exc()
+            if pending_env is not None:
+                pending_env.close()
             if current_env is not None:
                 current_env.close()
+                current_env = None
+                current_env_level = None
             break
 
         steps_done = int(model.num_timesteps)

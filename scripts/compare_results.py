@@ -264,12 +264,30 @@ def plot_evaluation_comparison(batch_data, curriculum_data, output_path):
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
+    def extract_eval_values(eval_data, metric, label):
+        values = []
+        missing_levels = []
+        for level in levels:
+            value = eval_data.get(level, {}).get(metric)
+            if value is None:
+                values.append(np.nan)
+                missing_levels.append(level)
+            else:
+                values.append(value)
+        if missing_levels:
+            missing = ", ".join(missing_levels)
+            print(
+                f"ATTENZIONE: {label} non ha dati '{metric}' per livelli: "
+                f"{missing}. Mostrati come N/A."
+            )
+        return values
+
     for ax, metric, title in [
-        (axes[0], "success_rate", "Success Rate — Valutazione Finale"),
-        (axes[1], "collision_rate", "Collision Rate — Valutazione Finale"),
+        (axes[0], "success_rate", "Success Rate - Valutazione Finale"),
+        (axes[1], "collision_rate", "Collision Rate - Valutazione Finale"),
     ]:
-        batch_vals = [eval_b.get(lv, {}).get(metric, 0) for lv in levels]
-        curric_vals = [eval_c.get(lv, {}).get(metric, 0) for lv in levels]
+        batch_vals = extract_eval_values(eval_b, metric, "Batch")
+        curric_vals = extract_eval_values(eval_c, metric, "Curriculum")
 
         x = np.arange(len(levels))
         width = 0.35
@@ -292,7 +310,11 @@ def plot_evaluation_comparison(batch_data, curriculum_data, output_path):
         for bars in [bars_b, bars_c]:
             for bar in bars:
                 height = bar.get_height()
-                if height > 0.02:  # Non mostrare etichette per valori troppo piccoli
+                if np.isnan(height):
+                    ax.text(bar.get_x() + bar.get_width() / 2., 0.02,
+                            "N/A", ha="center", va="bottom",
+                            fontsize=8, fontweight="bold")
+                elif height > 0.02:  # Non mostrare etichette per valori troppo piccoli
                     ax.text(bar.get_x() + bar.get_width() / 2., height + 0.015,
                             f"{height:.0%}", ha="center", va="bottom",
                             fontsize=9, fontweight="bold")
@@ -301,7 +323,6 @@ def plot_evaluation_comparison(batch_data, curriculum_data, output_path):
     fig.savefig(output_path, dpi=FIGURE_DPI, bbox_inches="tight")
     plt.close(fig)
     print(f"Salvato: {output_path}")
-
 
 def plot_summary_table(batch_data, curriculum_data, output_path):
     """
@@ -586,3 +607,4 @@ Esempio:
 
 if __name__ == "__main__":
     main()
+
