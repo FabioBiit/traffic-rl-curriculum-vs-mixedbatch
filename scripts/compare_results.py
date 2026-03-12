@@ -25,7 +25,6 @@ Output:
 """
 
 import os
-import sys
 import json
 import argparse
 import numpy as np
@@ -88,7 +87,10 @@ def load_results(json_path, strict_status=False):
 
     status = data["meta"].get("status")
     if status is None:
-        print(f"ATTENZIONE: campo 'meta.status' mancante in {json_path} (schema legacy?)")
+        msg = f"Campo 'meta.status' mancante in {json_path} (schema legacy?)"
+        if strict_status:
+            raise ValueError(msg)
+        print(f"ATTENZIONE: {msg}")
     elif status != "COMPLETATO":
         msg = f"Run non completata in {json_path}: status={status}"
         if strict_status:
@@ -466,7 +468,7 @@ Esempio:
     parser.add_argument("--output", type=str, default="results/plots",
                         help="Directory di output per i grafici (default: results/plots)")
     parser.add_argument("--strict-status", action="store_true",
-                        help="Se attivo, fallisce quando trova run con meta.status != COMPLETATO")
+                        help="Se attivo, fallisce quando meta.status e' mancante o != COMPLETATO")
     args = parser.parse_args()
 
     # Carica dati

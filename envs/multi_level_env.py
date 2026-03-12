@@ -16,13 +16,10 @@ Changelog v2.0 (12 Marzo 2026):
 - EpisodeTracker: aggiunta window_collision_rate nel check promozione
 """
 
-import numpy as np
 from copy import deepcopy
 from collections import deque
 
 from metadrive.envs import MetaDriveEnv
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
 from training.common import episode_outcome
 
 
@@ -79,6 +76,11 @@ def create_env(level_name, level_configs=None):
     Returns:
         DummyVecEnv wrappato con Monitor
     """
+    # Import lazy: evita inizializzazione SB3/Torch quando serve solo
+    # create_eval_env (es. test rendering).
+    from stable_baselines3.common.monitor import Monitor
+    from stable_baselines3.common.vec_env import DummyVecEnv
+
     if level_configs is None:
         level_configs = LEVEL_CONFIGS
 

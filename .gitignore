@@ -21,9 +21,13 @@ venv*/
 Thumbs.db
 
 # Experiments (risultati troppo grandi per git)
-experiments/*/run_*
-experiments/*/checkpoints/
+experiments/**/run_*
+experiments/**/*_run_*
+experiments/**/checkpoints/
 experiments/**/best_model/
+experiments/**/PPO_*/
+experiments/**/events.out.tfevents.*
+experiments/**/final_model.zip
 
 # CARLA
 *.log
@@ -45,5 +49,9 @@ wandb/
 *.hdf5
 *.pkl
 
-# Documentazione track in locale
+# Plots/output derivati
+results/plots_*/
+results/**/*.png
+
+# Documentazione
 docs/

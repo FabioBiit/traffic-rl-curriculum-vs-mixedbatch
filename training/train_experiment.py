@@ -36,7 +36,7 @@ import math
 import random
 import argparse
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
@@ -311,7 +311,7 @@ class TimeseriesCollector:
     def __init__(self):
         self.data = []
 
-    def record(self, timestep, episode, level, tracker, callback,
+    def record(self, timestep, episode, level, tracker,
                reward_mean=None, reward_std=None, ep_length_mean=None,
                is_replay=False):
         """Registra uno snapshot delle metriche correnti."""
@@ -414,7 +414,7 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
             env.close()
             break
 
-        block_duration = progress.block_end()
+        progress.block_end()
         steps_done = int(model.num_timesteps)
         current_block = max(0, steps_done - block_start_steps)
         level_timesteps[level] = level_timesteps.get(level, 0) + current_block
@@ -439,7 +439,6 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
             episode=tracker.total_episodes,
             level=level,
             tracker=tracker,
-            callback=callback,
             reward_mean=callback.block_reward_mean,
             reward_std=callback.block_reward_std,
             ep_length_mean=callback.block_ep_length_mean,
@@ -581,7 +580,7 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
         if not is_replay:
             promotion_tracker.add_timesteps(current_block)
 
-        block_duration = progress.block_end()
+        progress.block_end()
 
         # Calcola metriche blocco
         block_sr = None
@@ -606,7 +605,6 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
             episode=global_tracker.total_episodes,
             level=block_level,
             tracker=global_tracker,
-            callback=callback,
             reward_mean=callback.block_reward_mean,
             reward_std=callback.block_reward_std,
             ep_length_mean=callback.block_ep_length_mean,
@@ -685,7 +683,6 @@ def evaluate_model(model, levels_to_test, n_episodes=None):
         collisions = 0
         total_reward = 0
         total_steps = 0
-        episode_lengths = []
 
         obs = env.reset()
         episodes_done = 0
@@ -702,7 +699,6 @@ def evaluate_model(model, levels_to_test, n_episodes=None):
                 episodes_done += 1
                 total_reward += ep_reward
                 total_steps += ep_steps
-                episode_lengths.append(ep_steps)
                 ep_reward = 0
                 ep_steps = 0
 
@@ -856,7 +852,7 @@ def save_results(run_dir, mode, train_summary, eval_results, config, training_st
 # MAIN
 # ============================================================
 
-def run_experiment(mode, run_dir):
+def run_experiment(mode, run_dir, allow_eval_on_incomplete=False):
     """Esegue un singolo esperimento (batch o curriculum)."""
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -905,6 +901,12 @@ def run_experiment(mode, run_dir):
     if model is None:
         print("Training non ha prodotto un modello. Valutazione saltata.")
         eval_results = {}
+    elif training_status != "COMPLETATO" and not allow_eval_on_incomplete:
+        print(
+            f"Training status={training_status}. "
+            "Valutazione saltata (usa --eval-on-incomplete per forzare)."
+        )
+        eval_results = {}
     else:
         eval_results = evaluate_model(model, eval_levels)
 
@@ -923,6 +925,8 @@ if __name__ == "__main__":
                         help="Override budget totale di step")
     parser.add_argument("--eval-episodes", type=int, default=None,
                         help="Override numero episodi valutazione (default 50)")
+    parser.add_argument("--eval-on-incomplete", action="store_true",
+                        help="Esegue la valutazione anche se il training e' INTERROTTO/ERRORE")
     args = parser.parse_args()
 
     if args.timesteps:
@@ -940,10 +944,14 @@ if __name__ == "__main__":
         print("#" * 60)
 
         # Batch
-        batch_dir, batch_summary, batch_eval = run_experiment("batch", run_dir)
+        batch_dir, batch_summary, batch_eval = run_experiment(
+            "batch", run_dir, allow_eval_on_incomplete=args.eval_on_incomplete
+        )
 
         # Curriculum
-        curriculum_dir, curriculum_summary, curriculum_eval = run_experiment("curriculum", run_dir)
+        curriculum_dir, curriculum_summary, curriculum_eval = run_experiment(
+            "curriculum", run_dir, allow_eval_on_incomplete=args.eval_on_incomplete
+        )
 
         # Confronto finale a schermo
         print("\n\n" + "=" * 60)
@@ -1005,7 +1013,7 @@ if __name__ == "__main__":
         print(f"\nConfronto salvato in: {comparison_path}")
 
     else:
-        run_experiment(args.mode, run_dir)
+        run_experiment(args.mode, run_dir, allow_eval_on_incomplete=args.eval_on_incomplete)
 
     print("\n\nProssimi step:")
     print("1. TensorBoard: tensorboard --logdir=experiments/")

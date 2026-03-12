@@ -1,17 +1,21 @@
 """
 Test rapido: MetaDrive renderizza correttamente?
 """
-from metadrive.envs import MetaDriveEnv
 import time
+
+from envs.multi_level_env import create_eval_env, LEVEL_CONFIGS
 
 
 def main():
-    env = MetaDriveEnv({
-        "use_render": True,
-        "traffic_density": 0.1,
-        "map": "SSS",
-        "num_scenarios": 1,
-    })
+    # Riusa la factory condivisa e mantiene il setup "easy" del test rapido.
+    quick_level_configs = {
+        "easy": {
+            **LEVEL_CONFIGS["easy"],
+            "traffic_density": 0.1,
+            "num_scenarios": 1,
+        }
+    }
+    env = create_eval_env("easy", level_configs=quick_level_configs)
 
     try:
         obs, info = env.reset()
