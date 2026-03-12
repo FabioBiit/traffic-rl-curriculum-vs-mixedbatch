@@ -27,8 +27,10 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from metadrive.envs import MetaDriveEnv
 
 # Aggiungi la root del progetto al path per gli import condivisi.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from training.common import set_global_seed, PPO_CONFIG_BASE
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from training.common import set_global_seed, PPO_CONFIG_BASE, episode_outcome
 
 
 # ============================================================
@@ -87,9 +89,10 @@ class ThesisMetricsCallback(BaseCallback):
                 self.total_episodes += 1
                 info = self.locals["infos"][i]
 
-                if info.get("arrive_dest", False):
+                success, collision = episode_outcome(info)
+                if success:
                     self.successes += 1
-                if info.get("crash", False) or info.get("crash_vehicle", False):
+                if collision:
                     self.collisions += 1
 
                 if self.total_episodes % 10 == 0 and self.total_episodes > 0:
@@ -197,6 +200,8 @@ def train(config):
         traceback.print_exc()
         raise
     finally:
+        actual_steps = int(model.num_timesteps)
+
         # Salva sempre il modello
         final_path = os.path.join(run_dir, "final_model")
         model.save(final_path)
@@ -208,6 +213,7 @@ def train(config):
         if metrics_cb.total_episodes > 0:
             print(f"Success rate: {metrics_cb.successes / metrics_cb.total_episodes:.1%}")
             print(f"Collision rate: {metrics_cb.collisions / metrics_cb.total_episodes:.1%}")
+        print(f"Timesteps: {actual_steps:,}/{total_steps:,}")
         print(f"Modello: {final_path}")
         print(f"Run dir: {run_dir}")
         print("=" * 50)
@@ -219,7 +225,8 @@ def train(config):
             if metrics_cb.total_episodes > 0:
                 f.write(f"Success rate: {metrics_cb.successes / metrics_cb.total_episodes:.1%}\n")
                 f.write(f"Collision rate: {metrics_cb.collisions / metrics_cb.total_episodes:.1%}\n")
-            f.write(f"Timesteps: {total_steps}\n")
+            f.write(f"Timesteps target: {total_steps}\n")
+            f.write(f"Timesteps actual: {actual_steps}\n")
             f.write(f"Seed: {SEED}\n")
             f.write(f"Modello: {final_path}\n")
 
@@ -253,9 +260,10 @@ def evaluate(model_path, config, n_episodes=3):
                 total_reward += reward
                 steps += 1
 
-            if info.get("arrive_dest"):
+            success, collision = episode_outcome(info)
+            if success:
                 status = "GOAL!"
-            elif info.get("crash") or info.get("crash_vehicle"):
+            elif collision:
                 status = "CRASH"
             elif info.get("out_of_road"):
                 status = "FUORI STRADA"

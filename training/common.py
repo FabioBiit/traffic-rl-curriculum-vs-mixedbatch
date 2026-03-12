@@ -28,3 +28,13 @@ def set_global_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def episode_outcome(info):
+    """
+    Estrae flag standardizzati di outcome episodio da un dict info.
+    Ritorna (success, collision).
+    """
+    success = bool(info.get("arrive_dest", False))
+    collision = bool(info.get("crash", False) or info.get("crash_vehicle", False))
+    return success, collision

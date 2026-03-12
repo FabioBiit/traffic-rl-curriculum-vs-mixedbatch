@@ -23,6 +23,7 @@ from collections import deque
 from metadrive.envs import MetaDriveEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
+from training.common import episode_outcome
 
 
 # ============================================================
@@ -151,8 +152,7 @@ class EpisodeTracker:
 
     def record(self, info):
         """Registra il risultato di un episodio."""
-        success = info.get("arrive_dest", False)
-        collision = info.get("crash", False) or info.get("crash_vehicle", False)
+        success, collision = episode_outcome(info)
 
         self.successes.append(1 if success else 0)
         self.collisions.append(1 if collision else 0)

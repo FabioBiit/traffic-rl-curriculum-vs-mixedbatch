@@ -26,9 +26,11 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from metadrive.envs import MetaDriveEnv
 
 # Aggiungi la root del progetto al path per gli import condivisi.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 from envs.multi_level_env import LEVEL_CONFIGS
-from training.common import set_global_seed, PPO_CONFIG_BASE
+from training.common import set_global_seed, PPO_CONFIG_BASE, episode_outcome
 
 SEED = 42 # Seed globale per riproducibilita
 TIMESTEPS = 500_000 # LastTrain: 500000 # Timesteps per ogni livello (da aumentare per performance migliori)
@@ -63,9 +65,10 @@ class MetricsCallback(BaseCallback):
             if done:
                 self.total_episodes += 1
                 info = self.locals["infos"][i]
-                if info.get("arrive_dest", False):
+                success, collision = episode_outcome(info)
+                if success:
                     self.successes += 1
-                if info.get("crash", False) or info.get("crash_vehicle", False):
+                if collision:
                     self.collisions += 1
                 if self.total_episodes % 10 == 0 and self.total_episodes > 0:
                     self.logger.record("thesis/success_rate",
@@ -118,6 +121,8 @@ def train_level(level_name, env_config):
         training_status = "ERRORE"
         print(f"Errore durante training {level_name}: {e}")
     finally:
+        actual_steps = int(model.num_timesteps)
+
         # Report
         sr = metrics_cb.successes / max(metrics_cb.total_episodes, 1)
         cr = metrics_cb.collisions / max(metrics_cb.total_episodes, 1)
@@ -126,6 +131,7 @@ def train_level(level_name, env_config):
         print(f"Episodi: {metrics_cb.total_episodes}")
         print(f"Success rate: {sr:.1%}")
         print(f"Collision rate: {cr:.1%}")
+        print(f"Timesteps: {actual_steps:,}/{TIMESTEPS:,}")
 
         # Salva report
         with open(os.path.join(run_dir, "report.txt"), "w") as f:
@@ -136,13 +142,15 @@ def train_level(level_name, env_config):
             f.write(f"Episodi: {metrics_cb.total_episodes}\n")
             f.write(f"Success rate: {sr:.1%}\n")
             f.write(f"Collision rate: {cr:.1%}\n")
-            f.write(f"Timesteps: {TIMESTEPS}\n")
+            f.write(f"Timesteps target: {TIMESTEPS}\n")
+            f.write(f"Timesteps actual: {actual_steps}\n")
 
         model.save(os.path.join(run_dir, "final_model"))
         env.close()
 
     return {"level": level_name, "episodes": metrics_cb.total_episodes,
-            "success_rate": sr, "collision_rate": cr, "status": training_status}
+            "success_rate": sr, "collision_rate": cr, "status": training_status,
+            "timesteps_actual": actual_steps}
 
 
 # ============================================================

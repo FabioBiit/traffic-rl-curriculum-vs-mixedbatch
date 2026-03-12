@@ -42,7 +42,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 
 # Aggiungi la root del progetto al path per gli import
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from envs.multi_level_env import (
     create_env,
@@ -50,7 +52,7 @@ from envs.multi_level_env import (
     EpisodeTracker,
     CurriculumManager,
 )
-from training.common import set_global_seed, PPO_CONFIG_BASE
+from training.common import set_global_seed, PPO_CONFIG_BASE, episode_outcome
 
 
 # ============================================================
@@ -237,9 +239,10 @@ class ExperimentCallback(BaseCallback):
 
             self.block_episodes += 1
 
-            if info.get("arrive_dest", False):
+            success, collision = episode_outcome(info)
+            if success:
                 self.block_successes += 1
-            if info.get("crash", False) or info.get("crash_vehicle", False):
+            if collision:
                 self.block_collisions += 1
 
             # Metriche episodio dal Monitor wrapper (SB3).
@@ -341,7 +344,7 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
     print("BATCH TRAINING (Domain Randomization)")
     print(f"Budget totale: {total_steps:,} step")
     print(f"Blocco: {block_size:,} step")
-    print(f"Blocchi totali: {total_steps // block_size}")
+    print(f"Blocchi totali: {math.ceil(total_steps / block_size)}")
     print("=" * 60)
 
     levels = list(LEVEL_CONFIGS.keys())
@@ -352,6 +355,8 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
     model = None
     block_num = 0
     level_history = []
+    level_block_counts = {lv: 0 for lv in levels}
+    level_timesteps = {lv: 0 for lv in levels}
     training_status = "COMPLETATO"
 
     _cycle = list(levels)  # inizializzazione prima del while
@@ -369,6 +374,7 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
             random.shuffle(_cycle)
         level = _cycle[(block_num - 1) % len(levels)]
         level_history.append(level)
+        level_block_counts[level] = level_block_counts.get(level, 0) + 1
         progress.block_start()
 
         # Crea ambiente per questo livello
@@ -391,6 +397,13 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
                 reset_num_timesteps=False,
                 progress_bar=True,
             )
+        except KeyboardInterrupt:
+            training_status = "INTERROTTO"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
+            print("\nTraining interrotto da tastiera.")
+            env.close()
+            break
         except Exception as e:
             training_status = "ERRORE"
             if model is not None:
@@ -400,17 +413,11 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
             traceback.print_exc()
             env.close()
             break
-        except KeyboardInterrupt:
-            training_status = "INTERROTTO"
-            if model is not None:
-                steps_done = int(model.num_timesteps)
-            print("\nTraining interrotto da tastiera.")
-            env.close()
-            break
 
         block_duration = progress.block_end()
         steps_done = int(model.num_timesteps)
         current_block = max(0, steps_done - block_start_steps)
+        level_timesteps[level] = level_timesteps.get(level, 0) + current_block
 
         # Calcola metriche blocco
         block_sr = None
@@ -449,9 +456,9 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
     summary["mode"] = "batch"
     summary["total_steps"] = steps_done
     summary["level_history"] = level_history
-    summary["level_distribution"] = {
-        lv: level_history.count(lv) for lv in levels
-    }
+    summary["level_distribution"] = level_block_counts  # legacy: blocchi per livello
+    summary["level_distribution_blocks"] = level_block_counts
+    summary["level_distribution_timesteps"] = level_timesteps
     summary["wall_clock_seconds"] = time.time() - progress.start_time
     summary["timeseries"] = timeseries.data
     summary["status"] = training_status
@@ -505,7 +512,8 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
     training_status = "COMPLETATO"
 
     # Tracking distribuzione livelli
-    level_timesteps = {lv: 0 for lv in LEVEL_CONFIGS.keys()}
+    level_timesteps = {lv: 0 for lv in manager.levels}
+    level_block_counts = {lv: 0 for lv in manager.levels}
 
     while steps_done < total_steps:
         block_start_steps = steps_done
@@ -515,6 +523,7 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
 
         # Determina il livello per questo blocco (potrebbe essere replay)
         block_level, is_replay = manager.get_block_level()
+        level_block_counts[block_level] = level_block_counts.get(block_level, 0) + 1
 
         progress.block_start()
 
@@ -544,6 +553,14 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
                 reset_num_timesteps=False,
                 progress_bar=True,
             )
+        except KeyboardInterrupt:
+            training_status = "INTERROTTO"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
+            print("\nTraining interrotto da tastiera.")
+            if current_env is not None:
+                current_env.close()
+            break
         except Exception as e:
             training_status = "ERRORE"
             if model is not None:
@@ -551,14 +568,6 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
             print(f"ERRORE nel blocco {block_num}: {e}")
             import traceback
             traceback.print_exc()
-            if current_env is not None:
-                current_env.close()
-            break
-        except KeyboardInterrupt:
-            training_status = "INTERROTTO"
-            if model is not None:
-                steps_done = int(model.num_timesteps)
-            print("\nTraining interrotto da tastiera.")
             if current_env is not None:
                 current_env.close()
             break
@@ -635,7 +644,9 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
     summary["mode"] = "curriculum"
     summary["total_steps"] = steps_done
     summary["curriculum"] = manager.summary()
-    summary["level_distribution"] = level_timesteps
+    summary["level_distribution"] = level_timesteps  # legacy: timesteps per livello
+    summary["level_distribution_blocks"] = level_block_counts
+    summary["level_distribution_timesteps"] = level_timesteps
     summary["wall_clock_seconds"] = time.time() - progress.start_time
     summary["timeseries"] = timeseries.data
     summary["status"] = training_status
@@ -696,12 +707,11 @@ def evaluate_model(model, levels_to_test, n_episodes=None):
                 ep_steps = 0
 
                 episode_info = info[0]
-                if episode_info.get("arrive_dest", False):
+                success, collision = episode_outcome(episode_info)
+                if success:
                     successes += 1
-                if episode_info.get("crash", False) or episode_info.get("crash_vehicle", False):
+                if collision:
                     collisions += 1
-
-                obs = env.reset()
 
         env.close()
 
@@ -757,6 +767,8 @@ def save_results(run_dir, mode, train_summary, eval_results, config, training_st
             "cumulative_collision_rate": train_summary["cumulative_collision_rate"],
         },
         "level_distribution": train_summary.get("level_distribution", {}),
+        "level_distribution_blocks": train_summary.get("level_distribution_blocks", {}),
+        "level_distribution_timesteps": train_summary.get("level_distribution_timesteps", {}),
         "timeseries": train_summary.get("timeseries", []),
         "evaluation": eval_results,
     }
@@ -793,8 +805,13 @@ def save_results(run_dir, mode, train_summary, eval_results, config, training_st
 
         if mode == "batch":
             f.write("Level distribution (blocchi):\n")
-            for lv, count in train_summary.get("level_distribution", {}).items():
+            for lv, count in train_summary.get(
+                "level_distribution_blocks", train_summary.get("level_distribution", {})
+            ).items():
                 f.write(f"  {lv}: {count}\n")
+            f.write("\nLevel distribution (timesteps):\n")
+            for lv, steps in train_summary.get("level_distribution_timesteps", {}).items():
+                f.write(f"  {lv}: {steps:,}\n")
         elif mode == "curriculum":
             curriculum = train_summary.get("curriculum", {})
             f.write(f"Final level reached: {curriculum.get('final_level', 'N/A')}\n")
@@ -803,6 +820,15 @@ def save_results(run_dir, mode, train_summary, eval_results, config, training_st
             f.write(f"Collision threshold: {curriculum.get('collision_threshold', 'N/A')}\n")
             f.write(f"Min timesteps: {curriculum.get('min_timesteps', 'N/A')}\n")
             f.write(f"Replay ratio: {curriculum.get('replay_ratio', 'N/A')}\n\n")
+            f.write("Level distribution (timesteps):\n")
+            for lv, steps in train_summary.get(
+                "level_distribution_timesteps", train_summary.get("level_distribution", {})
+            ).items():
+                f.write(f"  {lv}: {steps:,}\n")
+            f.write("Level distribution (blocchi):\n")
+            for lv, count in train_summary.get("level_distribution_blocks", {}).items():
+                f.write(f"  {lv}: {count}\n")
+            f.write("\n")
             for promo in curriculum.get("promotion_history", []):
                 f.write(f"Promotion: {promo['from']} -> {promo['to']} "
                         f"(after {promo.get('timesteps_on_level', 'N/A')} steps, "

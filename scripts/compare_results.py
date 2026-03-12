@@ -16,10 +16,11 @@ Esegui con:
 Output:
     - <output_dir>/01_success_rate_over_time.png
     - <output_dir>/02_collision_rate_over_time.png
-    - <output_dir>/03_reward_over_time.png
-    - <output_dir>/04_episode_length_over_time.png
-    - <output_dir>/05_evaluation_comparison.png
-    - <output_dir>/06_summary_table.png
+    - <output_dir>/03_window_success_rate_over_time.png
+    - <output_dir>/04_reward_over_time.png
+    - <output_dir>/05_episode_length_over_time.png
+    - <output_dir>/06_evaluation_comparison.png
+    - <output_dir>/07_summary_table.png
     - <output_dir>/comparison_summary.txt
 """
 
@@ -500,6 +501,15 @@ Esempio:
 
     # Genera grafici
     print("\nGenerazione grafici...")
+    plot_paths = {
+        "success_rate": os.path.join(args.output, "01_success_rate_over_time.png"),
+        "collision_rate": os.path.join(args.output, "02_collision_rate_over_time.png"),
+        "window_success_rate": os.path.join(args.output, "03_window_success_rate_over_time.png"),
+        "reward": os.path.join(args.output, "04_reward_over_time.png"),
+        "episode_length": os.path.join(args.output, "05_episode_length_over_time.png"),
+        "evaluation": os.path.join(args.output, "06_evaluation_comparison.png"),
+        "summary_table": os.path.join(args.output, "07_summary_table.png"),
+    }
 
     # 1. Success Rate nel tempo (cumulativa)
     plot_metric_over_time(
@@ -507,7 +517,7 @@ Esempio:
         field="success_rate",
         ylabel="Cumulative Success Rate",
         title="Cumulative Success Rate — Batch vs Curriculum",
-        output_path=os.path.join(args.output, "01_success_rate_over_time.png"),
+        output_path=plot_paths["success_rate"],
         ylim=(0, 1.0),
         percentage=True,
     )
@@ -518,7 +528,7 @@ Esempio:
         field="collision_rate",
         ylabel="Cumulative Collision Rate",
         title="Cumulative Collision Rate — Batch vs Curriculum",
-        output_path=os.path.join(args.output, "02_collision_rate_over_time.png"),
+        output_path=plot_paths["collision_rate"],
         ylim=(0, 1.0),
         percentage=True,
     )
@@ -529,7 +539,7 @@ Esempio:
         field="window_success_rate",
         ylabel="Window Success Rate (50 episodes)",
         title="Window Success Rate — Batch vs Curriculum",
-        output_path=os.path.join(args.output, "03_window_success_rate_over_time.png"),
+        output_path=plot_paths["window_success_rate"],
         ylim=(0, 1.0),
         percentage=True,
     )
@@ -537,7 +547,7 @@ Esempio:
     # 4. Reward medio per blocco con banda std
     plot_reward_over_time(
         batch_data, curriculum_data,
-        output_path=os.path.join(args.output, "04_reward_over_time.png"),
+        output_path=plot_paths["reward"],
     )
 
     # 5. Episode length nel tempo
@@ -546,19 +556,19 @@ Esempio:
         field="episode_length_mean",
         ylabel="Mean Episode Length (steps)",
         title="Mean Episode Length — Batch vs Curriculum",
-        output_path=os.path.join(args.output, "05_episode_length_over_time.png"),
+        output_path=plot_paths["episode_length"],
     )
 
     # 6. Bar chart valutazione finale
     plot_evaluation_comparison(
         batch_data, curriculum_data,
-        output_path=os.path.join(args.output, "06_evaluation_comparison.png"),
+        output_path=plot_paths["evaluation"],
     )
 
     # 7. Tabella riassuntiva
     plot_summary_table(
         batch_data, curriculum_data,
-        output_path=os.path.join(args.output, "07_summary_table.png"),
+        output_path=plot_paths["summary_table"],
     )
 
     # 8. Report testuale
@@ -568,7 +578,7 @@ Esempio:
     )
 
     print(f"\n{'=' * 60}")
-    print(f"COMPLETATO — {7} grafici + 1 report salvati in: {args.output}")
+    print(f"COMPLETATO — {len(plot_paths)} grafici + 1 report salvati in: {args.output}")
     print(f"{'=' * 60}")
 
 
