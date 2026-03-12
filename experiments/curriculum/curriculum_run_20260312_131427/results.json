@@ -1,0 +1,254 @@
+{
+  "meta": {
+    "experiment_id": "curriculum_run_20260312_131427",
+    "mode": "curriculum",
+    "simulator": "metadrive",
+    "algorithm": "PPO",
+    "seed": 42,
+    "total_timesteps_budget": 500000,
+    "total_timesteps_actual": 500000,
+    "total_episodes": 3000,
+    "wall_clock_seconds": 1569.6,
+    "timestamp": "2026-03-12T13:43:51"
+  },
+  "config": {
+    "ppo": {
+      "learning_rate": 0.0003,
+      "n_steps": 2048,
+      "batch_size": 64,
+      "n_epochs": 10,
+      "gamma": 0.99,
+      "gae_lambda": 0.95,
+      "clip_range": 0.2,
+      "ent_coef": 0.01,
+      "verbose": 0,
+      "device": "cpu"
+    },
+    "levels": {
+      "easy": {
+        "map": "SSS",
+        "traffic_density": 0.05,
+        "num_scenarios": 5,
+        "accident_prob": 0.0,
+        "start_seed": 0
+      },
+      "medium": {
+        "map": "SCSC",
+        "traffic_density": 0.15,
+        "num_scenarios": 10,
+        "accident_prob": 0.1,
+        "start_seed": 0
+      },
+      "hard": {
+        "map": "SCRCSRC",
+        "traffic_density": 0.3,
+        "num_scenarios": 15,
+        "accident_prob": 0.2,
+        "start_seed": 0
+      }
+    },
+    "curriculum": {
+      "promotion_threshold": 0.6,
+      "collision_threshold": 0.3,
+      "min_episodes": 50,
+      "min_timesteps": 200000,
+      "window_size": 50,
+      "replay_ratio": 0.2
+    }
+  },
+  "training_summary": {
+    "cumulative_success_rate": 0.338,
+    "cumulative_collision_rate": 0.12166666666666667,
+    "final_level": "medium",
+    "levels_completed": 1,
+    "total_levels": 3
+  },
+  "level_distribution": {
+    "easy": 500000,
+    "medium": 0,
+    "hard": 0
+  },
+  "timeseries": [
+    {
+      "timestep": 50000,
+      "episode": 318,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.0,
+      "collision_rate": 0.0,
+      "window_success_rate": 0.0,
+      "window_collision_rate": 0.0,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    },
+    {
+      "timestep": 100000,
+      "episode": 511,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.0881,
+      "collision_rate": 0.0039,
+      "window_success_rate": 0.32,
+      "window_collision_rate": 0.04,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    },
+    {
+      "timestep": 150000,
+      "episode": 725,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.1917,
+      "collision_rate": 0.0055,
+      "window_success_rate": 0.72,
+      "window_collision_rate": 0.0,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    },
+    {
+      "timestep": 200000,
+      "episode": 1056,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.2074,
+      "collision_rate": 0.0275,
+      "window_success_rate": 0.26,
+      "window_collision_rate": 0.16,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    },
+    {
+      "timestep": 250000,
+      "episode": 1366,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.2064,
+      "collision_rate": 0.0791,
+      "window_success_rate": 0.12,
+      "window_collision_rate": 0.38,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    },
+    {
+      "timestep": 300000,
+      "episode": 1691,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.2088,
+      "collision_rate": 0.0917,
+      "window_success_rate": 0.34,
+      "window_collision_rate": 0.18,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    },
+    {
+      "timestep": 350000,
+      "episode": 2103,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.2145,
+      "collision_rate": 0.1132,
+      "window_success_rate": 0.16,
+      "window_collision_rate": 0.32,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    },
+    {
+      "timestep": 400000,
+      "episode": 2413,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.2598,
+      "collision_rate": 0.1285,
+      "window_success_rate": 0.58,
+      "window_collision_rate": 0.2,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    },
+    {
+      "timestep": 450000,
+      "episode": 2714,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.3003,
+      "collision_rate": 0.1249,
+      "window_success_rate": 0.52,
+      "window_collision_rate": 0.06,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    },
+    {
+      "timestep": 500000,
+      "episode": 3000,
+      "level": "easy",
+      "is_replay": false,
+      "success_rate": 0.338,
+      "collision_rate": 0.1217,
+      "window_success_rate": 0.76,
+      "window_collision_rate": 0.1,
+      "reward_mean": null,
+      "reward_std": null,
+      "episode_length_mean": null,
+      "path_efficiency_mean": null
+    }
+  ],
+  "evaluation": {
+    "easy": {
+      "success_rate": 0.9,
+      "collision_rate": 0.0,
+      "avg_reward": "231.03",
+      "avg_episode_length": 136.9,
+      "episodes": 50
+    },
+    "medium": {
+      "success_rate": 0.0,
+      "collision_rate": 0.84,
+      "avg_reward": "94.82",
+      "avg_episode_length": 86.1,
+      "episodes": 50
+    },
+    "hard": {
+      "success_rate": 0.0,
+      "collision_rate": 0.46,
+      "avg_reward": "64.89",
+      "avg_episode_length": 71.0,
+      "episodes": 50
+    },
+    "test": {
+      "success_rate": 0.0,
+      "collision_rate": 0.44,
+      "avg_reward": "74.57",
+      "avg_episode_length": 76.1,
+      "episodes": 50
+    }
+  },
+  "curriculum_history": [
+    {
+      "from": "easy",
+      "to": "medium",
+      "episodes_on_level": 3000,
+      "timesteps_on_level": 500000,
+      "success_rate_at_promotion": 0.76,
+      "collision_rate_at_promotion": 0.1,
+      "timestep_at_promotion": 500000
+    }
+  ]
+}
