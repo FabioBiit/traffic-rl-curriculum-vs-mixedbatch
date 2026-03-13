@@ -109,8 +109,8 @@ class ProgressTracker:
 
     def format_time(self, seconds):
         """Formatta secondi in ore:minuti:secondi."""
-        if seconds < 0:
-            return "??:??:??"
+        if seconds <= 0:
+            return "0h00m00s"
         h = int(seconds // 3600)
         m = int((seconds % 3600) // 60)
         s = int(seconds % 60)
@@ -131,8 +131,9 @@ class ProgressTracker:
         if not self.block_times:
             return "??:??:??"
         avg_block_time = sum(self.block_times) / len(self.block_times)
-        remaining_blocks = (self.total_steps - steps_done) / self.block_size
-        eta_seconds = avg_block_time * remaining_blocks
+        remaining_steps = max(0, self.total_steps - steps_done)
+        remaining_blocks = remaining_steps / self.block_size
+        eta_seconds = max(0.0, avg_block_time * remaining_blocks)
         return self.format_time(eta_seconds)
 
     def get_elapsed(self):
@@ -676,19 +677,21 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
 # VALUTAZIONE SU TUTTE LE MAPPE
 # ============================================================
 
-def evaluate_model(model, levels_to_test, n_episodes=None):
+def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode=3000):
     """
     Valuta un modello addestrato su una lista di livelli.
     
     v2.0: n_episodes aumentato a EVAL_EPISODES (50) di default.
+    v2.1: aggiunto cap max_steps_per_episode in eval per evitare stalli.
     
     Args:
         model: modello PPO addestrato
         levels_to_test: lista di nomi livelli
         n_episodes: episodi per livello (default EVAL_EPISODES)
+        max_steps_per_episode: cap di step per episodio in valutazione.
     
     Returns:
-        dizionario con le metriche per ogni livello
+        dizionario con le metriche per ogni livello (anche parziali se interrotto)
     """
     if n_episodes is None:
         n_episodes = EVAL_EPISODES
@@ -701,48 +704,83 @@ def evaluate_model(model, levels_to_test, n_episodes=None):
 
         successes = 0
         collisions = 0
-        total_reward = 0
+        total_reward = 0.0
         total_steps = 0
-
-        obs = env.reset()
+        timeouts = 0
         episodes_done = 0
-        ep_reward = 0
+        ep_reward = 0.0
         ep_steps = 0
 
-        while episodes_done < n_episodes:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step(action)
-            ep_reward += reward[0]
-            ep_steps += 1
+        def build_metrics(episodes_count):
+            denom = max(episodes_count, 1)
+            return {
+                "success_rate": successes / denom,
+                "collision_rate": collisions / denom,
+                "avg_reward": round(total_reward / denom, 2),
+                "avg_episode_length": round(total_steps / denom, 1),
+                "episodes": episodes_count,
+                "timeouts": timeouts,
+            }
 
-            if done[0]:
-                episodes_done += 1
-                total_reward += ep_reward
-                total_steps += ep_steps
-                ep_reward = 0
-                ep_steps = 0
+        try:
+            obs = env.reset()
 
-                episode_info = info[0]
-                success, collision = episode_outcome(episode_info)
-                if success:
-                    successes += 1
-                if collision:
-                    collisions += 1
+            while episodes_done < n_episodes:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, done, info = env.step(action)
+                ep_reward += float(reward[0])
+                ep_steps += 1
 
-        env.close()
+                forced_timeout = (
+                    max_steps_per_episode is not None
+                    and ep_steps >= max_steps_per_episode
+                    and not done[0]
+                )
 
-        results[level] = {
-            "success_rate": successes / n_episodes,
-            "collision_rate": collisions / n_episodes,
-            "avg_reward": round(total_reward / n_episodes, 2),
-            "avg_episode_length": round(total_steps / n_episodes, 1),
-            "episodes": n_episodes,
-        }
+                if done[0] or forced_timeout:
+                    episodes_done += 1
+                    total_reward += ep_reward
+                    total_steps += ep_steps
 
-        print(f"  Success: {results[level]['success_rate']:.1%} | "
+                    if done[0]:
+                        episode_info = info[0]
+                        success, collision = episode_outcome(episode_info)
+                        if success:
+                            successes += 1
+                        if collision:
+                            collisions += 1
+                    else:
+                        timeouts += 1
+                        obs = env.reset()
+
+                    ep_reward = 0.0
+                    ep_steps = 0
+
+        except KeyboardInterrupt:
+            print("\nValutazione interrotta da tastiera. Salvataggio risultati parziali...")
+            if episodes_done > 0:
+                results[level] = build_metrics(episodes_done)
+                results[level]["partial"] = True
+            return results
+        except Exception as e:
+            print(f"ERRORE durante valutazione su {level.upper()}: {e}")
+            import traceback
+            traceback.print_exc()
+            if episodes_done > 0:
+                results[level] = build_metrics(episodes_done)
+                results[level]["partial"] = True
+            return results
+        finally:
+            env.close()
+
+        results[level] = build_metrics(episodes_done)
+        results[level]["partial"] = False
+
+        timeout_note = f" | Timeouts: {results[level]['timeouts']}" if results[level]["timeouts"] > 0 else ""
+        print(f"Success: {results[level]['success_rate']:.1%} | "
               f"Collision: {results[level]['collision_rate']:.1%} | "
               f"Avg Reward: {results[level]['avg_reward']:.1f} | "
-              f"Avg Length: {results[level]['avg_episode_length']:.0f}")
+              f"Avg Length: {results[level]['avg_episode_length']:.0f}{timeout_note}")
 
     return results
 
