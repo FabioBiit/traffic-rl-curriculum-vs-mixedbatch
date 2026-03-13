@@ -1,0 +1,41 @@
+# carla_core/configs/eval.yaml
+evaluation:
+  enabled: true
+  deterministic_policy: true
+  episodes_per_map: 20
+  parallel_envs: 1
+
+scenarios:
+  maps:
+    - "Town03"
+    - "Town05"
+  traffic_profiles:
+    - name: "low"
+      n_vehicles: 20
+      n_pedestrians: 40
+    - name: "medium"
+      n_vehicles: 40
+      n_pedestrians: 80
+    - name: "high"
+      n_vehicles: 70
+      n_pedestrians: 120
+
+limits:
+  max_steps_per_episode: 1500
+  timeout_seconds: 120
+
+metrics:
+  success_rate: true
+  collision_rate: true
+  route_completion: true
+  avg_episode_length: true
+  avg_reward: true
+  infraction_count: true
+  timeout_rate: true
+
+outputs:
+  output_dir: "carla_core/results/eval"
+  save_json: true
+  save_csv: true
+  save_plots: false
+  save_per_episode_trace: false
