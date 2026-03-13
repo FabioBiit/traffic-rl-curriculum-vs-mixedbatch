@@ -15,7 +15,7 @@ Confronta su TensorBoard:
     tensorboard --logdir=experiments/
 
 Confronta risultati:
-    python ./scripts/compare_results.py
+    python ./scripts/compare_results.py --batch experiments\batch\batch_run_XXXX_XXXX\results.json --curriculum experiments\curriculum\curriculum_run_XXXX_XXXX\results.json
 
 Changelog v2.0 (12 Marzo 2026):
 - Curriculum training con replay mechanism (revisione livelli precedenti)

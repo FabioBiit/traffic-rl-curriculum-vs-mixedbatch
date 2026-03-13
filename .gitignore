@@ -50,8 +50,8 @@ wandb/
 *.pkl
 
 # Plots/output derivati
-results/plots_*/
-results/**/*.png
+# results/plots_*/
+# results/**/*.png
 
 # Documentazione
 docs/
