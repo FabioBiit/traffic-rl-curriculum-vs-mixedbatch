@@ -5,7 +5,7 @@ Gestisce la creazione di ambienti MetaDrive per livelli diversi.
 Non e' un wrapper Gym — e' un factory + tracker, perche MetaDrive
 (Panda3D) non supporta istanze multiple simultanee.
 
-Usato da training/train_experiment.py per batch e curriculum.
+Usato da metadrive_prototype/training/train_experiment.py per batch e curriculum.
 
 Changelog v2.0 (12 Marzo 2026):
 - CurriculumManager: aggiunto replay mechanism (revisione livelli precedenti)

@@ -28,6 +28,20 @@ experiments/**/best_model/
 experiments/**/PPO_*/
 experiments/**/events.out.tfevents.*
 experiments/**/final_model.zip
+metadrive_prototype/experiments/**/run_*
+metadrive_prototype/experiments/**/*_run_*
+metadrive_prototype/experiments/**/checkpoints/
+metadrive_prototype/experiments/**/best_model/
+metadrive_prototype/experiments/**/PPO_*/
+metadrive_prototype/experiments/**/events.out.tfevents.*
+metadrive_prototype/experiments/**/final_model.zip
+carla_core/experiments/**/run_*
+carla_core/experiments/**/*_run_*
+carla_core/experiments/**/checkpoints/
+carla_core/experiments/**/best_model/
+carla_core/experiments/**/PPO_*/
+carla_core/experiments/**/events.out.tfevents.*
+carla_core/experiments/**/final_model.zip
 
 # CARLA
 *.log

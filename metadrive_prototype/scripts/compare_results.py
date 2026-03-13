@@ -9,9 +9,9 @@ che verra' riusato anche per la fase CARLA (cambia solo
 meta.simulator e meta.algorithm nei JSON).
 
 Esegui con:
-    python ./scripts/compare_results.py --batch experiments/<batch_dir>/results.json --curriculum experiments/<curriculum_dir>/results.json
+    python ./metadrive_prototype/scripts/compare_results.py --batch metadrive_prototype/experiments/<batch_dir>/results.json --curriculum metadrive_prototype/experiments/<curriculum_dir>/results.json
 
-    python ./scripts/compare_results.py --batch experiments/<batch_dir>/results.json --curriculum experiments/<curriculum_dir>/results.json --output results/plots/my_comparison
+    python ./metadrive_prototype/scripts/compare_results.py --batch metadrive_prototype/experiments/<batch_dir>/results.json --curriculum metadrive_prototype/experiments/<curriculum_dir>/results.json --output metadrive_prototype/results/plots/my_comparison
 
 Output:
     - <output_dir>/01_success_rate_over_time.png
@@ -32,6 +32,9 @@ import matplotlib
 matplotlib.use("Agg")  # Backend non-interattivo per salvare PNG senza display
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "results", "plots")
 
 
 # ============================================================
@@ -476,18 +479,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempio:
-    python scripts/compare_results.py \\
-        --batch experiments/batch_run_20260311/results.json \\
-        --curriculum experiments/curriculum_run_20260311/results.json \\
-        --output results/plots/comparison_v1
+    python metadrive_prototype/scripts/compare_results.py \\
+        --batch metadrive_prototype/experiments/batch/batch_run_20260311/results.json \\
+        --curriculum metadrive_prototype/experiments/curriculum/curriculum_run_20260311/results.json \\
+        --output metadrive_prototype/results/plots/comparison_v1
         """
     )
     parser.add_argument("--batch", type=str, required=True,
                         help="Path al results.json del training Batch")
     parser.add_argument("--curriculum", type=str, required=True,
                         help="Path al results.json del training Curriculum")
-    parser.add_argument("--output", type=str, default="results/plots",
-                        help="Directory di output per i grafici (default: results/plots)")
+    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_DIR,
+                        help="Directory di output per i grafici (default: metadrive_prototype/results/plots)")
     parser.add_argument("--strict-status", action="store_true",
                         help="Se attivo, fallisce quando meta.status e' mancante o != COMPLETATO")
     args = parser.parse_args()

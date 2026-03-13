@@ -4,18 +4,18 @@ Settimana 2 - Esperimento Curriculum vs Batch su MetaDrive
 Lancia i due approcci di training e salva i risultati per il confronto.
 
 Esegui con:
-    python ./training/train_experiment.py --mode batch
-    python ./training/train_experiment.py --mode curriculum
-    python ./training/train_experiment.py --mode both
+    python ./metadrive_prototype/training/train_experiment.py --mode batch
+    python ./metadrive_prototype/training/train_experiment.py --mode curriculum
+    python ./metadrive_prototype/training/train_experiment.py --mode both
 
 Quick validation (500K step per verificare che il curriculum funzioni):
-    python ./training/train_experiment.py --mode curriculum --timesteps 500000
+    python ./metadrive_prototype/training/train_experiment.py --mode curriculum --timesteps 500000
 
 Confronta su TensorBoard:
-    tensorboard --logdir=experiments/
+    tensorboard --logdir=metadrive_prototype/experiments/
 
 Confronta risultati:
-    python ./scripts/compare_results.py --batch experiments\batch\batch_run_XXXX_XXXX\results.json --curriculum experiments\curriculum\curriculum_run_XXXX_XXXX\results.json
+    python ./metadrive_prototype/scripts/compare_results.py --batch metadrive_prototype/experiments/batch/batch_run_XXXX_XXXX/results.json --curriculum metadrive_prototype/experiments/curriculum/curriculum_run_XXXX_XXXX/results.json
 
 Changelog v2.0 (12 Marzo 2026):
 - Curriculum training con replay mechanism (revisione livelli precedenti)
@@ -46,6 +46,10 @@ from stable_baselines3.common.callbacks import BaseCallback
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+EXPERIMENTS_DIR = os.path.join(PROJECT_ROOT, "experiments")
+EXPERIMENTS_DIR_HINT = "metadrive_prototype/experiments"
+COMPARE_SCRIPT_HINT = "metadrive_prototype/scripts/compare_results.py"
 
 from envs.multi_level_env import (
     create_env,
@@ -1012,7 +1016,7 @@ if __name__ == "__main__":
     if args.eval_episodes:
         EVAL_EPISODES = args.eval_episodes
 
-    run_dir = "experiments"
+    run_dir = EXPERIMENTS_DIR
 
     if args.mode == "both":
         print("\n" + "#" * 60)
@@ -1094,5 +1098,5 @@ if __name__ == "__main__":
         run_experiment(args.mode, run_dir, allow_eval_on_incomplete=args.eval_on_incomplete)
 
     print("\n\nProssimi step:")
-    print("1. TensorBoard: tensorboard --logdir=experiments/")
-    print("2. Confronto dettagliato: python ./scripts/compare_results.py")
+    print(f"1. TensorBoard: tensorboard --logdir={EXPERIMENTS_DIR_HINT}")
+    print(f"2. Confronto dettagliato: python ./{COMPARE_SCRIPT_HINT}")

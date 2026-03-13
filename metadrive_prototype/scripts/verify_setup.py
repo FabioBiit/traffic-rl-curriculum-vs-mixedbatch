@@ -1,6 +1,6 @@
 """
 Verifica Setup - Controlla che tutte le dipendenze siano installate.
-Esegui con: python scripts/verify_setup.py
+Esegui con: python metadrive_prototype/scripts/verify_setup.py
 """
 
 import sys
@@ -55,7 +55,7 @@ def main():
     if all_ok:
         print("[OK] Setup base completato! Puoi procedere.")
         print("\nProssimo step:")
-        print("  python training/train_experiment.py --mode curriculum --timesteps 500000")
+        print("  python metadrive_prototype/training/train_experiment.py --mode curriculum --timesteps 500000")
     else:
         print("[!!] Alcune dipendenze mancano. Rivedi l'installazione.")
     print("=" * 60)
