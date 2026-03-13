@@ -1,70 +1,74 @@
 # traffic-rl-curriculum-vs-mixedbatch
-This repository contains a thesis project on RL for mixed urban traffic (vehicles + pedestrians). It compares mixed-batch training vs curriculum learning (easy→medium→hard) using vector observations, measuring collision rate, success rate, path efficiency, and convergence speed.
+Thesis repository on RL for mixed urban traffic (vehicles + pedestrians), with experimental comparison between mixed-batch training and curriculum learning.
 
-# MARL Collision Avoidance & Pathfinding in Simulated Urban Environments
-
-## Thesis Project — 2026
+## MARL Collision Avoidance And Pathfinding In Simulated Urban Environments
+### Thesis Project - 2026
 
 ### Overview
-Multi-Agent Reinforcement Learning (MAPPO) for collision avoidance and pathfinding
-in 3D urban environments with vehicles and pedestrians.
+The long-term target is MAPPO on CARLA.
+MetaDrive is used as prototype phase to validate training loop, metrics, and experiment protocol.
 
-**Research Question:** Does Curriculum Learning (easy→medium→hard) outperform
-Batch Training (all maps simultaneously) for multi-agent navigation in mixed
-vehicle-pedestrian urban scenarios?
+Research question:
+Does curriculum learning (easy -> medium -> hard) outperform mixed-batch training for urban navigation tasks?
 
 ### Architecture
-- **Algorithm:** MAPPO (Multi-Agent PPO) with centralized critic
-- **Policies:** Separate `vehicle_policy` and `pedestrian_policy`
-- **Policy Network:** MLP baseline → Attention mechanism (conditional on gate G4)
-- **Simulator:** CARLA (prototyping on MetaDrive)
-- **Framework:** RLlib (Ray) — Plan B: PettingZoo + SB3
+- Algorithm target: MAPPO (centralized critic) for CARLA phase
+- Prototype algorithm: PPO on MetaDrive
+- Simulator target: CARLA
+- Prototype simulator: MetaDrive
+- Framework target: RLlib (Ray), with alternatives if needed
 
-### Project Structure
-```
+### Current Project Structure
+```text
 traffic-rl-curriculum-vs-mixedbatch/
-├── envs/                    # Environment wrappers
-│   ├── metadrive_env.py     # MetaDrive wrapper (prototyping)
-│   └── carla_env.py         # CARLA multi-agent wrapper
-├── agents/                  # Neural network architectures
-│   ├── mlp_policy.py        # MLP baseline policy
-│   └── attention_policy.py  # Attention mechanism (gate G4)
-├── training/                # Training scripts
-│   ├── train_metadrive.py   # MetaDrive PPO training
-│   ├── train_carla_single.py # CARLA single-agent
-│   └── train_carla_mappo.py # CARLA multi-agent MAPPO
-├── evaluation/              # Evaluation & metrics
-│   ├── metrics.py           # Collision rate, success rate, etc.
-│   └── plotting.py          # Visualization scripts
-├── experiments/             # Experiment results & configs
-│   ├── curriculum/          # Curriculum learning runs
-│   └── batch/               # Batch training runs
-├── configs/                 # YAML configuration files
-│   ├── metadrive_config.yaml
-│   └── carla_mappo_config.yaml
-├── docs/                    # Documentation
-│   ├── paper_notes/         # Structured notes per paper
-│   └── setup_guide.md       # Installation guide
-├── scripts/                 # Utility scripts
-├── requirements.txt
-└── README.md
+|-- metadrive_prototype/
+|   |-- agents/                # Prototype agents package
+|   |-- envs/                  # MetaDrive env factory and curriculum manager
+|   |-- training/              # train_experiment.py (batch vs curriculum)
+|   |-- scripts/               # compare_results.py, verify_setup.py
+|   |-- evaluation/            # Placeholder package (prototype)
+|   |-- experiments/           # Batch/Curriculum run outputs
+|   `-- results/               # Plots and comparison artifacts
+|-- carla_core/
+|   |-- agents/                # CARLA policies (to implement)
+|   |-- envs/                  # CARLA Gymnasium wrapper (to implement)
+|   |-- training/              # CARLA train entrypoints (to implement)
+|   |-- evaluation/            # CARLA metrics and eval (to implement)
+|   |-- scripts/               # Utility scripts (to implement)
+|   |-- configs/               # YAML configs (CARLA only)
+|   |-- experiments/           # CARLA run outputs
+|   `-- results/               # CARLA plots and tables
+|-- configs/                   # Shared or global configs (if needed)
+|-- DOCS/                      # Thesis docs and notes
+|-- requirements.txt
+`-- README.md
+```
+
+### MetaDrive Prototype Commands
+```bash
+python ./metadrive_prototype/scripts/verify_setup.py
+python ./metadrive_prototype/training/train_experiment.py --mode both --timesteps 1500000
+python ./metadrive_prototype/scripts/compare_results.py \
+  --batch metadrive_prototype/experiments/batch/<run>/results.json \
+  --curriculum metadrive_prototype/experiments/curriculum/<run>/results.json \
+  --output metadrive_prototype/results/plots/<name>
 ```
 
 ### Gate Decisions
-| Gate | Date       | Question                          | Pass → | Fail →              |
-|------|------------|-----------------------------------|--------|----------------------|
-| G1   | 31 Mar     | RL loop works? CARLA installed?   | April  | Fix setup            |
-| G2   | 30 Apr     | RLlib + CARLA communicate?        | May    | Switch to PettingZoo |
-| G3   | 31 May     | Multi-agent trains without crash? | Scale  | Reduce to 1+1 RL    |
-| G4   | 30 Jun     | MAPPO+MLP converges on 2 maps?   | Add Attention | Stabilize     |
-| G5   | 31 Jul     | Attention works on 3 maps?        | Freeze (+GNN?) | Freeze       |
-| G6   | 31 Aug     | All experiments done?             | Write  | Complete by Sep 7    |
+| Gate | Date   | Question                           | Pass ->         | Fail ->              |
+|------|--------|------------------------------------|-----------------|----------------------|
+| G1   | 31 Mar | RL loop works? CARLA installed?   | Start CARLA dev | Fix setup/runtime    |
+| G2   | 30 Apr | RLlib + CARLA communicate?        | Continue RLlib  | Switch to PettingZoo |
+| G3   | 31 May | Multi-agent trains without crash? | Scale scenarios | Reduce scope         |
+| G4   | 30 Jun | MAPPO + MLP converges on 2 maps?  | Add attention   | Stabilize baseline   |
+| G5   | 31 Jul | Attention works on 3 maps?        | Freeze design   | Freeze baseline      |
+| G6   | 31 Aug | All experiments completed?        | Start writing   | Complete by Sep 7    |
 
 ### Timeline
-- **March:** Research + MetaDrive prototyping
-- **April:** CARLA wrapper + single agent
-- **May:** Multi-agent MAPPO
-- **June-July:** Scaling + experiments (+ exams)
-- **August:** Full experiments
-- **September:** Thesis writing (+ AI exam)
-- **1-9 October:** Final revision → **SUBMIT**
+- March: Research and MetaDrive prototyping
+- April: CARLA wrapper and single-agent baseline
+- May: Multi-agent MAPPO loop
+- June-July: Scaling and experiments
+- August: Full experiments
+- September: Thesis writing
+- October 1-9: Final revision and submission
