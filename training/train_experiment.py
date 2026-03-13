@@ -37,6 +37,7 @@ import random
 import argparse
 import numpy as np
 from datetime import datetime
+from tqdm import tqdm
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
@@ -86,6 +87,8 @@ CURRICULUM_CONFIG = {
     "replay_ratio": 0.2,           # v2.0: nuovo — 20% blocchi dedicati a revisione
 }
 
+# Cap valutazione per evitare stalli (v2.1)
+MAX_CAP = 3000  # max step per episodio in valutazione
 
 # ============================================================
 # PROGRESS TRACKER — Tempo trascorso, ETA, stato globale
@@ -677,7 +680,7 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
 # VALUTAZIONE SU TUTTE LE MAPPE
 # ============================================================
 
-def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode=3000):
+def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode=MAX_CAP, heartbeat_interval=200):
     """
     Valuta un modello addestrato su una lista di livelli.
     
@@ -689,6 +692,7 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
         levels_to_test: lista di nomi livelli
         n_episodes: episodi per livello (default EVAL_EPISODES)
         max_steps_per_episode: cap di step per episodio in valutazione.
+        heartbeat_interval: ogni quanti step stampare heartbeat intra-episodio.
     
     Returns:
         dizionario con le metriche per ogni livello (anche parziali se interrotto)
@@ -722,7 +726,14 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
                 "timeouts": timeouts,
             }
 
+        pbar = None
         try:
+            pbar = tqdm(
+                total=n_episodes,
+                desc=f"Eval {level.upper()}",
+                unit="ep",
+                leave=True,
+            )
             obs = env.reset()
 
             while episodes_done < n_episodes:
@@ -730,6 +741,12 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
                 obs, reward, done, info = env.step(action)
                 ep_reward += float(reward[0])
                 ep_steps += 1
+
+                if heartbeat_interval and ep_steps % heartbeat_interval == 0:
+                    tqdm.write(
+                        f"[EVAL {level.upper()}] Ep {episodes_done + 1}/{n_episodes} "
+                        f"step {ep_steps}..."
+                    )
 
                 forced_timeout = (
                     max_steps_per_episode is not None
@@ -739,6 +756,7 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
 
                 if done[0] or forced_timeout:
                     episodes_done += 1
+                    pbar.update(1)
                     total_reward += ep_reward
                     total_steps += ep_steps
 
@@ -771,6 +789,8 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
                 results[level]["partial"] = True
             return results
         finally:
+            if pbar is not None:
+                pbar.close()
             env.close()
 
         results[level] = build_metrics(episodes_done)
