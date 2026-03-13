@@ -1,0 +1,6 @@
+CONFRONTO LIVELLI DI DIFFICOLTA
+Timesteps per livello: 500000
+
+easy: success=33.9%, collision=10.6%, episodes=2654
+medium: success=1.7%, collision=41.4%, episodes=2575
+hard: success=0.0%, collision=58.3%, episodes=3640
