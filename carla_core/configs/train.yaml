@@ -1,46 +1,49 @@
-# carla_core/configs/train.yaml
+# Training configuration for CARLA RL runs.
+# This file controls experiment metadata, algorithm settings, compute resources,
+# optimization hyperparameters, scheduling, and logging behavior.
+
 experiment:
-  name: "carla_g1_smoke"
-  output_dir: "carla_core/experiments"
-  seed: 42
-  device: "cuda"                # cpu | cuda
+  name: "carla_g1_smoke"        # Human-readable experiment/run name.
+  output_dir: "carla_core/experiments"  # Directory where checkpoints/logs are saved.
+  seed: 42                      # Global random seed for reproducibility.
+  device: "cuda"                # cpu | cuda execution device.
 
 algorithm:
-  name: "ppo"                   # ppo | mappo (future)
-  framework: "rllib"
+  name: "ppo"                   # ppo | mappo (future).
+  framework: "rllib"            # RL backend implementation.
 
 resources:
-  num_workers: 1
-  num_gpus: 1
-  num_envs_per_worker: 1
-  num_cpus_for_driver: 1
+  num_workers: 1                # Number of rollout workers.
+  num_gpus: 1                   # Number of GPUs reserved for training.
+  num_envs_per_worker: 1        # Parallel environments per worker.
+  num_cpus_for_driver: 1        # CPUs reserved for the driver process.
 
 rollout:
-  rollout_fragment_length: 200
-  train_batch_size: 4000
-  sgd_minibatch_size: 256
-  num_sgd_iter: 10
+  rollout_fragment_length: 200  # Steps collected per rollout fragment.
+  train_batch_size: 4000        # Total batch size per optimization round.
+  sgd_minibatch_size: 256       # Mini-batch size used in gradient updates.
+  num_sgd_iter: 10              # Number of SGD passes per train batch.
 
 optimization:
-  lr: 0.0003
-  gamma: 0.99
-  gae_lambda: 0.95
-  clip_param: 0.2
-  entropy_coeff: 0.01
-  vf_loss_coeff: 0.5
-  grad_clip: 0.5
+  lr: 0.0003                    # Learning rate.
+  gamma: 0.99                   # Discount factor for future rewards.
+  gae_lambda: 0.95              # GAE lambda parameter.
+  clip_param: 0.2               # PPO clipping parameter.
+  entropy_coeff: 0.01           # Entropy bonus coefficient (exploration).
+  vf_loss_coeff: 0.5            # Value-function loss coefficient.
+  grad_clip: 0.5                # Gradient clipping threshold.
 
 schedule:
-  total_timesteps: 200000
-  checkpoint_freq: 20000
-  eval_freq: 10000
-  stop_on_nan: true
+  total_timesteps: 200000       # Total training budget in timesteps.
+  checkpoint_freq: 20000        # Save checkpoint every N timesteps.
+  eval_freq: 10000              # Run evaluation every N timesteps.
+  stop_on_nan: true             # Stop training if NaN/inf is detected.
 
 logging:
-  tensorboard: true
-  wandb: false
-  log_level: "INFO"
+  tensorboard: true             # Enable TensorBoard logging.
+  wandb: false                  # Enable Weights & Biases logging.
+  log_level: "INFO"             # Runtime log verbosity.
 
 reproducibility:
-  deterministic_cudnn: false
-  torch_deterministic_algorithms: false
+  deterministic_cudnn: false    # Enable deterministic CuDNN ops (slower).
+  torch_deterministic_algorithms: false  # Force deterministic Torch algorithms.

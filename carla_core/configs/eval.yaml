@@ -1,41 +1,44 @@
-# carla_core/configs/eval.yaml
+# Evaluation configuration for CARLA models.
+# This file controls evaluation protocol, scenarios, metric collection,
+# runtime limits, and output artifacts.
+
 evaluation:
-  enabled: true
-  deterministic_policy: true
-  episodes_per_map: 20
-  parallel_envs: 1
+  enabled: true                 # Enable evaluation stage.
+  deterministic_policy: true    # Use deterministic actions (no exploration noise).
+  episodes_per_map: 20          # Number of episodes evaluated per map/profile.
+  parallel_envs: 1              # Number of evaluation environments in parallel.
 
 scenarios:
   maps:
-    - "Town03"
-    - "Town05"
+    - "Town03"                  # Evaluation map 1.
+    - "Town05"                  # Evaluation map 2.
   traffic_profiles:
-    - name: "low"
-      n_vehicles: 20
-      n_pedestrians: 40
-    - name: "medium"
+    - name: "low"               # Low traffic profile.
+      n_vehicles: 20            # Number of NPC vehicles in this profile.
+      n_pedestrians: 40         # Number of pedestrians in this profile.
+    - name: "medium"            # Medium traffic profile.
       n_vehicles: 40
       n_pedestrians: 80
-    - name: "high"
+    - name: "high"              # High traffic profile.
       n_vehicles: 70
       n_pedestrians: 120
 
 limits:
-  max_steps_per_episode: 1500
-  timeout_seconds: 120
+  max_steps_per_episode: 1500   # Hard cap to prevent very long episodes.
+  timeout_seconds: 120          # Max wall-clock seconds per eval task.
 
 metrics:
-  success_rate: true
-  collision_rate: true
-  route_completion: true
-  avg_episode_length: true
-  avg_reward: true
-  infraction_count: true
-  timeout_rate: true
+  success_rate: true            # Track successful route completion rate.
+  collision_rate: true          # Track collision frequency.
+  route_completion: true        # Track route completion percentage.
+  avg_episode_length: true      # Track average episode duration (steps).
+  avg_reward: true              # Track average reward per episode.
+  infraction_count: true        # Track infractions (traffic violations if available).
+  timeout_rate: true            # Track episodes ending by timeout/cap.
 
 outputs:
-  output_dir: "carla_core/results/eval"
-  save_json: true
-  save_csv: true
-  save_plots: false
-  save_per_episode_trace: false
+  output_dir: "carla_core/results/eval"  # Directory for evaluation artifacts.
+  save_json: true               # Save summary in JSON format.
+  save_csv: true                # Save tabular metrics in CSV format.
+  save_plots: false             # Save plots/charts automatically.
+  save_per_episode_trace: false # Save detailed per-episode traces.
