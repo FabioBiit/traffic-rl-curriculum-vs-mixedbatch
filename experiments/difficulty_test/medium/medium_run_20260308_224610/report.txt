@@ -1,7 +1,0 @@
-Level: medium
-Map: SCSC
-Traffic: 0.15
-Episodi: 2575
-Success rate: 1.7%
-Collision rate: 41.4%
-Timesteps: 500000

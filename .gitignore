@@ -53,5 +53,8 @@ wandb/
 # results/plots_*/
 # results/**/*.png
 
+# Difficulty test
+difficulty_test/
+
 # Documentazione
 docs/
