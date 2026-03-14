@@ -64,8 +64,8 @@ wandb/
 *.pkl
 
 # Plots/output derivati
-# results/plots_*/
-# results/**/*.png
+metadrive_prototype/results/plots_*/
+metadrive_prototype/results/**/*.png
 
 # Difficulty test
 difficulty_test/
