@@ -88,7 +88,7 @@ CURRICULUM_CONFIG = {
     "min_episodes": 50,
     "min_timesteps": 200_000,        # v2.0: nuovo — minimo 200K step per livello
     "window_size": 50,
-    "replay_ratio": 0.2,             # v2.0: nuovo — 20% blocchi dedicati a revisione
+    "replay_ratio": 0.2,             # v2.0: 0.0 Per spegnere replay, 0.2 per 20% blocchi di revisione # 0.0 Per TEST ON vs OFF
     "max_blocks_without_replay": 2,  # v2.1: forzatura replay anti-forgetting
 }
 
