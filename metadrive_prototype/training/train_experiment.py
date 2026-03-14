@@ -83,12 +83,13 @@ PPO_CONFIG = {**PPO_CONFIG_BASE, "verbose": 0, "device": DEVICE}
 
 # Curriculum — soglie di promozione v2.0
 CURRICULUM_CONFIG = {
-    "promotion_threshold": 0.6,     # v2.0: alzata da 0.3 a 0.6
-    "collision_threshold": 0.3,     # v2.0: nuovo — max collision rate per promuovere
+    "promotion_threshold": 0.6,      # v2.0: alzata da 0.3 a 0.6
+    "collision_threshold": 0.3,      # v2.0: nuovo — max collision rate per promuovere
     "min_episodes": 50,
-    "min_timesteps": 200_000,       # v2.0: nuovo — minimo 200K step per livello
+    "min_timesteps": 200_000,        # v2.0: nuovo — minimo 200K step per livello
     "window_size": 50,
-    "replay_ratio": 0.2,           # v2.0: nuovo — 20% blocchi dedicati a revisione
+    "replay_ratio": 0.2,             # v2.0: nuovo — 20% blocchi dedicati a revisione
+    "max_blocks_without_replay": 2,  # v2.1: forzatura replay anti-forgetting
 }
 
 # Cap valutazione per evitare stalli (v2.1)
@@ -500,6 +501,10 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
     print(f"Min timesteps/livello: {curriculum_config['min_timesteps']:,}")
     print(f"Min episodi/livello: {curriculum_config['min_episodes']}")
     print(f"Replay ratio: {curriculum_config['replay_ratio']:.0%}")
+    print(
+        "Max blocchi senza replay: "
+        f"{curriculum_config.get('max_blocks_without_replay', 2)}"
+    )
     print("=" * 60)
 
     global_tracker = EpisodeTracker(window_size=curriculum_config["window_size"])
@@ -510,6 +515,7 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
         min_episodes=curriculum_config["min_episodes"],
         min_timesteps=curriculum_config["min_timesteps"],
         replay_ratio=curriculum_config["replay_ratio"],
+        max_blocks_without_replay=curriculum_config.get("max_blocks_without_replay", 2),
         window_size=curriculum_config["window_size"],
     )
 
@@ -897,7 +903,8 @@ def save_results(run_dir, mode, train_summary, eval_results, config, training_st
             f.write(f"Promotion threshold: {curriculum.get('promotion_threshold', 'N/A')}\n")
             f.write(f"Collision threshold: {curriculum.get('collision_threshold', 'N/A')}\n")
             f.write(f"Min timesteps: {curriculum.get('min_timesteps', 'N/A')}\n")
-            f.write(f"Replay ratio: {curriculum.get('replay_ratio', 'N/A')}\n\n")
+            f.write(f"Replay ratio: {curriculum.get('replay_ratio', 'N/A')}\n")
+            f.write(f"Max blocchi senza replay: {curriculum.get('max_blocks_without_replay', 'N/A')}\n\n")
             f.write("Level distribution (timesteps):\n")
             for lv, steps in train_summary.get(
                 "level_distribution_timesteps", train_summary.get("level_distribution", {})

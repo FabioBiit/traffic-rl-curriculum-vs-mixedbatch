@@ -16,6 +16,7 @@ Changelog v2.0 (12 Marzo 2026):
 - EpisodeTracker: aggiunta window_collision_rate nel check promozione
 """
 
+import random
 from copy import deepcopy
 from collections import deque
 
@@ -268,7 +269,8 @@ class CurriculumManager:
         collision_threshold: collision rate massimo per promuovere (default 0.3)
         min_episodes: episodi minimi sul livello prima di valutare promozione
         min_timesteps: timesteps minimi sul livello prima di valutare promozione
-        replay_ratio: frazione di blocchi da dedicare a livelli precedenti (0.0-1.0)
+        replay_ratio: probabilita' di replay per blocco dopo la prima promozione
+        max_blocks_without_replay: numero massimo di blocchi consecutivi senza replay
         window_size: dimensione finestra mobile per EpisodeTracker
     """
 
@@ -280,6 +282,7 @@ class CurriculumManager:
         min_episodes=50,
         min_timesteps=200_000,
         replay_ratio=0.2,
+        max_blocks_without_replay=2,
         window_size=50,
     ):
         self.levels = levels or ["easy", "medium", "hard"]
@@ -288,11 +291,15 @@ class CurriculumManager:
         self.min_episodes = min_episodes
         self.min_timesteps = min_timesteps
         self.replay_ratio = replay_ratio
+        self.max_blocks_without_replay = max(0, int(max_blocks_without_replay))
         self.window_size = window_size
         self.current_index = 0
         self.promotion_history = []
-        # v2.0: contatore per gestire il replay
-        self._block_counter = 0
+        # Contatori replay:
+        # - _blocks_since_replay: blocchi consecutivi senza replay
+        # - _replay_cursor: round-robin sui livelli completati
+        self._blocks_since_replay = 0
+        self._replay_cursor = 0
 
     @property
     def current_level(self):
@@ -319,23 +326,24 @@ class CurriculumManager:
             str: nome del livello per il prossimo blocco
             bool: True se questo e' un blocco di replay
         """
-        self._block_counter += 1
-
         # Se siamo al primo livello, niente replay possibile
         if self.current_index == 0 or self.replay_ratio <= 0:
             return self.current_level, False
 
-        # Replay: ogni N blocchi, ne dedichiamo uno a un livello precedente
-        # Esempio: replay_ratio=0.2 -> 1 blocco su 5 e' replay
-        replay_interval = max(1, int(1.0 / self.replay_ratio))
+        completed = self.completed_levels
+        if not completed:
+            return self.current_level, False
 
-        if self._block_counter % replay_interval == 0:
-            # Scegli un livello precedente (round-robin)
-            completed = self.completed_levels
-            replay_index = (self._block_counter // replay_interval) % len(completed)
-            replay_level = completed[replay_index]
+        should_force_replay = self._blocks_since_replay >= self.max_blocks_without_replay
+        should_sample_replay = random.random() < self.replay_ratio
+
+        if should_force_replay or should_sample_replay:
+            replay_level = completed[self._replay_cursor % len(completed)]
+            self._replay_cursor += 1
+            self._blocks_since_replay = 0
             return replay_level, True
 
+        self._blocks_since_replay += 1
         return self.current_level, False
 
     def should_promote(self, tracker):
@@ -393,6 +401,7 @@ class CurriculumManager:
             "timestep_at_promotion": global_timestep
         })
         self.current_index += 1
+        self._blocks_since_replay = 0
         tracker.reset()  # Resetta la finestra per il nuovo livello
         return self.current_level
 
@@ -429,5 +438,6 @@ class CurriculumManager:
             "min_episodes": self.min_episodes,
             "min_timesteps": self.min_timesteps,
             "replay_ratio": self.replay_ratio,
+            "max_blocks_without_replay": self.max_blocks_without_replay,
             "promotion_history": self.promotion_history,
         }
