@@ -21,6 +21,7 @@ venv*/
 Thumbs.db
 
 # Experiments (risultati troppo grandi per git)
+experiments/
 experiments/**/run_*
 experiments/**/*_run_*
 experiments/**/checkpoints/

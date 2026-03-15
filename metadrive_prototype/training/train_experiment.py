@@ -72,7 +72,9 @@ TOTAL_TIMESTEPS = 1_500_000
 
 # Dimensione di ogni blocco di training
 # Tra un blocco e l'altro possiamo cambiare ambiente
-BLOCK_SIZE = 50_000
+
+# FINETUNING RUN 1
+BLOCK_SIZE = 25_000 # 50_000 -> 25_000
 
 # Episodi per la valutazione finale
 # v2.0: aumentato da 20 a 50 per affidabilita' statistica
@@ -81,15 +83,16 @@ EVAL_EPISODES = 50
 # PPO — identico per batch e curriculum (variabile sperimentale isolata)
 PPO_CONFIG = {**PPO_CONFIG_BASE, "verbose": 0, "device": DEVICE}
 
-# Curriculum — soglie di promozione v2.0
+# FINETUNING RUN 1 + RUN 2 + RUN 3
+# Curriculum v2.0
 CURRICULUM_CONFIG = {
-    "promotion_threshold": 0.6,      # v2.0: alzata da 0.3 a 0.6
-    "collision_threshold": 0.3,      # v2.0: nuovo — max collision rate per promuovere
+    "promotion_threshold": 0.55,    # 0.6 -> 0.55
+    "collision_threshold": 0.35,    # 0.3 -> 0.35
     "min_episodes": 50,
-    "min_timesteps": 200_000,        # v2.0: nuovo — minimo 200K step per livello
+    "min_timesteps": 150_000,       # 200_000 -> 150_000
     "window_size": 50,
-    "replay_ratio": 0.2,             # v2.0: 0.0 Per spegnere replay, 0.2 per 20% blocchi di revisione # 0.0 Per TEST ON vs OFF
-    "max_blocks_without_replay": 2,  # v2.1: forzatura replay anti-forgetting
+    "replay_ratio": 0.10,           # 0.20 -> 0.10 # 0.0 Per spegnere replay, 0.2 per 20% blocchi di revisione # 0.0 Per TEST ON vs OFF
+    "max_blocks_without_replay": 4  # 2 -> 4 # v2.1: forzatura replay anti-forgetting
 }
 
 # Cap valutazione per evitare stalli (v2.1)

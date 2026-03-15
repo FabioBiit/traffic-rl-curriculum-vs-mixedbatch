@@ -21,25 +21,24 @@ Does curriculum learning (easy -> medium -> hard) outperform mixed-batch trainin
 ### Current Project Structure
 ```text
 traffic-rl-curriculum-vs-mixedbatch/
-|-- metadrive_prototype/
-|   |-- agents/                # Prototype agents package
+|-- metadrive_prototype/ (prototype)
 |   |-- envs/                  # MetaDrive env factory and curriculum manager
 |   |-- training/              # train_experiment.py (batch vs curriculum)
 |   |-- scripts/               # compare_results.py, verify_setup.py
-|   |-- evaluation/            # Placeholder package (prototype)
+|   |-- evaluation/            # Placeholder package
 |   |-- experiments/           # Batch/Curriculum run outputs
 |   `-- results/               # Plots and comparison artifacts
-|-- carla_core/
-|   |-- agents/                # CARLA policies (to implement)
-|   |-- envs/                  # CARLA Gymnasium wrapper (to implement)
-|   |-- training/              # CARLA train entrypoints (to implement)
-|   |-- evaluation/            # CARLA metrics and eval (to implement)
-|   |-- scripts/               # Utility scripts (to implement)
+|-- carla_core/ (main project)
+|   |-- agents/                # CARLA policies
 |   |-- configs/               # YAML configs (CARLA only)
-|   |-- experiments/           # CARLA run outputs
-|   `-- results/               # CARLA plots and tables
-|-- configs/                   # Shared or global configs (if needed)
-|-- DOCS/                      # Thesis docs and notes
+|   |-- envs/                  # CARLA Gymnasium wrapper
+|   |-- evaluation/            # CARLA metrics and eval
+|   |-- experiments/           # CARLA run outputs (batch vs curriculum)
+|   |-- results/               # CARLA plots and tables
+|   |-- scripts/               # Utility scripts
+|   `-- training/              # CARLA train entrypoints
+
+|-- DOCS/                      # Thesis docs and notes (Not Committed)
 |-- requirements.txt
 `-- README.md
 ```
