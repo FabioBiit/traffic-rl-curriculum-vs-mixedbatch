@@ -272,6 +272,7 @@ class CurriculumManager:
         min_timesteps: timesteps minimi sul livello prima di valutare promozione
         replay_ratio: probabilita' di replay per blocco dopo la prima promozione
         max_blocks_without_replay: numero massimo di blocchi consecutivi senza replay
+        level_criteria: criteri specifici per livello corrente (override opzionale)
         window_size: dimensione finestra mobile per EpisodeTracker
     """
 
@@ -284,6 +285,7 @@ class CurriculumManager:
         min_timesteps=200_000,
         replay_ratio=0.2,
         max_blocks_without_replay=2,
+        level_criteria=None,
         window_size=50,
     ):
         self.levels = levels or ["easy", "medium", "hard"]
@@ -293,6 +295,7 @@ class CurriculumManager:
         self.min_timesteps = min_timesteps
         self.replay_ratio = replay_ratio
         self.max_blocks_without_replay = max(0, int(max_blocks_without_replay))
+        self.level_criteria = level_criteria or {}
         self.window_size = window_size
         self.current_index = 0
         self.promotion_history = []
@@ -368,19 +371,24 @@ class CurriculumManager:
         if self.is_final_level:
             return False
 
+        criteria = self.level_criteria.get(self.current_level, {})
+        required_min_timesteps = criteria.get("min_timesteps", self.min_timesteps)
+        required_promotion_threshold = criteria.get("promotion_threshold", self.promotion_threshold)
+        required_collision_threshold = criteria.get("collision_threshold", self.collision_threshold)
+
         if tracker.level_episodes < self.min_episodes:
             return False
 
-        if tracker.level_timesteps < self.min_timesteps:
+        if tracker.level_timesteps < required_min_timesteps:
             return False
 
         if not tracker.window_full:
             return False
 
-        if tracker.window_success_rate < self.promotion_threshold:
+        if tracker.window_success_rate < required_promotion_threshold:
             return False
 
-        if tracker.window_collision_rate > self.collision_threshold:
+        if tracker.window_collision_rate > required_collision_threshold:
             return False
 
         return True
@@ -411,21 +419,26 @@ class CurriculumManager:
         Ritorna un dizionario con lo stato di ciascun criterio di promozione.
         Utile per debug e per capire cosa manca alla promozione.
         """
+        criteria = self.level_criteria.get(self.current_level, {})
+        required_min_timesteps = criteria.get("min_timesteps", self.min_timesteps)
+        required_promotion_threshold = criteria.get("promotion_threshold", self.promotion_threshold)
+        required_collision_threshold = criteria.get("collision_threshold", self.collision_threshold)
+
         return {
             "is_final_level": self.is_final_level,
             "episodes_ok": tracker.level_episodes >= self.min_episodes,
             "episodes_current": tracker.level_episodes,
             "episodes_required": self.min_episodes,
-            "timesteps_ok": tracker.level_timesteps >= self.min_timesteps,
+            "timesteps_ok": tracker.level_timesteps >= required_min_timesteps,
             "timesteps_current": tracker.level_timesteps,
-            "timesteps_required": self.min_timesteps,
+            "timesteps_required": required_min_timesteps,
             "window_full": tracker.window_full,
-            "success_rate_ok": tracker.window_success_rate >= self.promotion_threshold,
+            "success_rate_ok": tracker.window_success_rate >= required_promotion_threshold,
             "success_rate_current": tracker.window_success_rate,
-            "success_rate_required": self.promotion_threshold,
-            "collision_rate_ok": tracker.window_collision_rate <= self.collision_threshold,
+            "success_rate_required": required_promotion_threshold,
+            "collision_rate_ok": tracker.window_collision_rate <= required_collision_threshold,
             "collision_rate_current": tracker.window_collision_rate,
-            "collision_rate_max": self.collision_threshold,
+            "collision_rate_max": required_collision_threshold,
         }
 
     def summary(self):
@@ -440,5 +453,6 @@ class CurriculumManager:
             "min_timesteps": self.min_timesteps,
             "replay_ratio": self.replay_ratio,
             "max_blocks_without_replay": self.max_blocks_without_replay,
+            "level_criteria": self.level_criteria,
             "promotion_history": self.promotion_history,
         }

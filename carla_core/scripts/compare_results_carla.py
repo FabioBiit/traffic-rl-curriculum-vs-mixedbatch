@@ -1,7 +1,7 @@
-"""
-Confronto Risultati: Curriculum vs Batch Training
+﻿"""
+Confronto Risultati CARLA: Curriculum vs Batch Training
 ==================================================
-Legge i file results.json prodotti da train_experiment.py
+Legge i file results.json prodotti dagli esperimenti CARLA
 e genera grafici comparativi salvati in PNG.
 
 Questo script e' progettato con un formato JSON stabile
@@ -9,9 +9,9 @@ che verra' riusato anche per la fase CARLA (cambia solo
 meta.simulator e meta.algorithm nei JSON).
 
 Esegui con:
-    python ./metadrive_prototype/scripts/compare_results.py --batch metadrive_prototype/experiments/<batch_dir>/results.json --curriculum metadrive_prototype/experiments/<curriculum_dir>/results.json
+    python ./carla_core/scripts/compare_results_carla.py --batch carla_core/experiments/<batch_dir>/results.json --curriculum carla_core/experiments/<curriculum_dir>/results.json
 
-    python ./metadrive_prototype/scripts/compare_results.py --batch metadrive_prototype/experiments/<batch_dir>/results.json --curriculum metadrive_prototype/experiments/<curriculum_dir>/results.json --output metadrive_prototype/results/plots/my_comparison
+    python ./carla_core/scripts/compare_results_carla.py --batch carla_core/experiments/<batch_dir>/results.json --curriculum carla_core/experiments/<curriculum_dir>/results.json --output carla_core/results/plots/my_comparison
 
 Output:
     - <output_dir>/01_success_rate_over_time.png
@@ -42,9 +42,9 @@ DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "results", "plots")
 # ============================================================
 
 # Colori consistenti per tutta la tesi
-COLOR_BATCH = "#2196F3"       # Blu — Batch
-COLOR_CURRICULUM = "#FF9800"  # Arancione — Curriculum
-COLOR_PROMOTION = "#E91E63"   # Rosa — Linee di promozione
+COLOR_BATCH = "#2196F3"       # Blu â€” Batch
+COLOR_CURRICULUM = "#FF9800"  # Arancione â€” Curriculum
+COLOR_PROMOTION = "#E91E63"   # Rosa â€” Linee di promozione
 
 # Stile globale
 FIGURE_DPI = 150
@@ -89,12 +89,13 @@ def load_results(json_path, strict_status=False):
         raise KeyError(f"Campo 'meta.mode' mancante in {json_path}")
 
     status = data["meta"].get("status")
+    valid_statuses = {"COMPLETATO", "STOP_EARLY_COLLASSO"}
     if status is None:
         msg = f"Campo 'meta.status' mancante in {json_path} (schema legacy?)"
         if strict_status:
             raise ValueError(msg)
         print(f"ATTENZIONE: {msg}")
-    elif status != "COMPLETATO":
+    elif status not in valid_statuses:
         msg = f"Run non completata in {json_path}: status={status}"
         if strict_status:
             raise ValueError(msg)
@@ -115,7 +116,7 @@ def extract_timeseries(data, field):
         field: nome del campo da estrarre (es. "success_rate")
     
     Returns:
-        tuple (timesteps, values) — numpy array
+        tuple (timesteps, values) â€” numpy array
         I valori None vengono convertiti in NaN
     """
     ts = data["timeseries"]
@@ -128,7 +129,7 @@ def extract_timeseries(data, field):
 
 
 # ============================================================
-# GRAFICI — Funzioni individuali
+# GRAFICI â€” Funzioni individuali
 # ============================================================
 
 def setup_plot(title, xlabel, ylabel):
@@ -159,7 +160,7 @@ def add_promotion_lines(ax, curriculum_data, ymin=None, ymax=None):
     """
     for promo in curriculum_data.get("curriculum_history", []):
         timestep = promo["timestep_at_promotion"]
-        label_text = f"{promo['from']}→{promo['to']}"
+        label_text = f"{promo['from']}â†’{promo['to']}"
         ax.axvline(x=timestep, color=COLOR_PROMOTION, linestyle="--",
                    alpha=0.7, linewidth=1.5)
         # Posiziona etichetta in alto
@@ -222,7 +223,7 @@ def plot_reward_over_time(batch_data, curriculum_data, output_path):
     Reward medio per blocco con banda di deviazione standard.
     """
     fig, ax = setup_plot(
-        "Mean Reward per Block — Batch vs Curriculum",
+        "Mean Reward per Block â€” Batch vs Curriculum",
         "Timesteps", "Mean Reward"
     )
 
@@ -475,14 +476,14 @@ def save_comparison_txt(batch_data, curriculum_data, output_path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Confronta risultati Batch vs Curriculum",
+        description="Confronta risultati CARLA Batch vs Curriculum",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempio:
-    python metadrive_prototype/scripts/compare_results.py \\
-        --batch metadrive_prototype/experiments/batch/batch_run_20260311/results.json \\
-        --curriculum metadrive_prototype/experiments/curriculum/curriculum_run_20260311/results.json \\
-        --output metadrive_prototype/results/plots/comparison_v1
+    python carla_core/scripts/compare_results_carla.py \\
+        --batch carla_core/experiments/batch/batch_run_20260311/results.json \\
+        --curriculum carla_core/experiments/curriculum/curriculum_run_20260311/results.json \\
+        --output carla_core/results/plots/comparison_v1
         """
     )
     parser.add_argument("--batch", type=str, required=True,
@@ -490,14 +491,14 @@ Esempio:
     parser.add_argument("--curriculum", type=str, required=True,
                         help="Path al results.json del training Curriculum")
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_DIR,
-                        help="Directory di output per i grafici (default: metadrive_prototype/results/plots)")
+                        help="Directory di output per i grafici (default: carla_core/results/plots)")
     parser.add_argument("--strict-status", action="store_true",
                         help="Se attivo, fallisce quando meta.status e' mancante o != COMPLETATO")
     args = parser.parse_args()
 
     # Carica dati
     print("=" * 60)
-    print("CONFRONTO RISULTATI: BATCH vs CURRICULUM")
+    print("CONFRONTO RISULTATI CARLA: BATCH vs CURRICULUM")
     print("=" * 60)
 
     print(f"\nCaricamento Batch: {args.batch}")
@@ -542,7 +543,7 @@ Esempio:
         batch_data, curriculum_data,
         field="success_rate",
         ylabel="Cumulative Success Rate",
-        title="Cumulative Success Rate — Batch vs Curriculum",
+        title="Cumulative Success Rate â€” Batch vs Curriculum",
         output_path=plot_paths["success_rate"],
         ylim=(0, 1.0),
         percentage=True,
@@ -553,18 +554,18 @@ Esempio:
         batch_data, curriculum_data,
         field="collision_rate",
         ylabel="Cumulative Collision Rate",
-        title="Cumulative Collision Rate — Batch vs Curriculum",
+        title="Cumulative Collision Rate â€” Batch vs Curriculum",
         output_path=plot_paths["collision_rate"],
         ylim=(0, 1.0),
         percentage=True,
     )
 
-    # 3. Window Success Rate nel tempo (finestra mobile — piu reattiva)
+    # 3. Window Success Rate nel tempo (finestra mobile â€” piu reattiva)
     plot_metric_over_time(
         batch_data, curriculum_data,
         field="window_success_rate",
         ylabel="Window Success Rate (50 episodes)",
-        title="Window Success Rate — Batch vs Curriculum",
+        title="Window Success Rate â€” Batch vs Curriculum",
         output_path=plot_paths["window_success_rate"],
         ylim=(0, 1.0),
         percentage=True,
@@ -581,7 +582,7 @@ Esempio:
         batch_data, curriculum_data,
         field="episode_length_mean",
         ylabel="Mean Episode Length (steps)",
-        title="Mean Episode Length — Batch vs Curriculum",
+        title="Mean Episode Length â€” Batch vs Curriculum",
         output_path=plot_paths["episode_length"],
     )
 
@@ -604,10 +605,11 @@ Esempio:
     )
 
     print(f"\n{'=' * 60}")
-    print(f"COMPLETATO — {len(plot_paths)} grafici + 1 report salvati in: {args.output}")
+    print(f"COMPLETATO â€” {len(plot_paths)} grafici + 1 report salvati in: {args.output}")
     print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
     main()
+
 

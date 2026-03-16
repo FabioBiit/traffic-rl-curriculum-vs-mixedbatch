@@ -6,16 +6,16 @@ Centralizza config PPO base e funzione seed per ridurre duplicazioni.
 import random
 import numpy as np
 
-# FINETUNING RUN 1 + RUN 2
+# FINETUNING RUN 5
 PPO_CONFIG_BASE = {
-    "learning_rate": 2e-4, # 3e-4 -> 2e-4 run1
-    "n_steps": 4096, # 2048 -> 4096 run2
-    "batch_size": 128, # 64 -> 128 run2
+    "learning_rate": 3e-4, # 2e-4 -> 3e-4 run5 (ripristino base stabile)
+    "n_steps": 2048, # 4096 -> 2048 run5 (ripristino base stabile)
+    "batch_size": 64, # 128 -> 64 run5 (ripristino base stabile)
     "n_epochs": 10,
     "gamma": 0.99,
     "gae_lambda": 0.95,
     "clip_range": 0.2,
-    "ent_coef": 0.005 # 0.01 -> 0.005 run2
+    "ent_coef": 0.01 # 0.005 -> 0.01 run5 (ripristino base stabile)
 }
 
 

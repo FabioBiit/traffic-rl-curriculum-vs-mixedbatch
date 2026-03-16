@@ -89,12 +89,13 @@ def load_results(json_path, strict_status=False):
         raise KeyError(f"Campo 'meta.mode' mancante in {json_path}")
 
     status = data["meta"].get("status")
+    valid_statuses = {"COMPLETATO", "STOP_EARLY_COLLASSO"}
     if status is None:
         msg = f"Campo 'meta.status' mancante in {json_path} (schema legacy?)"
         if strict_status:
             raise ValueError(msg)
         print(f"ATTENZIONE: {msg}")
-    elif status != "COMPLETATO":
+    elif status not in valid_statuses:
         msg = f"Run non completata in {json_path}: status={status}"
         if strict_status:
             raise ValueError(msg)

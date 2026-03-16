@@ -35,6 +35,7 @@ import time
 import math
 import random
 import argparse
+import signal
 import numpy as np
 from datetime import datetime
 from tqdm import tqdm
@@ -72,9 +73,8 @@ TOTAL_TIMESTEPS = 1_500_000
 
 # Dimensione di ogni blocco di training
 # Tra un blocco e l'altro possiamo cambiare ambiente
-
-# FINETUNING RUN 1 + RUN 2 + RUN 3 + RUN 4
-BLOCK_SIZE = 50_000 # 50_000 -> 25_000
+# FINETUNING RUN 5
+BLOCK_SIZE = 50_000 # 25_000 -> 50_000 run5 (ripristino blocchi piu stabili)
 
 # Episodi per la valutazione finale
 # v2.0: aumentato da 20 a 50 per affidabilita' statistica
@@ -83,20 +83,56 @@ EVAL_EPISODES = 50
 # PPO — identico per batch e curriculum (variabile sperimentale isolata)
 PPO_CONFIG = {**PPO_CONFIG_BASE, "verbose": 0, "device": DEVICE}
 
-# FINETUNING RUN 1 + RUN 2 + RUN 3 + RUN 4
-# Curriculum v2.0
+# FINETUNING RUN 5
+# Curriculum v2.0 + criteri per livello (easy->medium, medium->hard)
 CURRICULUM_CONFIG = {
-    "promotion_threshold": 0.55,    # 0.6 -> 0.55 run3
-    "collision_threshold": 0.35,    # 0.3 -> 0.35 run3
+    "promotion_threshold": 0.55,    # baseline globale (fallback)
+    "collision_threshold": 0.35,    # baseline globale (fallback)
     "min_episodes": 50,
-    "min_timesteps": 150_000,       # 200_000 -> 150_000 run3
+    "min_timesteps": 150_000,       # baseline globale (fallback)
     "window_size": 50,
-    "replay_ratio": 0.10,           # 0.20 -> 0.10 run3 # 0.0 Per spegnere replay, 0.2 per 20% blocchi di revisione # 0.0 Per TEST ON vs OFF
-    "max_blocks_without_replay": 4  # 2 -> 4 run3 # v2.1: forzatura replay anti-forgetting
+    "replay_ratio": 0.10,           # 0.20 -> 0.10 run3
+    "max_blocks_without_replay": 4, # 2 -> 4 run3
+    "level_criteria": {
+        "easy": {
+            "promotion_threshold": 0.55,  # run5: criterio Easy->Medium
+            "collision_threshold": 0.35,  # run5: criterio Easy->Medium
+            "min_timesteps": 150_000,     # run5: criterio Easy->Medium
+        },
+        "medium": {
+            "promotion_threshold": 0.45,  # run5: criterio Medium->Hard
+            "collision_threshold": 0.40,  # run5: criterio Medium->Hard
+            "min_timesteps": 250_000,     # run5: criterio Medium->Hard
+        },
+    },
 }
+
+# FINETUNING RUN 5 — monitoraggio stabilita' training
+BEST_EVAL_FREQ_BLOCKS = 3          # ogni quanti blocchi fare mini-eval per best checkpoint
+BEST_EVAL_EPISODES = 10            # mini-eval veloce (medium/hard)
+COLLAPSE_REWARD_THRESHOLD = 0.0    # reward medio blocco sotto questa soglia => rischio collasso
+COLLAPSE_EP_LEN_THRESHOLD = 40     # episode length media blocco sotto questa soglia => collasso rapido
+COLLAPSE_STREAK_LIMIT = 2          # blocchi consecutivi prima di early stop + rollback
 
 # Cap valutazione per evitare stalli (v2.1)
 MAX_CAP = 3000  # max step per episodio in valutazione
+
+
+def _install_signal_handlers():
+    """
+    Converte segnali di stop "graceful" in KeyboardInterrupt,
+    cosi' i branch di salvataggio su interruzione vengono eseguiti.
+    """
+    def _raise_keyboard_interrupt(_signum, _frame):
+        raise KeyboardInterrupt
+
+    for sig_name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        if hasattr(signal, sig_name):
+            try:
+                signal.signal(getattr(signal, sig_name), _raise_keyboard_interrupt)
+            except Exception:
+                # Alcuni runtime non permettono la registrazione di tutti i segnali.
+                pass
 
 # ============================================================
 # PROGRESS TRACKER — Tempo trascorso, ETA, stato globale
@@ -344,6 +380,169 @@ class TimeseriesCollector:
 
 
 # ============================================================
+# PARTIAL SAVE HELPERS
+# ============================================================
+
+def _atomic_write_json(path, payload):
+    """Scrive JSON in modo atomico per evitare file corrotti su interruzione."""
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, default=str)
+    os.replace(tmp_path, path)
+
+
+def save_partial_progress(run_dir, mode, train_summary, config, training_status):
+    """
+    Salva uno snapshot parziale durante il training.
+    Non solleva eccezioni: in caso di errore stampa warning e prosegue.
+    """
+    try:
+        payload = {
+            "meta": {
+                "experiment_id": os.path.basename(run_dir),
+                "mode": mode,
+                "simulator": "metadrive",
+                "algorithm": "PPO",
+                "seed": config.get("seed", SEED),
+                "total_timesteps_budget": config.get("total_timesteps"),
+                "total_timesteps_actual": train_summary.get("total_steps", 0),
+                "total_episodes": train_summary.get("total_episodes", 0),
+                "wall_clock_seconds": round(train_summary.get("wall_clock_seconds", 0), 2),
+                "status": training_status,
+                "partial": True,
+                "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            },
+            "config": {
+                "ppo": config.get("ppo", PPO_CONFIG),
+                "levels": config.get("levels", LEVEL_CONFIGS),
+            },
+            "training_summary": {
+                "cumulative_success_rate": train_summary.get("cumulative_success_rate", 0.0),
+                "cumulative_collision_rate": train_summary.get("cumulative_collision_rate", 0.0),
+                "termination_reason": train_summary.get("termination_reason"),
+                "completed_budget": train_summary.get("completed_budget"),
+                "collapse_detected": train_summary.get("collapse_detected", False),
+                "rollback_to_best": train_summary.get("rollback_to_best", False),
+                "best_checkpoint": train_summary.get("best_checkpoint", {}),
+            },
+            "level_distribution": train_summary.get("level_distribution", {}),
+            "level_distribution_blocks": train_summary.get("level_distribution_blocks", {}),
+            "level_distribution_timesteps": train_summary.get("level_distribution_timesteps", {}),
+            "timeseries": train_summary.get("timeseries", []),
+            "evaluation": {},
+        }
+
+        if mode == "curriculum":
+            payload["config"]["curriculum"] = config.get("curriculum", CURRICULUM_CONFIG)
+            curriculum = train_summary.get("curriculum", {})
+            payload["training_summary"]["final_level"] = curriculum.get("final_level", "N/A")
+            payload["training_summary"]["levels_completed"] = curriculum.get("levels_completed", 0)
+            payload["training_summary"]["total_levels"] = curriculum.get("total_levels", 3)
+            payload["curriculum_history"] = curriculum.get("promotion_history", [])
+
+        partial_path = os.path.join(run_dir, "partial_results.json")
+        _atomic_write_json(partial_path, payload)
+    except Exception as e:
+        print(f"[WARN] Impossibile salvare partial_results.json: {e}")
+
+
+def save_emergency_artifacts(run_dir, mode, model, train_summary, config, training_status):
+    """
+    Salva artefatti di emergenza SOLO in caso di stop manuale o errore:
+    - snapshot modello
+    - risultati parziali JSON
+    """
+    if model is not None:
+        interrupted_model_path = os.path.join(run_dir, "interrupted_model")
+        try:
+            model.save(interrupted_model_path)
+        except Exception as e:
+            print(f"[WARN] Impossibile salvare interrupted_model: {e}")
+
+    save_partial_progress(run_dir, mode, train_summary, config, training_status)
+
+
+# ============================================================
+# FINETUNING RUN 5 — Helper training stability
+# ============================================================
+
+def get_batch_phase_weights(steps_done, total_steps):
+    """
+    Mixing progressivo per Batch (run5):
+    - primo terzo: easy 60 / medium 30 / hard 10
+    - secondo terzo: easy 45 / medium 35 / hard 20
+    - ultimo terzo: easy 34 / medium 33 / hard 33
+    """
+    progress = steps_done / max(1, total_steps)
+    if progress < (1.0 / 3.0):
+        return {"easy": 60, "medium": 30, "hard": 10}
+    if progress < (2.0 / 3.0):
+        return {"easy": 45, "medium": 35, "hard": 20}
+    return {"easy": 34, "medium": 33, "hard": 33}
+
+
+def score_eval_results(eval_results):
+    """
+    Score sintetico per best checkpoint (focus medium/hard):
+    SR_med + SR_hard - 0.5 * (CR_med + CR_hard)
+    """
+    sr_med = eval_results.get("medium", {}).get("success_rate", 0.0)
+    sr_hard = eval_results.get("hard", {}).get("success_rate", 0.0)
+    cr_med = eval_results.get("medium", {}).get("collision_rate", 1.0)
+    cr_hard = eval_results.get("hard", {}).get("collision_rate", 1.0)
+    return float(sr_med + sr_hard - 0.5 * (cr_med + cr_hard))
+
+
+def update_best_checkpoint(model, block_num, best_state):
+    """
+    Esegue mini-eval periodica su medium/hard e aggiorna best checkpoint.
+    """
+    if block_num % BEST_EVAL_FREQ_BLOCKS != 0:
+        return best_state
+
+    try:
+        eval_results = evaluate_model(
+            model=model,
+            levels_to_test=["medium", "hard"],
+            n_episodes=BEST_EVAL_EPISODES,
+            max_steps_per_episode=MAX_CAP,
+            heartbeat_interval=0,
+            show_progress=False,
+        )
+    except Exception as e:
+        best_state["eval_failures"] = best_state.get("eval_failures", 0) + 1
+        print(f"[WARN] Mini-eval fallita al blocco {block_num}: {e}")
+        return best_state
+
+    for level in ("medium", "hard"):
+        level_metrics = eval_results.get(level)
+        if not isinstance(level_metrics, dict):
+            best_state["eval_failures"] = best_state.get("eval_failures", 0) + 1
+            print(
+                f"[WARN] Mini-eval incompleta al blocco {block_num}: "
+                f"mancano metriche per '{level}'."
+            )
+            return best_state
+        if level_metrics.get("partial", False):
+            best_state["eval_failures"] = best_state.get("eval_failures", 0) + 1
+            print(
+                f"[WARN] Mini-eval parziale al blocco {block_num} "
+                f"su '{level}', checkpoint non aggiornato."
+            )
+            return best_state
+
+    score = score_eval_results(eval_results)
+    if score > best_state["score"]:
+        model.save(best_state["path"])
+        best_state["score"] = score
+        best_state["block"] = block_num
+        print(
+            f" Best checkpoint aggiornato | block={block_num} | score={score:.4f}"
+        )
+    return best_state
+
+
+# ============================================================
 # BATCH TRAINING
 # ============================================================
 
@@ -370,21 +569,65 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
     level_block_counts = {lv: 0 for lv in levels}
     level_timesteps = {lv: 0 for lv in levels}
     training_status = "COMPLETATO"
+    termination_reason = "budget_exhausted"
+    best_model_path = os.path.join(run_dir, "best_model")
+    best_state = {
+        "path": best_model_path,
+        "score": float("-inf"),
+        "block": None,
+        "eval_failures": 0,
+    }
+    collapse_streak = 0
+    rollback_to_best = False
+    collapse_detected = False
+    partial_config = {
+        "seed": SEED,
+        "total_timesteps": total_steps,
+        "block_size": block_size,
+        "eval_episodes": EVAL_EPISODES,
+        "ppo": ppo_config,
+        "levels": LEVEL_CONFIGS,
+        "mode": "batch",
+    }
 
-    _cycle = list(levels)  # inizializzazione prima del while
+    def build_partial_summary(status_override=None):
+        status_value = status_override or training_status
+        summary = tracker.summary()
+        summary["mode"] = "batch"
+        summary["total_steps"] = steps_done
+        summary["level_history"] = level_history
+        summary["level_distribution"] = level_block_counts
+        summary["level_distribution_blocks"] = level_block_counts
+        summary["level_distribution_timesteps"] = level_timesteps
+        summary["wall_clock_seconds"] = time.time() - progress.start_time
+        summary["timeseries"] = timeseries.data
+        summary["status"] = status_value
+        summary["termination_reason"] = termination_reason
+        summary["completed_budget"] = steps_done >= total_steps
+        summary["best_checkpoint"] = {
+            "path": best_model_path + ".zip" if os.path.exists(best_model_path + ".zip") else None,
+            "score": best_state["score"] if best_state["score"] != float("-inf") else None,
+            "block": best_state["block"],
+            "eval_failures": best_state.get("eval_failures", 0),
+        }
+        summary["rollback_to_best"] = rollback_to_best
+        summary["collapse_detected"] = collapse_detected
+        return summary
+
     while steps_done < total_steps:
         block_start_steps = steps_done
         block_num += 1
         remaining = total_steps - steps_done
         current_block = min(block_size, remaining)
 
-        # Shuffle a blocchi (stratified random sampling):
-        # ogni ciclo di len(levels) blocchi contiene tutti i livelli in ordine casuale.
-        # Garantisce bilanciamento perfetto senza ordine prevedibile.
-        if (block_num - 1) % len(levels) == 0:
-            _cycle = list(levels)
-            random.shuffle(_cycle)
-        level = _cycle[(block_num - 1) % len(levels)]
+        # FINETUNING RUN 5: mixing progressivo per ridurre collasso tardivo.
+        # Primo terzo: easy-heavy. Ultimo terzo: quasi bilanciato.
+        phase_weights = get_batch_phase_weights(steps_done, total_steps)
+        level = random.choices(
+            levels,
+            weights=[phase_weights[lv] for lv in levels],
+            k=1,
+        )[0]
         level_history.append(level)
         level_block_counts[level] = level_block_counts.get(level, 0) + 1
         progress.block_start()
@@ -413,14 +656,24 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
             )
         except KeyboardInterrupt:
             training_status = "INTERROTTO"
+            termination_reason = "keyboard_interrupt"
             if model is not None:
                 steps_done = int(model.num_timesteps)
             print("\nTraining interrotto da tastiera.")
             if env is not None:
                 env.close()
+            save_emergency_artifacts(
+                run_dir,
+                "batch",
+                model,
+                build_partial_summary(status_override=training_status),
+                partial_config,
+                training_status,
+            )
             break
         except Exception as e:
             training_status = "ERRORE"
+            termination_reason = "exception"
             if model is not None:
                 steps_done = int(model.num_timesteps)
             print(f"ERRORE nel blocco {block_num}: {e}")
@@ -428,39 +681,142 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
             traceback.print_exc()
             if env is not None:
                 env.close()
+            save_emergency_artifacts(
+                run_dir,
+                "batch",
+                model,
+                build_partial_summary(status_override=training_status),
+                partial_config,
+                training_status,
+            )
+            break
+        try:
+            progress.block_end()
+            steps_done = int(model.num_timesteps)
+            current_block = max(0, steps_done - block_start_steps)
+            level_timesteps[level] = level_timesteps.get(level, 0) + current_block
+
+            # Calcola metriche blocco
+            block_sr = None
+            block_cr = None
+            if callback.block_episodes > 0:
+                block_sr = callback.block_successes / callback.block_episodes
+                block_cr = callback.block_collisions / callback.block_episodes
+
+            # Progress tracker
+            progress.print_status(
+                block_num, steps_done, level,
+                block_episodes=callback.block_episodes,
+                block_sr=block_sr, block_cr=block_cr,
+            )
+
+            # Timeseries
+            timeseries.record(
+                timestep=steps_done,
+                episode=tracker.total_episodes,
+                level=level,
+                tracker=tracker,
+                reward_mean=callback.block_reward_mean,
+                reward_std=callback.block_reward_std,
+                ep_length_mean=callback.block_ep_length_mean,
+            )
+
+            # RUN5 regression fix:
+            # chiudiamo l'env prima della mini-eval checkpoint per evitare
+            # "Can not call this API after engine initialization!" di MetaDrive.
+            if env is not None:
+                env.close()
+                env = None
+
+            # FINETUNING RUN 5: best checkpoint periodico su metriche medium/hard.
+            best_state = update_best_checkpoint(
+                model=model,
+                block_num=block_num,
+                best_state=best_state,
+            )
+
+            # FINETUNING RUN 5: early-stop anti-collasso + rollback al best checkpoint.
+            if (
+                callback.block_reward_mean is not None
+                and callback.block_ep_length_mean is not None
+                and callback.block_reward_mean < COLLAPSE_REWARD_THRESHOLD
+                and callback.block_ep_length_mean < COLLAPSE_EP_LEN_THRESHOLD
+            ):
+                collapse_streak += 1
+            else:
+                collapse_streak = 0
+
+            if collapse_streak >= COLLAPSE_STREAK_LIMIT:
+                collapse_detected = True
+                training_status = "STOP_EARLY_COLLASSO"
+                termination_reason = "collapse_guard"
+                rollback_to_best = os.path.exists(best_model_path + ".zip")
+                print(
+                    f"\n Collasso rilevato: reward<{COLLAPSE_REWARD_THRESHOLD} "
+                    f"e ep_len<{COLLAPSE_EP_LEN_THRESHOLD} per {collapse_streak} blocchi."
+                )
+                if rollback_to_best:
+                    print(" Rollback pianificato al best checkpoint.")
+                else:
+                    print(" Nessun best checkpoint disponibile: mantengo ultimo modello.")
+                save_partial_progress(
+                    run_dir,
+                    "batch",
+                    build_partial_summary(status_override=training_status),
+                    partial_config,
+                    training_status,
+                )
+                break
+
+            # Snapshot periodico a fine blocco (stato in corso).
+            save_partial_progress(
+                run_dir,
+                "batch",
+                build_partial_summary(status_override="IN_CORSO"),
+                partial_config,
+                "IN_CORSO",
+            )
+        except KeyboardInterrupt:
+            training_status = "INTERROTTO"
+            termination_reason = "keyboard_interrupt"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
+            print("\nTraining interrotto da tastiera.")
+            if env is not None:
+                env.close()
+                env = None
+            save_emergency_artifacts(
+                run_dir,
+                "batch",
+                model,
+                build_partial_summary(status_override=training_status),
+                partial_config,
+                training_status,
+            )
+            break
+        except Exception as e:
+            training_status = "ERRORE"
+            termination_reason = "exception"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
+            print(f"ERRORE post-blocco {block_num}: {e}")
+            import traceback
+            traceback.print_exc()
+            if env is not None:
+                env.close()
+                env = None
+            save_emergency_artifacts(
+                run_dir,
+                "batch",
+                model,
+                build_partial_summary(status_override=training_status),
+                partial_config,
+                training_status,
+            )
             break
 
-        progress.block_end()
-        steps_done = int(model.num_timesteps)
-        current_block = max(0, steps_done - block_start_steps)
-        level_timesteps[level] = level_timesteps.get(level, 0) + current_block
-
-        # Calcola metriche blocco
-        block_sr = None
-        block_cr = None
-        if callback.block_episodes > 0:
-            block_sr = callback.block_successes / callback.block_episodes
-            block_cr = callback.block_collisions / callback.block_episodes
-
-        # Progress tracker
-        progress.print_status(
-            block_num, steps_done, level,
-            block_episodes=callback.block_episodes,
-            block_sr=block_sr, block_cr=block_cr,
-        )
-
-        # Timeseries
-        timeseries.record(
-            timestep=steps_done,
-            episode=tracker.total_episodes,
-            level=level,
-            tracker=tracker,
-            reward_mean=callback.block_reward_mean,
-            reward_std=callback.block_reward_std,
-            ep_length_mean=callback.block_ep_length_mean,
-        )
-
-        env.close()
+    if rollback_to_best and os.path.exists(best_model_path + ".zip"):
+        model = PPO.load(best_model_path)
 
     # Salva modello finale
     if model is not None:
@@ -477,6 +833,16 @@ def train_batch(total_steps, block_size, ppo_config, run_dir):
     summary["wall_clock_seconds"] = time.time() - progress.start_time
     summary["timeseries"] = timeseries.data
     summary["status"] = training_status
+    summary["termination_reason"] = termination_reason
+    summary["completed_budget"] = steps_done >= total_steps
+    summary["best_checkpoint"] = {
+        "path": best_model_path + ".zip" if os.path.exists(best_model_path + ".zip") else None,
+        "score": best_state["score"] if best_state["score"] != float("-inf") else None,
+        "block": best_state["block"],
+        "eval_failures": best_state.get("eval_failures", 0),
+    }
+    summary["rollback_to_best"] = rollback_to_best
+    summary["collapse_detected"] = collapse_detected
 
     return model, summary, training_status
 
@@ -508,6 +874,8 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
         "Max blocchi senza replay: "
         f"{curriculum_config.get('max_blocks_without_replay', 2)}"
     )
+    if curriculum_config.get("level_criteria"):
+        print("Criteri per livello: attivi (run5)")
     print("=" * 60)
 
     global_tracker = EpisodeTracker(window_size=curriculum_config["window_size"])
@@ -519,6 +887,7 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
         min_timesteps=curriculum_config["min_timesteps"],
         replay_ratio=curriculum_config["replay_ratio"],
         max_blocks_without_replay=curriculum_config.get("max_blocks_without_replay", 2),
+        level_criteria=curriculum_config.get("level_criteria"),
         window_size=curriculum_config["window_size"],
     )
 
@@ -530,10 +899,55 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
     current_env = None
     current_env_level = None  # quale livello ha l'env aperto attualmente
     training_status = "COMPLETATO"
+    termination_reason = "budget_exhausted"
+    best_model_path = os.path.join(run_dir, "best_model")
+    best_state = {
+        "path": best_model_path,
+        "score": float("-inf"),
+        "block": None,
+        "eval_failures": 0,
+    }
+    collapse_streak = 0
+    rollback_to_best = False
+    collapse_detected = False
+    partial_config = {
+        "seed": SEED,
+        "total_timesteps": total_steps,
+        "block_size": block_size,
+        "eval_episodes": EVAL_EPISODES,
+        "ppo": ppo_config,
+        "levels": LEVEL_CONFIGS,
+        "mode": "curriculum",
+        "curriculum": curriculum_config,
+    }
 
     # Tracking distribuzione livelli
     level_timesteps = {lv: 0 for lv in manager.levels}
     level_block_counts = {lv: 0 for lv in manager.levels}
+
+    def build_partial_summary(status_override=None):
+        status_value = status_override or training_status
+        summary = global_tracker.summary()
+        summary["mode"] = "curriculum"
+        summary["total_steps"] = steps_done
+        summary["curriculum"] = manager.summary()
+        summary["level_distribution"] = level_timesteps
+        summary["level_distribution_blocks"] = level_block_counts
+        summary["level_distribution_timesteps"] = level_timesteps
+        summary["wall_clock_seconds"] = time.time() - progress.start_time
+        summary["timeseries"] = timeseries.data
+        summary["status"] = status_value
+        summary["termination_reason"] = termination_reason
+        summary["completed_budget"] = steps_done >= total_steps
+        summary["best_checkpoint"] = {
+            "path": best_model_path + ".zip" if os.path.exists(best_model_path + ".zip") else None,
+            "score": best_state["score"] if best_state["score"] != float("-inf") else None,
+            "block": best_state["block"],
+            "eval_failures": best_state.get("eval_failures", 0),
+        }
+        summary["rollback_to_best"] = rollback_to_best
+        summary["collapse_detected"] = collapse_detected
+        return summary
 
     while steps_done < total_steps:
         block_start_steps = steps_done
@@ -583,6 +997,7 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
             )
         except KeyboardInterrupt:
             training_status = "INTERROTTO"
+            termination_reason = "keyboard_interrupt"
             if model is not None:
                 steps_done = int(model.num_timesteps)
             print("\nTraining interrotto da tastiera.")
@@ -592,9 +1007,18 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
                 current_env.close()
                 current_env = None
                 current_env_level = None
+            save_emergency_artifacts(
+                run_dir,
+                "curriculum",
+                model,
+                build_partial_summary(status_override=training_status),
+                partial_config,
+                training_status,
+            )
             break
         except Exception as e:
             training_status = "ERRORE"
+            termination_reason = "exception"
             if model is not None:
                 steps_done = int(model.num_timesteps)
             print(f"ERRORE nel blocco {block_num}: {e}")
@@ -606,69 +1030,181 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
                 current_env.close()
                 current_env = None
                 current_env_level = None
+            save_emergency_artifacts(
+                run_dir,
+                "curriculum",
+                model,
+                build_partial_summary(status_override=training_status),
+                partial_config,
+                training_status,
+            )
             break
+        try:
+            steps_done = int(model.num_timesteps)
+            current_block = max(0, steps_done - block_start_steps)
+            level_timesteps[block_level] = level_timesteps.get(block_level, 0) + current_block
 
-        steps_done = int(model.num_timesteps)
-        current_block = max(0, steps_done - block_start_steps)
-        level_timesteps[block_level] = level_timesteps.get(block_level, 0) + current_block
+            # Aggiorna timesteps SOLO sul tracker usato per promozione
+            # (i blocchi replay non contano per avanzare livello).
+            if not is_replay:
+                promotion_tracker.add_timesteps(current_block)
 
-        # Aggiorna timesteps SOLO sul tracker usato per promozione
-        # (i blocchi replay non contano per avanzare livello).
-        if not is_replay:
-            promotion_tracker.add_timesteps(current_block)
+            progress.block_end()
 
-        progress.block_end()
+            # Calcola metriche blocco
+            block_sr = None
+            block_cr = None
+            if callback.block_episodes > 0:
+                block_sr = callback.block_successes / callback.block_episodes
+                block_cr = callback.block_collisions / callback.block_episodes
 
-        # Calcola metriche blocco
-        block_sr = None
-        block_cr = None
-        if callback.block_episodes > 0:
-            block_sr = callback.block_successes / callback.block_episodes
-            block_cr = callback.block_collisions / callback.block_episodes
+            # Progress tracker
+            progress.print_status(
+                block_num, steps_done, block_level,
+                is_replay=is_replay,
+                block_episodes=callback.block_episodes,
+                block_sr=block_sr, block_cr=block_cr,
+                curriculum_manager=manager,
+                tracker=promotion_tracker,
+            )
 
-        # Progress tracker
-        progress.print_status(
-            block_num, steps_done, block_level,
-            is_replay=is_replay,
-            block_episodes=callback.block_episodes,
-            block_sr=block_sr, block_cr=block_cr,
-            curriculum_manager=manager,
-            tracker=promotion_tracker,
-        )
+            # Timeseries
+            timeseries.record(
+                timestep=steps_done,
+                episode=global_tracker.total_episodes,
+                level=block_level,
+                tracker=global_tracker,
+                reward_mean=callback.block_reward_mean,
+                reward_std=callback.block_reward_std,
+                ep_length_mean=callback.block_ep_length_mean,
+                is_replay=is_replay,
+            )
 
-        # Timeseries
-        timeseries.record(
-            timestep=steps_done,
-            episode=global_tracker.total_episodes,
-            level=block_level,
-            tracker=global_tracker,
-            reward_mean=callback.block_reward_mean,
-            reward_std=callback.block_reward_std,
-            ep_length_mean=callback.block_ep_length_mean,
-            is_replay=is_replay,
-        )
-
-        # Controlla promozione (solo se il blocco era sul livello corrente, non replay)
-        if not is_replay and manager.should_promote(promotion_tracker):
-            old_level = manager.current_level
-            new_level = manager.promote(promotion_tracker, global_timestep=steps_done)
-            print(f"\n{'>'*20} PROMOZIONE: {old_level.upper()} -> {new_level.upper()} {'<'*20}")
-            promo = manager.promotion_history[-1]
-            print(f"  SR alla promozione: {promo['success_rate_at_promotion']:.1%}")
-            print(f"  CR alla promozione: {promo['collision_rate_at_promotion']:.1%}")
-            print(f"  Timesteps sul livello: {promo['timesteps_on_level']:,}")
-            print(f"  Episodi sul livello: {promo['episodes_on_level']}")
-            print()
-
-            # Chiudi env corrente — verra' ricreato al prossimo blocco
-            if current_env is not None:
+            # RUN5 regression fix:
+            # quando parte la mini-eval, dobbiamo liberare l'engine MetaDrive.
+            # In caso contrario, la creazione di un nuovo env in evaluate_model() fallisce.
+            if block_num % BEST_EVAL_FREQ_BLOCKS == 0 and current_env is not None:
                 current_env.close()
                 current_env = None
                 current_env_level = None
 
+            # FINETUNING RUN 5: best checkpoint periodico su metriche medium/hard.
+            best_state = update_best_checkpoint(
+                model=model,
+                block_num=block_num,
+                best_state=best_state,
+            )
+
+            # FINETUNING RUN 5: early-stop anti-collasso + rollback al best checkpoint.
+            if (
+                callback.block_reward_mean is not None
+                and callback.block_ep_length_mean is not None
+                and callback.block_reward_mean < COLLAPSE_REWARD_THRESHOLD
+                and callback.block_ep_length_mean < COLLAPSE_EP_LEN_THRESHOLD
+            ):
+                collapse_streak += 1
+            else:
+                collapse_streak = 0
+
+            if collapse_streak >= COLLAPSE_STREAK_LIMIT:
+                collapse_detected = True
+                training_status = "STOP_EARLY_COLLASSO"
+                termination_reason = "collapse_guard"
+                rollback_to_best = os.path.exists(best_model_path + ".zip")
+                print(
+                    f"\n Collasso rilevato: reward<{COLLAPSE_REWARD_THRESHOLD} "
+                    f"e ep_len<{COLLAPSE_EP_LEN_THRESHOLD} per {collapse_streak} blocchi."
+                )
+                if rollback_to_best:
+                    print(" Rollback pianificato al best checkpoint.")
+                else:
+                    print(" Nessun best checkpoint disponibile: mantengo ultimo modello.")
+                save_partial_progress(
+                    run_dir,
+                    "curriculum",
+                    build_partial_summary(status_override=training_status),
+                    partial_config,
+                    training_status,
+                )
+                break
+
+            # Controlla promozione (solo se il blocco era sul livello corrente, non replay)
+            if not is_replay and manager.should_promote(promotion_tracker):
+                old_level = manager.current_level
+                new_level = manager.promote(promotion_tracker, global_timestep=steps_done)
+                print(f"\n{'>'*20} PROMOZIONE: {old_level.upper()} -> {new_level.upper()} {'<'*20}")
+                promo = manager.promotion_history[-1]
+                print(f"  SR alla promozione: {promo['success_rate_at_promotion']:.1%}")
+                print(f"  CR alla promozione: {promo['collision_rate_at_promotion']:.1%}")
+                print(f"  Timesteps sul livello: {promo['timesteps_on_level']:,}")
+                print(f"  Episodi sul livello: {promo['episodes_on_level']}")
+                print()
+
+                # Chiudi env corrente — verra' ricreato al prossimo blocco
+                if current_env is not None:
+                    current_env.close()
+                    current_env = None
+                    current_env_level = None
+
+            # Snapshot periodico a fine blocco (stato in corso).
+            save_partial_progress(
+                run_dir,
+                "curriculum",
+                build_partial_summary(status_override="IN_CORSO"),
+                partial_config,
+                "IN_CORSO",
+            )
+        except KeyboardInterrupt:
+            training_status = "INTERROTTO"
+            termination_reason = "keyboard_interrupt"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
+            print("\nTraining interrotto da tastiera.")
+            if pending_env is not None:
+                pending_env.close()
+            if current_env is not None:
+                current_env.close()
+                current_env = None
+                current_env_level = None
+            save_emergency_artifacts(
+                run_dir,
+                "curriculum",
+                model,
+                build_partial_summary(status_override=training_status),
+                partial_config,
+                training_status,
+            )
+            break
+        except Exception as e:
+            training_status = "ERRORE"
+            termination_reason = "exception"
+            if model is not None:
+                steps_done = int(model.num_timesteps)
+            print(f"ERRORE post-blocco {block_num}: {e}")
+            import traceback
+            traceback.print_exc()
+            if pending_env is not None:
+                pending_env.close()
+            if current_env is not None:
+                current_env.close()
+                current_env = None
+                current_env_level = None
+            save_emergency_artifacts(
+                run_dir,
+                "curriculum",
+                model,
+                build_partial_summary(status_override=training_status),
+                partial_config,
+                training_status,
+            )
+            break
+
     # Chiudi ambiente se ancora aperto
     if current_env is not None:
         current_env.close()
+
+    if rollback_to_best and os.path.exists(best_model_path + ".zip"):
+        model = PPO.load(best_model_path)
 
     # Salva modello finale
     if model is not None:
@@ -685,6 +1221,16 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
     summary["wall_clock_seconds"] = time.time() - progress.start_time
     summary["timeseries"] = timeseries.data
     summary["status"] = training_status
+    summary["termination_reason"] = termination_reason
+    summary["completed_budget"] = steps_done >= total_steps
+    summary["best_checkpoint"] = {
+        "path": best_model_path + ".zip" if os.path.exists(best_model_path + ".zip") else None,
+        "score": best_state["score"] if best_state["score"] != float("-inf") else None,
+        "block": best_state["block"],
+        "eval_failures": best_state.get("eval_failures", 0),
+    }
+    summary["rollback_to_best"] = rollback_to_best
+    summary["collapse_detected"] = collapse_detected
 
     return model, summary, training_status
 
@@ -693,7 +1239,14 @@ def train_curriculum(total_steps, block_size, ppo_config, curriculum_config, run
 # VALUTAZIONE SU TUTTE LE MAPPE
 # ============================================================
 
-def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode=MAX_CAP, heartbeat_interval=200):
+def evaluate_model(
+    model,
+    levels_to_test,
+    n_episodes=None,
+    max_steps_per_episode=MAX_CAP,
+    heartbeat_interval=200,
+    show_progress=True,
+):
     """
     Valuta un modello addestrato su una lista di livelli.
     
@@ -706,6 +1259,7 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
         n_episodes: episodi per livello (default EVAL_EPISODES)
         max_steps_per_episode: cap di step per episodio in valutazione.
         heartbeat_interval: ogni quanti step stampare heartbeat intra-episodio.
+        show_progress: se False, disabilita progress bar e log verbose.
     
     Returns:
         dizionario con le metriche per ogni livello (anche parziali se interrotto)
@@ -716,7 +1270,8 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
     results = {}
 
     for level in levels_to_test:
-        print(f"\nValutazione su: {level.upper()} ({n_episodes} episodi)...")
+        if show_progress:
+            print(f"\nValutazione su: {level.upper()} ({n_episodes} episodi)...")
         env = create_env(level)
 
         successes = 0
@@ -746,6 +1301,7 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
                 desc=f"Eval {level.upper()}",
                 unit="ep",
                 leave=True,
+                disable=not show_progress,
             )
             obs = env.reset()
 
@@ -755,7 +1311,7 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
                 ep_reward += float(reward[0])
                 ep_steps += 1
 
-                if heartbeat_interval and ep_steps % heartbeat_interval == 0:
+                if show_progress and heartbeat_interval and ep_steps % heartbeat_interval == 0:
                     tqdm.write(
                         f"[EVAL {level.upper()}] Ep {episodes_done + 1}/{n_episodes} "
                         f"step {ep_steps}..."
@@ -809,11 +1365,12 @@ def evaluate_model(model, levels_to_test, n_episodes=None, max_steps_per_episode
         results[level] = build_metrics(episodes_done)
         results[level]["partial"] = False
 
-        timeout_note = f" | Timeouts: {results[level]['timeouts']}" if results[level]["timeouts"] > 0 else ""
-        print(f"Success: {results[level]['success_rate']:.1%} | "
-              f"Collision: {results[level]['collision_rate']:.1%} | "
-              f"Avg Reward: {results[level]['avg_reward']:.1f} | "
-              f"Avg Length: {results[level]['avg_episode_length']:.0f}{timeout_note}")
+        if show_progress:
+            timeout_note = f" | Timeouts: {results[level]['timeouts']}" if results[level]["timeouts"] > 0 else ""
+            print(f"Success: {results[level]['success_rate']:.1%} | "
+                  f"Collision: {results[level]['collision_rate']:.1%} | "
+                  f"Avg Reward: {results[level]['avg_reward']:.1f} | "
+                  f"Avg Length: {results[level]['avg_episode_length']:.0f}{timeout_note}")
 
     return results
 
@@ -860,6 +1417,17 @@ def save_results(run_dir, mode, train_summary, eval_results, config, training_st
         "evaluation": eval_results,
     }
 
+    if "best_checkpoint" in train_summary:
+        json_output["training_summary"]["best_checkpoint"] = train_summary["best_checkpoint"]
+    if "rollback_to_best" in train_summary:
+        json_output["training_summary"]["rollback_to_best"] = train_summary["rollback_to_best"]
+    if "collapse_detected" in train_summary:
+        json_output["training_summary"]["collapse_detected"] = train_summary["collapse_detected"]
+    if "termination_reason" in train_summary:
+        json_output["training_summary"]["termination_reason"] = train_summary["termination_reason"]
+    if "completed_budget" in train_summary:
+        json_output["training_summary"]["completed_budget"] = train_summary["completed_budget"]
+
     if mode == "curriculum":
         json_output["config"]["curriculum"] = config.get("curriculum", CURRICULUM_CONFIG)
         curriculum = train_summary.get("curriculum", {})
@@ -883,12 +1451,23 @@ def save_results(run_dir, mode, train_summary, eval_results, config, training_st
         f.write(f"{'=' * 60}\n\n")
 
         f.write(f"Status: {training_status}\n")
+        if "termination_reason" in train_summary:
+            f.write(f"Termination reason: {train_summary['termination_reason']}\n")
+        if "completed_budget" in train_summary:
+            f.write(f"Completed budget: {train_summary['completed_budget']}\n")
         f.write(f"Mode: {mode}\n")
         f.write(f"Total steps: {train_summary['total_steps']:,}\n")
         f.write(f"Total episodes: {train_summary['total_episodes']}\n")
         f.write(f"Wall clock: {train_summary.get('wall_clock_seconds', 0):.0f}s\n")
         f.write(f"Cumulative success rate: {train_summary['cumulative_success_rate']:.1%}\n")
         f.write(f"Cumulative collision rate: {train_summary['cumulative_collision_rate']:.1%}\n\n")
+        best_info = train_summary.get("best_checkpoint", {})
+        if best_info:
+            f.write(f"Best checkpoint: {best_info.get('path', 'N/A')}\n")
+            f.write(f"Best checkpoint score: {best_info.get('score', 'N/A')}\n")
+            f.write(f"Best checkpoint block: {best_info.get('block', 'N/A')}\n")
+            f.write(f"Rollback to best: {train_summary.get('rollback_to_best', False)}\n\n")
+        f.write(f"Collapse detected: {train_summary.get('collapse_detected', False)}\n\n")
 
         if mode == "batch":
             f.write("Level distribution (blocchi):\n")
@@ -993,7 +1572,7 @@ def run_experiment(mode, run_dir, allow_eval_on_incomplete=False):
     if model is None:
         print("Training non ha prodotto un modello. Valutazione saltata.")
         eval_results = {}
-    elif training_status != "COMPLETATO" and not allow_eval_on_incomplete:
+    elif training_status not in {"COMPLETATO", "STOP_EARLY_COLLASSO"} and not allow_eval_on_incomplete:
         print(
             f"Training status={training_status}. "
             "Valutazione saltata (usa --eval-on-incomplete per forzare)."
@@ -1009,6 +1588,8 @@ def run_experiment(mode, run_dir, allow_eval_on_incomplete=False):
 
 
 if __name__ == "__main__":
+    _install_signal_handlers()
+
     parser = argparse.ArgumentParser(description="Esperimento Curriculum vs Batch v2.0")
     parser.add_argument("--mode", type=str, required=True,
                         choices=["batch", "curriculum", "both"],
