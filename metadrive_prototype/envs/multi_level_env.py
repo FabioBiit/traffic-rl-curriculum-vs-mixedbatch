@@ -28,6 +28,7 @@ from training.common import episode_outcome
 # CONFIGURAZIONE LIVELLI
 # ============================================================
 
+# RUN 1 + RUN 2 + RUN 3 + RUN 4
 LEVEL_CONFIGS = {
     "easy": {
         "map": "SSS",
@@ -38,16 +39,16 @@ LEVEL_CONFIGS = {
     },
     "medium": {
         "map": "SCSC",
-        "traffic_density": 0.15,
+        "traffic_density": 0.12, # 0.15 -> 0.12 run4
         "num_scenarios": 10,
-        "accident_prob": 0.1,
+        "accident_prob": 0.005, # 0.01 -> 0.005 run4
         "start_seed": 0,
     },
     "hard": {
         "map": "SCRCSRC",
-        "traffic_density": 0.3,
+        "traffic_density": 0.22, # 0.30 -> 0.22 run4
         "num_scenarios": 15,
-        "accident_prob": 0.2,
+        "accident_prob": 0.10, # 0.20 -> 0.10 run4
         "start_seed": 0,
     },
 }
