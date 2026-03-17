@@ -54,30 +54,41 @@ if sys.platform == "win32":
 
 DEFAULT_ENV_CONFIG = {
     "simulator": {
-        "host": "127.0.0.1", "port": 2000,
-        "timeout_seconds": 20.0, "sync_mode": True,
+        "host": "127.0.0.1", 
+        "port": 2000,
+        "timeout_seconds": 20.0, 
+        "sync_mode": True,
         "fixed_delta_seconds": 0.05,
     },
     "world": {
-        "map": "Town03", "weather_preset": "ClearNoon",
+        "map": "Town03", 
+        "weather_preset": "ClearNoon",
         "no_rendering": True,
     },
     "traffic": {
-        "enabled": True, "n_vehicles": 10, "n_pedestrians": 10,
-        "seed": 42, "persist_traffic": True,
+        "enabled": True, 
+        "n_vehicles": 10, 
+        "n_pedestrians": 10,
+        "seed": 42, 
+        "persist_traffic": True,
     },
     "ego": {
-        "spawn_mode": "random", "spawn_index": 0,
+        "spawn_mode": "random", 
+        "spawn_index": 0,
         "blueprint_filter": "vehicle.tesla.model3",
         "role_name": "hero",
     },
     "wrapper": {
-        "obs_type": "vector", "action_type": "continuous",
-        "frame_stack": 1, "normalize_obs": True,
+        "obs_type": "vector", 
+        "action_type": "continuous",
+        "frame_stack": 1, 
+        "normalize_obs": True,
     },
     "episode": {
-        "max_steps": 1000, "terminate_on_collision": True,
-        "terminate_on_offroad": True, "terminate_on_route_completion": True,
+        "max_steps": 1000, 
+        "terminate_on_collision": True,
+        "terminate_on_offroad": True, 
+        "terminate_on_route_completion": True,
     },
 }
 
