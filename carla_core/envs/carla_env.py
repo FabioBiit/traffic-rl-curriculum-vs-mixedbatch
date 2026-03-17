@@ -5,6 +5,7 @@ Changelog v0.2:
   - Fix: cleanup silenzioso (is_alive check, no stderr spam)
   - Fix: spec.max_episode_steps per RLlib horizon
   - Fix: spawn traffic solo al primo reset (persist_traffic=True)
+  - Ridotto NPC default per RAM (10V + 10P)
 
 Observation space (vector, dim=24):
     [0:3]   ego velocity (vx, vy, vz) m/s
@@ -62,7 +63,7 @@ DEFAULT_ENV_CONFIG = {
         "no_rendering": True,
     },
     "traffic": {
-        "enabled": True, "n_vehicles": 40, "n_pedestrians": 80,
+        "enabled": True, "n_vehicles": 10, "n_pedestrians": 10,
         "seed": 42, "persist_traffic": True,
     },
     "ego": {
@@ -257,12 +258,22 @@ class CarlaEnv(gym.Env):
         bp.set_attribute("role_name", ego_cfg["role_name"])
 
         if ego_cfg["spawn_mode"] == "fixed_index":
-            transform = self._spawn_points[ego_cfg["spawn_index"]]
+            candidates = [self._spawn_points[ego_cfg["spawn_index"]]]
         else:
-            transform = self.np_random.choice(self._spawn_points)
+            candidates = list(self._spawn_points)
+            self.np_random.shuffle(candidates)
 
-        self._ego = self._world.spawn_actor(bp, transform)
-        self._world.tick()
+        # try_spawn_actor returns None on collision instead of raising
+        for transform in candidates:
+            self._ego = self._world.try_spawn_actor(bp, transform)
+            if self._ego is not None:
+                self._world.tick()
+                return
+
+        raise RuntimeError(
+            f"Could not spawn ego on any of {len(candidates)} spawn points. "
+            "Reduce NPC count or use a larger map."
+        )
 
     def _setup_collision_sensor(self):
         bp = self._world.get_blueprint_library().find("sensor.other.collision")
