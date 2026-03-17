@@ -1,0 +1,33 @@
+# Multi-agent CARLA configuration
+# Controls RL agents (vehicles + pedestrians), NPC traffic, and episode rules.
+
+simulator:
+  host: "127.0.0.1"
+  port: 2000
+  timeout_seconds: 20.0
+  sync_mode: true
+  fixed_delta_seconds: 0.05
+
+world:
+  map: "Town03"
+  weather_preset: "ClearNoon"
+  no_rendering: true
+
+agents:
+  n_vehicles_rl: 1                          # RL-controlled vehicles
+  n_pedestrians_rl: 1                       # RL-controlled pedestrians
+  vehicle_blueprint: "vehicle.tesla.model3"
+  pedestrian_blueprint: "walker.pedestrian.*"
+
+traffic:
+  enabled: true
+  n_vehicles_npc: 10                        # Autopilot NPC vehicles
+  n_pedestrians_npc: 10                     # AI-controlled NPC pedestrians
+  seed: 42
+  persist_traffic: true
+
+episode:
+  max_steps: 1000
+  terminate_on_collision: true
+  route_length_vehicle: 50                  # Waypoints for vehicle route
+  route_length_pedestrian: 20               # Not used directly (goal-based)
