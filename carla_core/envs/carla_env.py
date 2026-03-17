@@ -1,11 +1,10 @@
 """
-CarlaEnv v0.2 — Wrapper Gymnasium per CARLA (Single-Agent)
+CarlaEnv v0.3 — Wrapper Gymnasium per CARLA (Single-Agent)
 ==========================================================
-Changelog v0.2:
-  - Fix: cleanup silenzioso (is_alive check, no stderr spam)
-  - Fix: spec.max_episode_steps per RLlib horizon
-  - Fix: spawn traffic solo al primo reset (persist_traffic=True)
-  - Ridotto NPC default per RAM (10V + 10P)
+Changelog v0.3:
+  - Reward v2: speed limit penalty, waypoint reach bonus +5,
+    throttle jerk penalty, increased lane/steer penalties
+  - Nuovi campi episodio: _prev_wp_idx, _prev_throttle
 
 Observation space (vector, dim=24):
     [0:3]   ego velocity (vx, vy, vz) m/s
@@ -75,7 +74,8 @@ DEFAULT_ENV_CONFIG = {
     "ego": {
         "spawn_mode": "random", 
         "spawn_index": 0,
-        "blueprint_filter": "vehicle.tesla.model3",
+        "blueprint_filter": 
+        "vehicle.ford.mustang",
         "role_name": "hero",
     },
     "wrapper": {
@@ -162,6 +162,8 @@ class CarlaEnv(gym.Env):
         self._step_count: int = 0
         self._collision_flag: bool = False
         self._collision_intensity: float = 0.0
+        self._prev_wp_idx: int = 0
+        self._prev_throttle: float = 0.0
         self._original_settings = None
         self._connected: bool = False
         self._traffic_spawned: bool = False
@@ -193,6 +195,8 @@ class CarlaEnv(gym.Env):
         self._step_count = 0
         self._collision_flag = False
         self._collision_intensity = 0.0
+        self._prev_wp_idx = 0
+        self._prev_throttle = 0.0
         return self._get_obs(), {"route_length": len(self._route_waypoints)}
 
     def step(self, action):
@@ -479,9 +483,20 @@ class CarlaEnv(gym.Env):
     # ------------------------------------------------------------------
 
     def _compute_reward(self):
+        """
+        Reward v2 — dense, shaped:
+            + speed_along_route  (capped, incentiva movimento moderato)
+            + waypoint_bonus     (+5.0 per ogni WP raggiunto questo step)
+            - speed_limit        (penalità quadratica sopra 40 km/h)
+            - collision          (-10.0)
+            - lane_deviation     (aumentata a 0.5)
+            - steer_penalty      (aumentata a 0.1)
+            - throttle_jerk      (variazione brusca throttle)
+        """
         reward = 0.0
         speed_kmh = self._get_speed_kmh()
 
+        # 1. Speed along route (capped a 0.8 per non incentivare velocità estrema)
         if self._current_wp_idx < len(self._route_waypoints):
             t_loc = self._route_waypoints[self._current_wp_idx].transform.location
             e_loc = self._ego.get_location()
@@ -489,20 +504,37 @@ class CarlaEnv(gym.Env):
             dx, dy = t_loc.x - e_loc.x, t_loc.y - e_loc.y
             d = math.sqrt(dx**2 + dy**2)
             if d > 0.01:
-                reward += np.clip((ev.x * dx/d + ev.y * dy/d) / 10.0, -0.5, 1.0)
+                reward += np.clip((ev.x * dx/d + ev.y * dy/d) / 10.0, -0.5, 0.8)
 
-        reward += self._route_completion() * 0.1
+        # 2. Waypoint reach bonus (+5 per ogni WP raggiunto questo step)
+        wp_delta = self._current_wp_idx - self._prev_wp_idx
+        if wp_delta > 0:
+            reward += wp_delta * 5.0
+        self._prev_wp_idx = self._current_wp_idx
 
+        # 3. Speed limit penalty (quadratica sopra 40 km/h)
+        if speed_kmh > 40.0:
+            reward -= ((speed_kmh - 40.0) ** 2) / 1600.0  # -1.0 a 80 km/h
+
+        # 4. Collision penalty
         if self._collision_flag:
             reward -= 10.0
 
+        # 5. Lane deviation penalty (aumentata)
         e_loc = self._ego.get_location()
         wp = self._map.get_waypoint(e_loc, project_to_road=True)
         if wp:
-            reward -= np.clip(e_loc.distance(wp.transform.location) / 4.0, 0, 1) * 0.3
+            reward -= np.clip(e_loc.distance(wp.transform.location) / 4.0, 0, 1) * 0.5
 
+        # 6. Steer smoothness penalty (aumentata)
         ctrl = self._ego.get_control()
-        reward -= abs(ctrl.steer) * 0.05
+        reward -= abs(ctrl.steer) * 0.1
+
+        # 7. Throttle jerk penalty (variazione brusca)
+        current_throttle = ctrl.throttle - ctrl.brake
+        reward -= abs(current_throttle - self._prev_throttle) * 0.1
+        self._prev_throttle = current_throttle
+
         return float(reward)
 
     # ------------------------------------------------------------------
