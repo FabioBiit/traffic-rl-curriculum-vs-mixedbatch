@@ -5,7 +5,6 @@ Changelog v0.2:
   - Fix: cleanup silenzioso (is_alive check, no stderr spam)
   - Fix: spec.max_episode_steps per RLlib horizon
   - Fix: spawn traffic solo al primo reset (persist_traffic=True)
-  - Ridotto NPC default per RAM (10V + 10P)
 
 Observation space (vector, dim=24):
     [0:3]   ego velocity (vx, vy, vz) m/s
@@ -122,7 +121,10 @@ class CarlaEnv(gym.Env):
         self.ep_cfg = self.cfg["episode"]
 
         # Fix RLlib horizon warning
-        self.spec = type("Spec", (), {"max_episode_steps": self.ep_cfg["max_steps"]})()
+        self.spec = type("Spec", (), {
+            "id": "CarlaEnv-v0",
+            "max_episode_steps": self.ep_cfg["max_steps"],
+        })()
 
         self.observation_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32

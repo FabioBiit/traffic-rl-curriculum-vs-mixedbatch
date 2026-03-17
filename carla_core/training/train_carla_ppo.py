@@ -56,10 +56,8 @@ def main():
     train_cfg = load_yaml(base / "configs" / "train.yaml")
     env_cfg = load_yaml(base / "configs" / "env.yaml")
 
-    # Override NPC per training (RAM safety)
+    # NPC count from env.yaml, persist across episodes
     env_cfg.setdefault("traffic", {})
-    env_cfg["traffic"]["n_vehicles"] = env_cfg["traffic"].get("n_vehicles", 10)
-    env_cfg["traffic"]["n_pedestrians"] = env_cfg["traffic"].get("n_pedestrians", 10)
     env_cfg["traffic"]["persist_traffic"] = True
 
     sched = train_cfg.get("schedule", {})
