@@ -735,6 +735,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
         reward -= abs(cur_t - ad.prev_throttle) * 0.1
         ad.prev_throttle = cur_t
 
+        # Idle penalty — incentivo a muoversi
+        if speed_kmh < 1.0:
+            reward -= 0.3
+
         return float(reward)
 
     def _pedestrian_reward(self, ad: AgentData) -> float:
