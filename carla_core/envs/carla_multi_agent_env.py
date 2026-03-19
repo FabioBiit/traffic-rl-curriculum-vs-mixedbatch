@@ -735,9 +735,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
         reward -= abs(cur_t - ad.prev_throttle) * 0.1
         ad.prev_throttle = cur_t
 
-        # Idle penalty — incentivo a muoversi
+        # Idle penalty — incentivo a muoversi Run1 500K
         if speed_kmh < 1.0:
             reward -= 0.3
+
+        # Speed bonus — reward proporzionale alla velocità (fino a 30 km/h) Run2 500K
+        reward += min(speed_kmh, 30.0) / 30.0 * 0.5
 
         return float(reward)
 
