@@ -14,9 +14,9 @@ world:
   no_rendering: true
 
 agents:
-  n_vehicles_rl: 1                          # RL-controlled vehicles
-  n_pedestrians_rl: 1                       # RL-controlled pedestrians
-  vehicle_blueprint: "vehicle.tesla.model3"
+  n_vehicles_rl: 3                          # RL-controlled vehicles
+  n_pedestrians_rl: 3                      # RL-controlled pedestrians
+  vehicle_blueprint: "vehicle.audi.etron"
   pedestrian_blueprint: "walker.pedestrian.*"
 
 traffic:

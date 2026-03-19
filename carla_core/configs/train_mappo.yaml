@@ -35,9 +35,15 @@ optimization:
   grad_clip: 0.5
 
 schedule:
-  total_timesteps: 50000        # Smoke test budget (scale after validation)
-  checkpoint_freq: 10000
-  eval_freq: 10000
+  # Smoke test budget (scale after validation)
+  # total_timesteps: 50000
+  # checkpoint_freq: 10000
+  # eval_freq: 10000
+
+  # Run 200K for eval training curves and finetuning
+  total_timesteps: 200000
+  checkpoint_freq: 20000
+  eval_freq: 20000
   stop_on_nan: true
 
 model:
