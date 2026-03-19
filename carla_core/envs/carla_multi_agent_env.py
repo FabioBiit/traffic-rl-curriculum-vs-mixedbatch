@@ -209,6 +209,14 @@ class CarlaMultiAgentEnv(ParallelEnv):
         return self._vehicle_act_space if agent.startswith("vehicle") \
             else self._pedestrian_act_space
 
+    @property
+    def observation_spaces(self):
+        return {a: self.observation_space(a) for a in self.possible_agents}
+
+    @property
+    def action_spaces(self):
+        return {a: self.action_space(a) for a in self.possible_agents}
+
     def reset(self, seed=None, options=None):
         if not self._connected:
             self._connect()
