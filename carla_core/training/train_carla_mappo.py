@@ -246,7 +246,7 @@ def main():
                 f"{ts_done:,}/{total_ts:,} | "
                 f"R:{tot_r:+.1f} (V:{veh_r:+.1f} P:{ped_r:+.1f}) | "
                 f"Len:{ep_len:.0f} | Eps:{eps} | "
-                f"{elapsed / 60:.1f}m / ETA {eta / 60:.1f}m"
+                f"{int(elapsed//3600)}h{int((elapsed%3600)//60):02d}m / ETA {int(eta//3600)}h{int((eta%3600)//60):02d}m"
             )
 
             if tot_r > best_reward:
