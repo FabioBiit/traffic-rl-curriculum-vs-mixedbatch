@@ -28,6 +28,6 @@ traffic:
 
 episode:
   max_steps: 1000
-  terminate_on_collision: true
+  terminate_on_collision: false
   route_length_vehicle: 50                  # Waypoints for vehicle route
   route_length_pedestrian: 20               # Not used directly (goal-based)

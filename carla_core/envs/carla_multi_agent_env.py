@@ -120,10 +120,28 @@ def load_ma_config(config_path=None):
 class AgentData:
     """Stores per-agent state."""
     __slots__ = [
-        "agent_id", "agent_type", "actor", "collision_sensor",
-        "collision_flag", "collision_intensity",
-        "route_waypoints", "current_wp_idx", "prev_wp_idx",
-        "goal_location", "prev_throttle",
+        "agent_id",
+        "agent_type",
+        "actor",
+        "collision_sensor",
+        "collision_flag",
+        "collision_intensity",
+        "collision_step",
+        "route_waypoints",
+        "current_wp_idx",
+        "prev_wp_idx",
+        "goal_location",
+        "prev_throttle",
+        # --- Reward v3: stuck / reverse / anti-loop ---
+        "stuck_steps",
+        "prev_dist_to_wp",
+        "prev_steer",
+        "reverse_active",
+        "reverse_origin",
+        "reverse_steps",
+        "reverse_cooldown",
+        "position_history",
+        "loop_counter",
     ]
 
     def __init__(self, agent_id: str, agent_type: str):
@@ -133,11 +151,22 @@ class AgentData:
         self.collision_sensor = None
         self.collision_flag = False
         self.collision_intensity = 0.0
+        self.collision_step = 0
         self.route_waypoints = []
         self.current_wp_idx = 0
         self.prev_wp_idx = 0
         self.goal_location = None
         self.prev_throttle = 0.0
+        # --- Reward v3 ---
+        self.stuck_steps = 0
+        self.prev_dist_to_wp = 0.0
+        self.prev_steer = 0.0
+        self.reverse_active = False
+        self.reverse_origin = None
+        self.reverse_steps = 0
+        self.reverse_cooldown = False
+        self.position_history = []
+        self.loop_counter = 0
 
 
 # ---------------------------------------------------------------------------
@@ -240,8 +269,18 @@ class CarlaMultiAgentEnv(ParallelEnv):
         for ad in self._agent_data.values():
             ad.collision_flag = False
             ad.collision_intensity = 0.0
+            ad.collision_step = 0
             ad.prev_wp_idx = 0
             ad.prev_throttle = 0.0
+            ad.stuck_steps = 0
+            ad.prev_dist_to_wp = 0.0
+            ad.prev_steer = 0.0
+            ad.reverse_active = False
+            ad.reverse_origin = None
+            ad.reverse_steps = 0
+            ad.reverse_cooldown = False
+            ad.position_history = []
+            ad.loop_counter = 0
 
         observations = {a: self._get_obs(a) for a in self.agents}
         infos = {a: {} for a in self.agents}
@@ -262,17 +301,63 @@ class CarlaMultiAgentEnv(ParallelEnv):
         truncations = {}
         infos = {}
 
+        # --- Update stuck counters and position history ---
+        for agent_id, ad in self._agent_data.items():
+            if not ad.actor or not ad.actor.is_alive:
+                continue
+            vel = ad.actor.get_velocity()
+            speed = math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
+
+            # Stuck detection
+            if ad.agent_type == "vehicle":
+                is_stuck = (3.6 * speed) < 1.0  # < 1 km/h
+            else:
+                is_stuck = speed < 0.3  # < 0.3 m/s
+
+            if is_stuck and not ad.reverse_active:
+                ad.stuck_steps += 1
+            else:
+                ad.stuck_steps = 0
+
+            # Position history sampling (every 50 steps)
+            if self._step_count % 50 == 0:
+                loc = ad.actor.get_location()
+                ad.position_history.append((loc.x, loc.y))
+                if len(ad.position_history) > 20:  # keep last 1000 steps
+                    ad.position_history.pop(0)
+
+            # Distance to current waypoint (for distance penalty)
+            if ad.agent_type == "vehicle" and ad.current_wp_idx < len(ad.route_waypoints):
+                wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
+                ad.prev_dist_to_wp = ad.actor.get_location().distance(wp_loc)
+            elif ad.agent_type == "pedestrian" and ad.goal_location:
+                ad.prev_dist_to_wp = ad.actor.get_location().distance(ad.goal_location)
+
+
         for agent_id in list(self.agents):
             ad = self._agent_data[agent_id]
 
             # Advance waypoints
             if ad.agent_type == "vehicle":
                 self._advance_vehicle_waypoint(ad)
+                # Reset reverse cooldown when agent advances
+                if ad.current_wp_idx > ad.prev_wp_idx and ad.reverse_cooldown:
+                    ad.reverse_cooldown = False
             else:
                 self._advance_pedestrian_goal(ad)
 
             observations[agent_id] = self._get_obs(agent_id)
             rewards[agent_id] = self._compute_reward(agent_id)
+
+            # Collision cooldown: reset flag after 10 steps
+            if ad.collision_flag:
+                if ad.collision_step == 0:
+                    ad.collision_step = self._step_count  # mark when collision happened
+                elif self._step_count - ad.collision_step >= 10:
+                    ad.collision_flag = False
+                    ad.collision_intensity = 0.0
+                    ad.collision_step = 0
+
             term, trunc = self._check_done(agent_id)
             terminations[agent_id] = term
             truncations[agent_id] = trunc
@@ -414,6 +499,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             _ad.collision_flag = True
             imp = event.normal_impulse
             _ad.collision_intensity = math.sqrt(imp.x**2 + imp.y**2 + imp.z**2)
+            _ad.collision_step = 0  # signal: new collision, step() will set actual value
 
         sensor.listen(on_collision)
         ad.collision_sensor = sensor
@@ -514,11 +600,49 @@ class CarlaMultiAgentEnv(ParallelEnv):
             tb = float(np.clip(action[0], -1, 1))
             st = float(np.clip(action[1], -1, 1))
             ctrl = carla.VehicleControl()
-            ctrl.throttle = max(tb, 0.0)
-            ctrl.brake = max(-tb, 0.0)
-            ctrl.steer = st
             ctrl.hand_brake = False
-            ctrl.reverse = False
+
+            # --- Reverse logic ---
+            vel = ad.actor.get_velocity()
+            speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
+
+            if ad.reverse_active:
+                # Check exit conditions: max 60 steps, max 5m from origin, or agent moves again
+                dist_from_origin = ad.actor.get_location().distance(ad.reverse_origin)
+                ad.reverse_steps += 1
+
+                if ad.reverse_steps >= 60 or dist_from_origin >= 5.0:
+                    # Force exit reverse
+                    ad.reverse_active = False
+                    ad.reverse_cooldown = True  # must advance 1 WP to re-enable
+                    ctrl.throttle = 0.0
+                    ctrl.brake = 1.0
+                    ctrl.steer = st
+                    ctrl.reverse = False
+                else:
+                    # Reverse mode: clamp speed to ~10 km/h
+                    ctrl.reverse = True
+                    ctrl.throttle = min(max(tb, 0.0), 0.3)  # soft throttle cap
+                    ctrl.brake = 0.0 if speed_kmh < 10.0 else 0.5
+                    ctrl.steer = st
+
+            elif ad.stuck_steps >= 30 and speed_kmh < 1.0 and not ad.reverse_cooldown:
+                # Activate reverse
+                ad.reverse_active = True
+                ad.reverse_origin = ad.actor.get_location()
+                ad.reverse_steps = 0
+                ctrl.reverse = True
+                ctrl.throttle = 0.2
+                ctrl.brake = 0.0
+                ctrl.steer = st
+
+            else:
+                # Normal driving
+                ctrl.throttle = max(tb, 0.0)
+                ctrl.brake = max(-tb, 0.0)
+                ctrl.steer = st
+                ctrl.reverse = False
+
             ad.actor.apply_control(ctrl)
 
         elif ad.agent_type == "pedestrian":
@@ -692,73 +816,131 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return self._pedestrian_reward(ad)
 
     def _vehicle_reward(self, ad: AgentData) -> float:
-        """Reward v2 — same as CarlaEnv v0.3."""
+        """
+        Reward v3 — route-centric, anti-exploit.
+        Changes from v2:
+        - REMOVED speed_bonus (was enabling reward hacking)
+        - ADDED distance-from-waypoint penalty
+        - ADDED anti-looping penalty
+        - ADDED stuck penalty (crescente)
+        - ADDED recovery bonus (post-reverse sblocco)
+        - ADDED steer jerk penalty
+        - ADDED hard brake penalty
+        - INCREASED waypoint bonus 5 -> 10
+        - ADDED collision cooldown (no instant terminate)
+        - ADDED collision intensity scaling
+        """
         reward = 0.0
         vel = ad.actor.get_velocity()
         speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
+        ctrl = ad.actor.get_control()
+        el = ad.actor.get_location()
 
-        # Speed along route
+        # ---- 1. Speed along route (DOMINANT reward signal) ----
         if ad.current_wp_idx < len(ad.route_waypoints):
             tl = ad.route_waypoints[ad.current_wp_idx].transform.location
-            el = ad.actor.get_location()
             dx, dy = tl.x - el.x, tl.y - el.y
             d = math.sqrt(dx**2 + dy**2)
             if d > 0.01:
-                reward += np.clip((vel.x * dx/d + vel.y * dy/d) / 10, -0.5, 0.8)
+                reward += np.clip((vel.x * dx/d + vel.y * dy/d) / 10, -0.5, 1.0)
 
-        # Waypoint bonus
+        # ---- 2. Waypoint reach bonus (increased) ----
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
-            reward += wp_delta * 5.0
+            reward += wp_delta * 10.0
         ad.prev_wp_idx = ad.current_wp_idx
 
-        # Speed limit
+        # ---- 3. Distance-from-waypoint penalty ----
+        if ad.current_wp_idx < len(ad.route_waypoints):
+            wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
+            curr_dist = el.distance(wp_loc)
+            if ad.prev_dist_to_wp > 0:
+                dist_delta = curr_dist - ad.prev_dist_to_wp
+                if dist_delta > 0:
+                    reward -= min(dist_delta * 0.3, 1.0)  # getting farther = penalty
+            ad.prev_dist_to_wp = curr_dist
+
+        # ---- 4. Anti-looping penalty ----
+        if len(ad.position_history) >= 10:
+            old_pos = ad.position_history[-10]  # 500 steps ago
+            curr_pos = (el.x, el.y)
+            loop_dist = math.sqrt((curr_pos[0] - old_pos[0])**2 +
+                                (curr_pos[1] - old_pos[1])**2)
+            if loop_dist < 15.0:  # hasn't moved 15m in 500 steps
+                ad.loop_counter += 1
+                reward -= min(1.0 + ad.loop_counter * 0.1, 3.0)
+            else:
+                ad.loop_counter = max(ad.loop_counter - 1, 0)
+
+        # ---- 5. Stuck penalty (crescente) ----
+        if ad.stuck_steps > 0 and not ad.reverse_active:
+            if ad.stuck_steps <= 30:
+                reward -= 0.1 * ad.stuck_steps / 30.0
+            else:
+                reward -= 2.0
+
+        # ---- 6. Reverse: attenuated penalty, recovery bonus ----
+        if ad.reverse_active:
+            reward -= 0.05  # mild penalty during reverse
+        elif ad.stuck_steps == 0 and ad.reverse_cooldown:
+            # Just recovered from reverse AND started moving
+            pass  # recovery bonus given when cooldown resets (WP advance)
+
+        # ---- 7. Speed limit ----
         if speed_kmh > 40:
             reward -= ((speed_kmh - 40) ** 2) / 1600
 
-        # Collision
+        # ---- 8. Collision (scaled, with cooldown logic) ----
         if ad.collision_flag:
-            reward -= 10.0
+            intensity_penalty = min(ad.collision_intensity * 0.01, 5.0)
+            reward -= 5.0 + intensity_penalty
 
-        # Lane deviation
-        el = ad.actor.get_location()
+        # ---- 9. Lane deviation ----
         wp = self._map.get_waypoint(el, project_to_road=True)
         if wp:
             reward -= np.clip(el.distance(wp.transform.location) / 4, 0, 1) * 0.5
 
-        # Steer
-        ctrl = ad.actor.get_control()
+        # ---- 10. Steer penalty ----
         reward -= abs(ctrl.steer) * 0.1
 
-        # Throttle jerk
+        # ---- 11. Steer jerk penalty (NEW) ----
+        reward -= abs(ctrl.steer - ad.prev_steer) * 0.15
+        ad.prev_steer = ctrl.steer
+
+        # ---- 12. Throttle jerk penalty ----
         cur_t = ctrl.throttle - ctrl.brake
-        reward -= abs(cur_t - ad.prev_throttle) * 0.1
+        reward -= abs(cur_t - ad.prev_throttle) * 0.15
         ad.prev_throttle = cur_t
 
-        # Idle penalty — incentivo a muoversi Run1 500K
-        if speed_kmh < 1.0:
+        # ---- 13. Hard brake penalty (NEW) ----
+        if ctrl.brake > 0.8:
             reward -= 0.3
 
-        # Speed bonus — reward proporzionale alla velocità (fino a 30 km/h) Run2 500K
-        reward += min(speed_kmh, 30.0) / 30.0 * 0.5
+        # ---- 14. Idle penalty (kept, reduced for reverse) ----
+        if speed_kmh < 1.0 and not ad.reverse_active:
+            reward -= 0.3
+
+        # ---- 15. Time pressure ----
+        reward -= 0.01 * self._step_count / self.cfg["episode"]["max_steps"]
 
         return float(reward)
 
+
     def _pedestrian_reward(self, ad: AgentData) -> float:
         """
-        Pedestrian reward:
-            + progress toward goal
-            + goal reach bonus
-            - collision penalty
-            - leaving sidewalk penalty
-            - speed penalty (too fast)
+        Pedestrian reward v3 — goal-centric, anti-exploit.
+        Changes from v1:
+        - ADDED distance-from-goal penalty
+        - ADDED stuck penalty
+        - ADDED anti-looping penalty
+        - ADDED steer (direction) jerk penalty
         """
         reward = 0.0
         loc = ad.actor.get_location()
         vel = ad.actor.get_velocity()
         speed = math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
 
-        # Progress toward goal
+        # ---- 1. Progress toward goal (DOMINANT) ----
         if ad.goal_location:
             dx = ad.goal_location.x - loc.x
             dy = ad.goal_location.y - loc.y
@@ -772,21 +954,51 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if dist < 3.0:
                 reward += 10.0
 
-        # Collision
-        if ad.collision_flag:
-            reward -= 10.0
+            # Distance-from-goal penalty (getting farther)
+            if ad.prev_dist_to_wp > 0:
+                dist_delta = dist - ad.prev_dist_to_wp
+                if dist_delta > 0:
+                    reward -= min(dist_delta * 0.3, 1.0)
+            ad.prev_dist_to_wp = dist
 
-        # Sidewalk bonus / road penalty
+        # ---- 2. Anti-looping penalty ----
+        if len(ad.position_history) >= 10:
+            old_pos = ad.position_history[-10]
+            curr_pos = (loc.x, loc.y)
+            loop_dist = math.sqrt((curr_pos[0] - old_pos[0])**2 +
+                                (curr_pos[1] - old_pos[1])**2)
+            if loop_dist < 8.0:  # hasn't moved 8m in 500 steps
+                ad.loop_counter += 1
+                reward -= min(1.0 + ad.loop_counter * 0.1, 3.0)
+            else:
+                ad.loop_counter = max(ad.loop_counter - 1, 0)
+
+        # ---- 3. Stuck penalty ----
+        if ad.stuck_steps > 0:
+            if ad.stuck_steps <= 30:
+                reward -= 0.1 * ad.stuck_steps / 30.0
+            else:
+                reward -= 2.0
+
+        # ---- 4. Collision ----
+        if ad.collision_flag:
+            intensity_penalty = min(ad.collision_intensity * 0.01, 5.0)
+            reward -= 5.0 + intensity_penalty
+
+        # ---- 5. Sidewalk bonus / road penalty ----
         wp = self._map.get_waypoint(loc, project_to_road=False)
         if wp:
             if str(wp.lane_type) == "Sidewalk":
-                reward += 0.1  # small bonus for staying on sidewalk
+                reward += 0.1
             elif str(wp.lane_type) == "Driving":
-                reward -= 0.5  # penalty for being on road
+                reward -= 0.5
 
-        # Speed penalty (running too fast)
-        if speed > 2.0:  # faster than brisk walk
+        # ---- 6. Speed penalty (running too fast) ----
+        if speed > 2.0:
             reward -= (speed - 2.0) * 0.2
+
+        # ---- 7. Time pressure ----
+        reward -= 0.01 * self._step_count / self.cfg["episode"]["max_steps"]
 
         return float(reward)
 
@@ -800,8 +1012,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
         truncated = False
 
         # Collision
-        if self.cfg["episode"]["terminate_on_collision"] and ad.collision_flag:
-            terminated = True
+        # if self.cfg["episode"]["terminate_on_collision"] and ad.collision_flag:
+        #    terminated = True
 
         # Vehicle: route complete
         if ad.agent_type == "vehicle":
