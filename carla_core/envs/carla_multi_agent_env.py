@@ -310,7 +310,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
             # Stuck detection
             if ad.agent_type == "vehicle":
-                is_stuck = (3.6 * speed) < 1.0  # < 1 km/h
+                is_stuck = (3.6 * speed) < 3.0  # < 3 km/h
             else:
                 is_stuck = speed < 0.3  # < 0.3 m/s
 
@@ -626,7 +626,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ctrl.brake = 0.0 if speed_kmh < 10.0 else 0.5
                     ctrl.steer = st
 
-            elif ad.stuck_steps >= 30 and speed_kmh < 1.0 and not ad.reverse_cooldown:
+            elif ad.stuck_steps >= 20 and speed_kmh < 3.0 and not ad.reverse_cooldown:
                 # Activate reverse
                 ad.reverse_active = True
                 ad.reverse_origin = ad.actor.get_location()
