@@ -142,6 +142,7 @@ class AgentData:
         "reverse_cooldown",
         "position_history",
         "loop_counter",
+        "last_wp_advance_step"
     ]
 
     def __init__(self, agent_id: str, agent_type: str):
@@ -167,6 +168,7 @@ class AgentData:
         self.reverse_cooldown = False
         self.position_history = []
         self.loop_counter = 0
+        self.last_wp_advance_step = 0
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +283,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.reverse_cooldown = False
             ad.position_history = []
             ad.loop_counter = 0
+            ad.last_wp_advance_step = 0
 
         observations = {a: self._get_obs(a) for a in self.agents}
         infos = {a: {} for a in self.agents}
@@ -310,7 +313,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
             # Stuck detection
             if ad.agent_type == "vehicle":
-                is_stuck = (3.6 * speed) < 3.0  # < 3 km/h
+                # Route-progress based: stuck if no WP advance in 100 steps
+                if ad.current_wp_idx > ad.prev_wp_idx:
+                    ad.last_wp_advance_step = self._step_count
+                steps_since_wp = self._step_count - ad.last_wp_advance_step
+                is_stuck = steps_since_wp > 100  # 5 sec without WP progress
             else:
                 is_stuck = speed < 0.3  # < 0.3 m/s
 
@@ -626,7 +633,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ctrl.brake = 0.0 if speed_kmh < 10.0 else 0.5
                     ctrl.steer = st
 
-            elif ad.stuck_steps >= 20 and speed_kmh < 3.0 and not ad.reverse_cooldown:
+            elif ad.stuck_steps >= 20 and not ad.reverse_cooldown:
                 # Activate reverse
                 ad.reverse_active = True
                 ad.reverse_origin = ad.actor.get_location()
@@ -815,8 +822,18 @@ class CarlaMultiAgentEnv(ParallelEnv):
         else:
             return self._pedestrian_reward(ad)
 
+
     def _vehicle_reward(self, ad: AgentData) -> float:
         """
+        Reward v4 — route-centric, balanced positive/negative.
+        Changes from v3:
+        - INCREASED speed_along_route cap (+2.0)
+        - INCREASED waypoint bonus (+20)
+        - ADDED heading alignment bonus
+        - REDUCED smoothness penalties (were suppressing movement)
+        - REDUCED time pressure
+        - Stuck detection based on route progress, not speed
+
         Reward v3 — route-centric, anti-exploit.
         Changes from v2:
         - REMOVED speed_bonus (was enabling reward hacking)
@@ -830,98 +847,103 @@ class CarlaMultiAgentEnv(ParallelEnv):
         - ADDED collision cooldown (no instant terminate)
         - ADDED collision intensity scaling
         """
+        
         reward = 0.0
         vel = ad.actor.get_velocity()
         speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
         ctrl = ad.actor.get_control()
         el = ad.actor.get_location()
 
-        # ---- 1. Speed along route (DOMINANT reward signal) ----
+        # ---- 1. Speed along route (DOMINANT, increased cap) ----
         if ad.current_wp_idx < len(ad.route_waypoints):
             tl = ad.route_waypoints[ad.current_wp_idx].transform.location
             dx, dy = tl.x - el.x, tl.y - el.y
             d = math.sqrt(dx**2 + dy**2)
             if d > 0.01:
-                reward += np.clip((vel.x * dx/d + vel.y * dy/d) / 10, -0.5, 1.0)
+                reward += np.clip((vel.x * dx/d + vel.y * dy/d) / 10, -1.0, 2.0)
 
-        # ---- 2. Waypoint reach bonus (increased) ----
+        # ---- 2. Waypoint reach bonus (doubled) ----
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
-            reward += wp_delta * 10.0
+            reward += wp_delta * 20.0
         ad.prev_wp_idx = ad.current_wp_idx
 
-        # ---- 3. Distance-from-waypoint penalty ----
+        # ---- 3. Heading alignment bonus (NEW — teaches direction) ----
+        if ad.current_wp_idx < len(ad.route_waypoints):
+            wp_fwd = ad.route_waypoints[ad.current_wp_idx].transform.get_forward_vector()
+            fwd = ad.actor.get_transform().get_forward_vector()
+            alignment = fwd.x * wp_fwd.x + fwd.y * wp_fwd.y  # cosine [-1, 1]
+            reward += max(alignment, 0) * 0.5  # only reward alignment, no penalty
+
+        # ---- 4. Distance-from-waypoint penalty ----
         if ad.current_wp_idx < len(ad.route_waypoints):
             wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
             curr_dist = el.distance(wp_loc)
             if ad.prev_dist_to_wp > 0:
                 dist_delta = curr_dist - ad.prev_dist_to_wp
                 if dist_delta > 0:
-                    reward -= min(dist_delta * 0.3, 1.0)  # getting farther = penalty
+                    reward -= min(dist_delta * 0.3, 1.0)
             ad.prev_dist_to_wp = curr_dist
 
-        # ---- 4. Anti-looping penalty ----
+        # ---- 5. Anti-looping penalty ----
         if len(ad.position_history) >= 10:
-            old_pos = ad.position_history[-10]  # 500 steps ago
+            old_pos = ad.position_history[-10]
             curr_pos = (el.x, el.y)
             loop_dist = math.sqrt((curr_pos[0] - old_pos[0])**2 +
                                 (curr_pos[1] - old_pos[1])**2)
-            if loop_dist < 15.0:  # hasn't moved 15m in 500 steps
+            if loop_dist < 15.0:
                 ad.loop_counter += 1
                 reward -= min(1.0 + ad.loop_counter * 0.1, 3.0)
             else:
                 ad.loop_counter = max(ad.loop_counter - 1, 0)
 
-        # ---- 5. Stuck penalty (crescente) ----
+        # ---- 6. Stuck penalty (crescente) ----
         if ad.stuck_steps > 0 and not ad.reverse_active:
             if ad.stuck_steps <= 30:
                 reward -= 0.1 * ad.stuck_steps / 30.0
             else:
                 reward -= 2.0
 
-        # ---- 6. Reverse: attenuated penalty, recovery bonus ----
+        # ---- 7. Reverse: attenuated penalty ----
         if ad.reverse_active:
-            reward -= 0.05  # mild penalty during reverse
-        elif ad.stuck_steps == 0 and ad.reverse_cooldown:
-            # Just recovered from reverse AND started moving
-            pass  # recovery bonus given when cooldown resets (WP advance)
+            reward -= 0.05
 
-        # ---- 7. Speed limit ----
+        # ---- 8. Speed limit ----
         if speed_kmh > 40:
             reward -= ((speed_kmh - 40) ** 2) / 1600
 
-        # ---- 8. Collision (scaled, with cooldown logic) ----
+        # ---- 9. Collision (scaled) ----
         if ad.collision_flag:
             intensity_penalty = min(ad.collision_intensity * 0.01, 5.0)
             reward -= 5.0 + intensity_penalty
 
-        # ---- 9. Lane deviation ----
+        # ---- 10. Lane deviation ----
         wp = self._map.get_waypoint(el, project_to_road=True)
         if wp:
             reward -= np.clip(el.distance(wp.transform.location) / 4, 0, 1) * 0.5
 
-        # ---- 10. Steer penalty ----
-        reward -= abs(ctrl.steer) * 0.1
+        # ---- 11. Steer penalty (reduced) ----
+        reward -= abs(ctrl.steer) * 0.03
 
-        # ---- 11. Steer jerk penalty (NEW) ----
-        reward -= abs(ctrl.steer - ad.prev_steer) * 0.15
+        # ---- 12. Steer jerk (reduced) ----
+        reward -= abs(ctrl.steer - ad.prev_steer) * 0.05
         ad.prev_steer = ctrl.steer
 
-        # ---- 12. Throttle jerk penalty ----
+        # ---- 13. Throttle jerk (reduced) ----
         cur_t = ctrl.throttle - ctrl.brake
-        reward -= abs(cur_t - ad.prev_throttle) * 0.15
+        reward -= abs(cur_t - ad.prev_throttle) * 0.05
         ad.prev_throttle = cur_t
 
-        # ---- 13. Hard brake penalty (NEW) ----
+        # ---- 14. Hard brake (reduced) ----
         if ctrl.brake > 0.8:
-            reward -= 0.3
+            reward -= 0.1
 
-        # ---- 14. Idle penalty (kept, reduced for reverse) ----
+        # ---- 15. Idle penalty ----
         if speed_kmh < 1.0 and not ad.reverse_active:
             reward -= 0.3
 
-        # ---- 15. Time pressure ----
-        reward -= 0.01 * self._step_count / self.cfg["episode"]["max_steps"]
+        # ---- 16. Time pressure (reduced) ----
+        reward -= 0.005 * self._step_count / self.cfg["episode"]["max_steps"]
 
         return float(reward)
 
