@@ -219,6 +219,11 @@ def main():
                 vehicle.destroy()
             except Exception:
                 pass
+        try:
+            tm = client.get_trafficmanager(8000)
+            tm.set_synchronous_mode(False)
+        except Exception:
+            pass
 
         if world is not None and original_settings is not None:
             world.apply_settings(original_settings)

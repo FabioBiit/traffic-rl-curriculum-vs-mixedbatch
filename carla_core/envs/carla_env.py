@@ -252,6 +252,8 @@ class CarlaEnv(gym.Env):
         self._original_settings = self._world.get_settings()
         settings = self._world.get_settings()
         settings.synchronous_mode = sim["sync_mode"]
+        assert sim.get("sync_mode", True), \
+            "CarlaEnv requires sync_mode=True for deterministic RL training"
         settings.fixed_delta_seconds = sim["fixed_delta_seconds"]
         if self.cfg["world"].get("no_rendering", False):
             settings.no_rendering_mode = True

@@ -143,7 +143,8 @@ class AgentData:
         "reverse_cooldown",
         "position_history",
         "loop_counter",
-        "last_wp_advance_step"
+        "last_wp_advance_step",
+        "goal_just_reached"
     ]
 
     def __init__(self, agent_id: str, agent_type: str):
@@ -159,7 +160,6 @@ class AgentData:
         self.prev_wp_idx = 0
         self.goal_location = None
         self.prev_throttle = 0.0
-        # --- Reward v3 ---
         self.stuck_steps = 0
         self.prev_dist_to_wp = 0.0
         self.prev_steer = 0.0
@@ -170,6 +170,7 @@ class AgentData:
         self.position_history = []
         self.loop_counter = 0
         self.last_wp_advance_step = 0
+        self.goal_just_reached = False
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +229,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Per-agent data
         self._agent_data: dict[str, AgentData] = {}
         self._step_count = 0
+        self._reset_count = 0
 
     # ------------------------------------------------------------------
     # PettingZoo API
@@ -266,6 +268,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             self._world.tick()
 
         self._step_count = 0
+        self._reset_count += 1
         self.agents = list(self.possible_agents)
 
         # Reset per-agent flags
@@ -413,6 +416,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._original_settings = self._world.get_settings()
         settings = self._world.get_settings()
         settings.synchronous_mode = sim["sync_mode"]
+        assert sim.get("sync_mode", True), \
+            "CarlaMultiAgentEnv requires sync_mode=True for deterministic RL training"
         settings.fixed_delta_seconds = sim["fixed_delta_seconds"]
         if self.cfg["world"].get("no_rendering", False):
             settings.no_rendering_mode = True
@@ -435,7 +440,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
     def _setup_agents(self):
         bp_lib = self._world.get_blueprint_library()
-        rng = np.random.default_rng(self.cfg["traffic"].get("seed", 42) + int(time.time() * 1000) % 100000)
+        rng = np.random.default_rng(self.cfg["traffic"].get("seed", 42) + self._reset_count)
         
         # Shuffle spawn points for vehicles
         veh_points = list(self._spawn_points)

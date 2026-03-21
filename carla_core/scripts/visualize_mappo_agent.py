@@ -8,8 +8,11 @@ Uso:
     python carla_core/scripts/visualize_mappo_agent.py --checkpoint <path>
     python carla_core/scripts/visualize_mappo_agent.py --checkpoint carla_core/experiments/carla_mappo_20260319_140022
 
+    NOTE: --checkpoint expects the experiment directory containing the checkpoint.
+          RLlib 2.10 auto-detects the latest checkpoint in the directory.
+    
 IMPORTANTE: Avvia CARLA CON rendering (senza -RenderOffScreen):
-    C:\CARLA_0.9.16\CarlaUE4.exe -quality-level=Low -windowed -ResX=1280 -ResY=720
+    C:\CARLA_0.9.16\CarlaUE4.exe -quality-level=Medium -windowed -ResX=1280 -ResY=720
 """
 
 import argparse

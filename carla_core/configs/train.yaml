@@ -15,8 +15,8 @@ algorithm:
 resources:
   num_workers: 0                # Number of rollout workers.
   num_gpus: 1                   # Number of GPUs reserved for training.
-  num_envs_per_worker: 1        # Parallel environments per worker.
-  num_cpus_for_driver: 1        # CPUs reserved for the driver process.
+  num_envs_per_worker: 1        # NOT WIRED — reserved for future multi-env scaling # Parallel environments per worker.
+  num_cpus_for_driver: 1        # NOT WIRED — Ray auto-manages driver CPUs # CPUs reserved for the driver process.
 
 rollout:
   rollout_fragment_length: 200  # Steps collected per rollout fragment.
@@ -37,7 +37,7 @@ schedule:
   total_timesteps: 200000       # Total training budget in timesteps.
   checkpoint_freq: 20000        # Save checkpoint every N timesteps.
   eval_freq: 10000              # Run evaluation every N timesteps.
-  stop_on_nan: true             # Stop training if NaN/inf is detected.
+  stop_on_nan: true             # NOT WIRED — reserved for future NaN detection # Stop training if NaN/inf is detected.
 
 logging:
   tensorboard: true             # Enable TensorBoard logging.

@@ -115,6 +115,9 @@ def main():
         print("[WARNING] num_workers > 0 requires separate CARLA instances per worker.")
         print("          Forcing num_workers = 0 (single CARLA instance).")
         n_workers = 0
+    exp_seed = train_cfg.get("experiment", {}).get("seed", 42)
+    env_cfg.setdefault("traffic", {})
+    env_cfg["traffic"]["seed"] = exp_seed
     n_gpus = 0 if args.no_gpu else res.get("num_gpus", 1)
     batch_size = roll.get("train_batch_size", 4000)
     ckpt_freq = sched.get("checkpoint_freq", 10_000)
@@ -128,7 +131,7 @@ def main():
     # Output dir
     ts_str = time.strftime("%Y%m%d_%H%M%S")
     name = train_cfg.get("experiment", {}).get("name", "carla_mappo")
-    out_dir = args.checkpoint_dir or str(base / "experiments" / f"{name}_{ts_str}")
+    out_dir = args.checkpoint_dir or str(Path(out_base) / f"{name}_{ts_str}")
     os.makedirs(out_dir, exist_ok=True)
 
     print(f"{'=' * 60}")
@@ -139,6 +142,10 @@ def main():
     print(f"  Policies: vehicle({VEHICLE_OBS_DIM}D), pedestrian({PEDESTRIAN_OBS_DIM}D)")
     print(f"  Output: {out_dir}")
     print(f"{'=' * 60}\n")
+
+    # Wire remaining config fields
+    exp_cfg = train_cfg.get("experiment", {})
+    out_base = exp_cfg.get("output_dir", str(base / "experiments"))
 
     # --- Ray init ---
     ray.init(num_cpus=max(n_workers + 2, 2), num_gpus=n_gpus, log_to_driver=False)

@@ -16,8 +16,8 @@ algorithm:
 resources:
   num_workers: 0                # 0 = local driver only (CARLA single instance)
   num_gpus: 1
-  num_envs_per_worker: 1
-  num_cpus_for_driver: 1
+  num_envs_per_worker: 1        # NOT WIRED — reserved for future multi-env scaling
+  num_cpus_for_driver: 1        # NOT WIRED — Ray auto-manages driver CPUs
 
 rollout:
   rollout_fragment_length: 200
@@ -44,7 +44,7 @@ schedule:
   total_timesteps: 200000
   checkpoint_freq: 20000
   eval_freq: 20000
-  stop_on_nan: true
+  stop_on_nan: true             # NOT WIRED — reserved for future NaN detection
 
 model:
   hidden_size: 256              # MLP hidden layer size for actor and critic

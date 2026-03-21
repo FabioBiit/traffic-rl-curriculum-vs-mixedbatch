@@ -5,10 +5,12 @@ Carica checkpoint RLlib e fa girare l'agente con rendering visivo.
 
 Uso:
     python carla_core/scripts/visualize_agent.py --checkpoint <path>
-    python carla_core/scripts/visualize_agent.py --checkpoint carla_core/experiments/carla_g1_smoke_20260317_111848
+    python carla_core/scripts/visualize_agent.py --checkpoint carla_core/experiments/carla_ppo_20260319/checkpoint_000010
+    
+    NOTE: --checkpoint expects the checkpoint subdirectory path, not the experiment root.
 
 IMPORTANTE: Avvia CARLA CON rendering (senza -RenderOffScreen):
-    C:\CARLA_0.9.16\CarlaUE4.exe -quality-level=Low -windowed -ResX=1280 -ResY=720
+    C:\CARLA_0.9.16\CarlaUE4.exe -quality-level=Medium -windowed -ResX=1280 -ResY=720
 """
 
 import argparse
