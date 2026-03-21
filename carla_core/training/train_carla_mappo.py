@@ -139,7 +139,7 @@ def main():
 
     # Output dir
     ts_str = time.strftime("%Y%m%d_%H%M%S")
-    name = train_cfg.get("experiment", {}).get("name", "carla_mappo")
+    name = exp_cfg.get("name", "carla_mappo")
     out_dir = args.checkpoint_dir or str(Path(out_base) / f"{name}_{ts_str}")
     os.makedirs(out_dir, exist_ok=True)
 
