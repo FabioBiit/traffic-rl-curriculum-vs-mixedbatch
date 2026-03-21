@@ -20,6 +20,7 @@ from pathlib import Path
 
 import torch
 import numpy as np
+import random
 import yaml
 
 # Suppress CARLA SIGABRT on Windows before any carla import
@@ -99,6 +100,7 @@ def main():
 
     torch.manual_seed(exp_seed)
     np.random.seed(exp_seed)
+    random.seed(exp_seed)
 
     config = (
         PPOConfig()
@@ -126,6 +128,7 @@ def main():
             evaluation_num_workers=0,
         )
         .framework("torch")
+        .debugging(seed=exp_seed)
     )
 
     algo = config.build()

@@ -34,6 +34,7 @@ if sys.platform == "win32":
     signal.signal(signal.SIGABRT, signal.SIG_IGN)
 
 import numpy as np
+import random
 import ray
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.env.wrappers.pettingzoo_env import ParallelPettingZooEnv
@@ -156,6 +157,7 @@ def main():
 
     torch.manual_seed(exp_seed)
     np.random.seed(exp_seed)
+    random.seed(exp_seed)
 
     # --- Register ---
     register_env("CarlaMultiAgent-v0", rllib_env_creator)
@@ -224,6 +226,7 @@ def main():
             evaluation_num_workers=0,
         )
         .framework("torch")
+        .debugging(seed=exp_seed)
     )
 
     # --- Build & Train ---
