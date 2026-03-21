@@ -218,6 +218,11 @@ class CarlaEnv(gym.Env):
     def close(self):
         self._cleanup_ego()
         self._cleanup_traffic()
+        if self._tm:
+            try:
+                self._tm.set_synchronous_mode(False)
+            except Exception:
+                pass
         if self._world and self._original_settings:
             try:
                 self._world.apply_settings(self._original_settings)

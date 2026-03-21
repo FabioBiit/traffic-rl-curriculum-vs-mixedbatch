@@ -143,7 +143,8 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
 
         # Collect other agents' obs
         opponent_obs_list = []
-        for other_id, other_data in original_batches.items():
+        for other_id in sorted(original_batches.keys()):
+            other_data = original_batches[other_id]
             if other_id == agent_id:
                 continue
             # RLlib 2.10.x: other_data = (policy_id, policy, SampleBatch)

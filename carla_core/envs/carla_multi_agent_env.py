@@ -33,6 +33,7 @@ import signal
 import sys
 from copy import deepcopy
 from pathlib import Path
+from time import time
 from typing import Optional
 
 import gymnasium as gym
@@ -284,6 +285,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.position_history = []
             ad.loop_counter = 0
             ad.last_wp_advance_step = 0
+            ad.goal_just_reached = False
 
         observations = {a: self._get_obs(a) for a in self.agents}
         infos = {a: {} for a in self.agents}
@@ -314,8 +316,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
             # Stuck detection
             if ad.agent_type == "vehicle":
                 # Route-progress based: stuck if no WP advance in 100 steps
-                if ad.current_wp_idx > ad.prev_wp_idx:
-                    ad.last_wp_advance_step = self._step_count
                 steps_since_wp = self._step_count - ad.last_wp_advance_step
                 is_stuck = steps_since_wp > 100  # 5 sec without WP progress
             else:
@@ -333,13 +333,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 if len(ad.position_history) > 20:  # keep last 1000 steps
                     ad.position_history.pop(0)
 
-            # Distance to current waypoint (for distance penalty)
-            if ad.agent_type == "vehicle" and ad.current_wp_idx < len(ad.route_waypoints):
-                wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-                ad.prev_dist_to_wp = ad.actor.get_location().distance(wp_loc)
-            elif ad.agent_type == "pedestrian" and ad.goal_location:
-                ad.prev_dist_to_wp = ad.actor.get_location().distance(ad.goal_location)
-
 
         for agent_id in list(self.agents):
             ad = self._agent_data[agent_id]
@@ -348,7 +341,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if ad.agent_type == "vehicle":
                 self._advance_vehicle_waypoint(ad)
                 # Reset reverse cooldown when agent advances
-                if ad.current_wp_idx > ad.prev_wp_idx and ad.reverse_cooldown:
+                # Fix finding 1: update last_wp_advance_step HERE, after advance
+                if ad.current_wp_idx > ad.prev_wp_idx:
+                    ad.last_wp_advance_step = self._step_count
+                if ad.reverse_cooldown and ad.current_wp_idx > ad.prev_wp_idx:
                     ad.reverse_cooldown = False
             else:
                 self._advance_pedestrian_goal(ad)
@@ -371,6 +367,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             infos[agent_id] = {
                 "step": self._step_count,
                 "collision": ad.collision_flag,
+                "route_completion": self._vehicle_route_completion(ad) if ad.agent_type == "vehicle" else 0.0,
             }
 
         # Remove terminated/truncated agents
@@ -382,6 +379,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
     def close(self):
         self._cleanup_agents()
         self._cleanup_traffic()
+        if self._tm:
+            try:
+                self._tm.set_synchronous_mode(False)
+            except Exception:
+                pass
         if self._world and self._original_settings:
             try:
                 self._world.apply_settings(self._original_settings)
@@ -433,8 +435,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
     def _setup_agents(self):
         bp_lib = self._world.get_blueprint_library()
-        rng = np.random.default_rng(self.cfg["traffic"].get("seed", 42) + self._step_count)
-
+        rng = np.random.default_rng(self.cfg["traffic"].get("seed", 42) + int(time.time() * 1000) % 100000)
+        
         # Shuffle spawn points for vehicles
         veh_points = list(self._spawn_points)
         rng.shuffle(veh_points)
@@ -804,6 +806,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return
         loc = ad.actor.get_location()
         if loc.distance(ad.goal_location) < 3.0:
+            ad.goal_just_reached = True  # flag BEFORE replacing goal
             self._setup_pedestrian_goal(ad)  # New random goal
 
     def _vehicle_route_completion(self, ad: AgentData) -> float:
@@ -824,126 +827,46 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
 
     def _vehicle_reward(self, ad: AgentData) -> float:
-        """
-        Reward v4 — route-centric, balanced positive/negative.
-        Changes from v3:
-        - INCREASED speed_along_route cap (+2.0)
-        - INCREASED waypoint bonus (+20)
-        - ADDED heading alignment bonus
-        - REDUCED smoothness penalties (were suppressing movement)
-        - REDUCED time pressure
-        - Stuck detection based on route progress, not speed
-
-        Reward v3 — route-centric, anti-exploit.
-        Changes from v2:
-        - REMOVED speed_bonus (was enabling reward hacking)
-        - ADDED distance-from-waypoint penalty
-        - ADDED anti-looping penalty
-        - ADDED stuck penalty (crescente)
-        - ADDED recovery bonus (post-reverse sblocco)
-        - ADDED steer jerk penalty
-        - ADDED hard brake penalty
-        - INCREASED waypoint bonus 5 -> 10
-        - ADDED collision cooldown (no instant terminate)
-        - ADDED collision intensity scaling
-        """
-        
+        """Reward v5 — simplified, literature-aligned."""
         reward = 0.0
         vel = ad.actor.get_velocity()
         speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
-        ctrl = ad.actor.get_control()
         el = ad.actor.get_location()
 
-        # ---- 1. Speed along route (DOMINANT, increased cap) ----
-        if ad.current_wp_idx < len(ad.route_waypoints):
-            tl = ad.route_waypoints[ad.current_wp_idx].transform.location
-            dx, dy = tl.x - el.x, tl.y - el.y
-            d = math.sqrt(dx**2 + dy**2)
-            if d > 0.01:
-                reward += np.clip((vel.x * dx/d + vel.y * dy/d) / 10, -1.0, 2.0)
-
-        # ---- 2. Waypoint reach bonus (doubled) ----
+        # ---- 1. Waypoint reach bonus (DOMINANT — sole positive signal) ----
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
-            reward += wp_delta * 20.0
+            reward += wp_delta * 50.0  # very high, must be THE reason to move
         ad.prev_wp_idx = ad.current_wp_idx
 
-        # ---- 3. Heading alignment bonus (NEW — teaches direction) ----
-        if ad.current_wp_idx < len(ad.route_waypoints):
-            wp_fwd = ad.route_waypoints[ad.current_wp_idx].transform.get_forward_vector()
-            fwd = ad.actor.get_transform().get_forward_vector()
-            alignment = fwd.x * wp_fwd.x + fwd.y * wp_fwd.y  # cosine [-1, 1]
-            reward += max(alignment, 0) * 0.5  # only reward alignment, no penalty
-
-        # ---- 4. Distance-from-waypoint penalty ----
+        # ---- 2. Distance to next WP (dense guidance — gets closer = good) ----
         if ad.current_wp_idx < len(ad.route_waypoints):
             wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
             curr_dist = el.distance(wp_loc)
             if ad.prev_dist_to_wp > 0:
-                dist_delta = curr_dist - ad.prev_dist_to_wp
-                if dist_delta > 0:
-                    reward -= min(dist_delta * 0.3, 1.0)
+                # Positive when getting closer, negative when getting farther
+                reward += (ad.prev_dist_to_wp - curr_dist) * 2.0
             ad.prev_dist_to_wp = curr_dist
 
-        # ---- 5. Anti-looping penalty ----
-        if len(ad.position_history) >= 10:
-            old_pos = ad.position_history[-10]
-            curr_pos = (el.x, el.y)
-            loop_dist = math.sqrt((curr_pos[0] - old_pos[0])**2 +
-                                (curr_pos[1] - old_pos[1])**2)
-            if loop_dist < 15.0:
-                ad.loop_counter += 1
-                reward -= min(1.0 + ad.loop_counter * 0.1, 3.0)
-            else:
-                ad.loop_counter = max(ad.loop_counter - 1, 0)
-
-        # ---- 6. Stuck penalty (crescente) ----
-        if ad.stuck_steps > 0 and not ad.reverse_active:
-            if ad.stuck_steps <= 30:
-                reward -= 0.1 * ad.stuck_steps / 30.0
-            else:
-                reward -= 2.0
-
-        # ---- 7. Reverse: attenuated penalty ----
-        if ad.reverse_active:
-            reward -= 0.05
-
-        # ---- 8. Speed limit ----
-        if speed_kmh > 40:
-            reward -= ((speed_kmh - 40) ** 2) / 1600
-
-        # ---- 9. Collision (scaled) ----
+        # ---- 3. Collision penalty (large, immediate) ----
         if ad.collision_flag:
-            intensity_penalty = min(ad.collision_intensity * 0.01, 5.0)
-            reward -= 5.0 + intensity_penalty
+            reward -= 50.0
 
-        # ---- 10. Lane deviation ----
+        # ---- 4. Off-lane penalty (stay on road) ----
         wp = self._map.get_waypoint(el, project_to_road=True)
         if wp:
-            reward -= np.clip(el.distance(wp.transform.location) / 4, 0, 1) * 0.5
+            lane_dist = el.distance(wp.transform.location)
+            if lane_dist > 2.0:
+                reward -= lane_dist * 0.5
 
-        # ---- 11. Steer penalty (reduced) ----
-        reward -= abs(ctrl.steer) * 0.03
-
-        # ---- 12. Steer jerk (reduced) ----
-        reward -= abs(ctrl.steer - ad.prev_steer) * 0.05
-        ad.prev_steer = ctrl.steer
-
-        # ---- 13. Throttle jerk (reduced) ----
-        cur_t = ctrl.throttle - ctrl.brake
-        reward -= abs(cur_t - ad.prev_throttle) * 0.05
-        ad.prev_throttle = cur_t
-
-        # ---- 14. Hard brake (reduced) ----
-        if ctrl.brake > 0.8:
-            reward -= 0.1
-
-        # ---- 15. Idle penalty ----
-        if speed_kmh < 1.0 and not ad.reverse_active:
-            reward -= 0.3
-
-        # ---- 16. Time pressure (reduced) ----
-        reward -= 0.005 * self._step_count / self.cfg["episode"]["max_steps"]
+        # ---- 5. Speed target (moderate speed = good, too fast/slow = bad) ----
+        # Target: 15-30 km/h. Below 5 = idle penalty. Above 50 = speed penalty
+        if speed_kmh < 5.0 and not ad.reverse_active:
+            reward -= 0.5
+        elif 15.0 <= speed_kmh <= 30.0:
+            reward += 0.3
+        elif speed_kmh > 50.0:
+            reward -= (speed_kmh - 50.0) * 0.05
 
         return float(reward)
 
@@ -973,8 +896,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 reward += np.clip(speed_toward / 2.0, -0.5, 1.0)
 
             # Goal reach bonus
-            if dist < 3.0:
+            if ad.goal_just_reached:
                 reward += 10.0
+                ad.goal_just_reached = False
 
             # Distance-from-goal penalty (getting farther)
             if ad.prev_dist_to_wp > 0:
@@ -1034,8 +958,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
         truncated = False
 
         # Collision
-        # if self.cfg["episode"]["terminate_on_collision"] and ad.collision_flag:
-        #    terminated = True
+        if self.cfg["episode"]["terminate_on_collision"] and ad.collision_flag:
+           terminated = True
 
         # Vehicle: route complete
         if ad.agent_type == "vehicle":

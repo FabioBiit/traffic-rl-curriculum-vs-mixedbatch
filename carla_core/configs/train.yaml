@@ -13,7 +13,7 @@ algorithm:
   framework: "rllib"            # RL backend implementation.
 
 resources:
-  num_workers: 1                # Number of rollout workers.
+  num_workers: 0                # Number of rollout workers.
   num_gpus: 1                   # Number of GPUs reserved for training.
   num_envs_per_worker: 1        # Parallel environments per worker.
   num_cpus_for_driver: 1        # CPUs reserved for the driver process.

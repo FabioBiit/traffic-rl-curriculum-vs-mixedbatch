@@ -67,6 +67,10 @@ def main():
 
     total_ts = args.timesteps or sched.get("total_timesteps", 200_000)
     n_workers = args.workers if args.workers is not None else res.get("num_workers", 0)
+    if n_workers > 0:
+        print("[WARNING] num_workers > 0 requires separate CARLA instances per worker.")
+        print("          Forcing num_workers = 0 (single CARLA instance).")
+        n_workers = 0
     n_gpus = 0 if args.no_gpu else res.get("num_gpus", 0)
     batch_size = roll.get("train_batch_size", 4000)
     ckpt_freq = sched.get("checkpoint_freq", 20_000)
