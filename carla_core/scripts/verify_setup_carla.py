@@ -1,6 +1,10 @@
 """
 Verifica Setup - Controlla che tutte le dipendenze siano installate.
-Esegui con: python ./metadrive_prototype/scripts/verify_setup.py
+
+Verify CARLA + RLlib setup and connectivity.
+Checks: CARLA server connection, map loading, actor spawn, sensor creation.
+
+Esegui con: python ./carla_core/scripts/verify_setup_carla.py
 """
 
 import sys

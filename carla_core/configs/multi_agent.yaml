@@ -5,7 +5,7 @@ simulator:
   host: "127.0.0.1"
   port: 2000
   timeout_seconds: 20.0
-  sync_mode: true
+  sync_mode: true               # REQUIRED: must be true for RL training. Async mode not supported.
   fixed_delta_seconds: 0.05
 
 world:
@@ -14,8 +14,8 @@ world:
   no_rendering: true
 
 agents:
-  n_vehicles_rl: 3                          # RL-controlled vehicles
-  n_pedestrians_rl: 3                      # RL-controlled pedestrians
+  n_vehicles_rl: 3               # RL-controlled vehicles
+  n_pedestrians_rl: 3            # RL-controlled pedestrians
   vehicle_blueprint: "vehicle.audi.etron"
   pedestrian_blueprint: "walker.pedestrian.*"
 

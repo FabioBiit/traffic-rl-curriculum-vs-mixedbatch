@@ -6,10 +6,11 @@ con rendering visivo. Spectator segue vehicle_0.
 
 Uso:
     python carla_core/scripts/visualize_mappo_agent.py --checkpoint <path>
-    python carla_core/scripts/visualize_mappo_agent.py --checkpoint carla_core/experiments/carla_mappo_20260319_140022
+    python carla_core/scripts/visualize_mappo_agent.py --checkpoint carla_core/experiments/carla_mappo_XXXXXXXX
 
-    NOTE: --checkpoint expects the experiment directory containing the checkpoint.
-          RLlib 2.10 auto-detects the latest checkpoint in the directory.
+    NOTE: --checkpoint accepts the experiment directory. RLlib auto-detects
+          the latest checkpoint via algo.restore(). If this fails, pass the
+          full checkpoint subdirectory path instead.
     
 IMPORTANTE: Avvia CARLA CON rendering (senza -RenderOffScreen):
     C:\CARLA_0.9.16\CarlaUE4.exe -quality-level=Medium -windowed -ResX=1280 -ResY=720
