@@ -86,6 +86,7 @@ def main():
     ts = time.strftime("%Y%m%d_%H%M%S")
     name = exp_cfg.get("name", "carla_ppo")
     out_dir = args.checkpoint_dir or str(Path(out_base) / f"{name}_{ts}")
+    os.makedirs(out_dir, exist_ok=True)
 
     print(f"{'='*50}")
     print(f"CARLA PPO Training — Single Agent")
@@ -128,7 +129,6 @@ def main():
             evaluation_num_workers=0,
         )
         .framework("torch")
-        .debugging(seed=exp_seed)
     )
 
     algo = config.build()

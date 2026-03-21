@@ -226,7 +226,6 @@ def main():
             evaluation_num_workers=0,
         )
         .framework("torch")
-        .debugging(seed=exp_seed)
     )
 
     # --- Build & Train ---

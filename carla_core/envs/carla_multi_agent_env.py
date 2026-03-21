@@ -257,6 +257,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # Apply seed BEFORE any spawn
         self._reset_count += 1
+        respawn_traffic = False
         if seed is not None:
             self.cfg["traffic"]["seed"] = seed
             self._reset_count = 0  # deterministic replay from explicit seed
@@ -265,13 +266,16 @@ class CarlaMultiAgentEnv(ParallelEnv):
             # Force traffic respawn for full scene replay
             if self._traffic_spawned:
                 self._cleanup_traffic()
-                self._traffic_spawned = False
+            respawn_traffic = True
 
         self._cleanup_agents()
         self._setup_agents()
 
         if self.cfg["traffic"]["enabled"]:
-            if not self._traffic_spawned or not self.cfg["traffic"].get("persist_traffic", True):
+            if respawn_traffic:
+                self._spawn_traffic()
+                self._traffic_spawned = True
+            elif not self._traffic_spawned or not self.cfg["traffic"].get("persist_traffic", True):
                 self._cleanup_traffic()
                 self._spawn_traffic()
                 self._traffic_spawned = True

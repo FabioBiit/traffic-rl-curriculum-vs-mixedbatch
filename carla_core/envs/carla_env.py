@@ -174,8 +174,17 @@ class CarlaEnv(gym.Env):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
+        respawn_traffic = False
+        if seed is not None:
+            self.cfg["traffic"]["seed"] = seed
         if not self._connected:
             self._connect()
+        elif seed is not None and self._tm:
+            self._tm.set_random_device_seed(seed)
+
+        if seed is not None and self._traffic_spawned:
+            self._cleanup_traffic()
+            respawn_traffic = True
 
         self._cleanup_ego()
         self._setup_ego()
@@ -184,7 +193,10 @@ class CarlaEnv(gym.Env):
 
         # Spawn traffic once if persist_traffic=True
         if self.cfg["traffic"]["enabled"]:
-            if not self._traffic_spawned or not self.cfg["traffic"].get("persist_traffic", True):
+            if respawn_traffic:
+                self._spawn_traffic()
+                self._traffic_spawned = True
+            elif not self._traffic_spawned or not self.cfg["traffic"].get("persist_traffic", True):
                 self._cleanup_traffic()
                 self._spawn_traffic()
                 self._traffic_spawned = True
