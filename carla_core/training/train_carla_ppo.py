@@ -18,6 +18,8 @@ import sys
 import time
 from pathlib import Path
 
+import torch
+import numpy as np
 import yaml
 
 # Suppress CARLA SIGABRT on Windows before any carla import
@@ -95,9 +97,13 @@ def main():
     ray.init(num_cpus=max(n_workers + 1, 2), num_gpus=n_gpus, log_to_driver=False)
     register_env("CarlaEnv-v0", env_creator)
 
+    torch.manual_seed(exp_seed)
+    np.random.seed(exp_seed)
+
     config = (
         PPOConfig()
         .environment(env="CarlaEnv-v0", env_config=env_cfg)
+        .debugging(seed=exp_seed)
         .resources(num_gpus=n_gpus)
         .rollouts(num_rollout_workers=n_workers,
                   rollout_fragment_length=roll.get("rollout_fragment_length", 200))

@@ -260,6 +260,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Honor seed parameter if provided (PettingZoo API compliance)
         if seed is not None:
             self.cfg["traffic"]["seed"] = seed
+            self._reset_count = 0  # reset count counter for explicit seed replay
+        # Re-seed Traffic Manager
+        if self._tm:
+            self._tm.set_random_device_seed(seed)
 
         self._cleanup_agents()
         self._setup_agents()

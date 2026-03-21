@@ -11,7 +11,7 @@ Uso:
           RLlib 2.10 accepts both experiment directories and checkpoint subdirectory paths.
     
 IMPORTANTE: Avvia CARLA CON rendering (senza -RenderOffScreen):
-    C:\CARLA_0.9.16\CarlaUE4.exe -quality-level=Medium -windowed -ResX=1280 -ResY=720
+    C:/CARLA_0.9.16/CarlaUE4.exe -quality-level=Medium -windowed -ResX=1280 -ResY=720
 """
 
 import argparse

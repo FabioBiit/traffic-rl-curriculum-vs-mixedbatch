@@ -26,6 +26,7 @@ import sys
 import time
 from pathlib import Path
 
+import torch
 import yaml
 
 # Suppress CARLA SIGABRT on Windows
@@ -153,6 +154,9 @@ def main():
     # --- Ray init ---
     ray.init(num_cpus=max(n_workers + 2, 2), num_gpus=n_gpus, log_to_driver=False)
 
+    torch.manual_seed(exp_seed)
+    np.random.seed(exp_seed)
+
     # --- Register ---
     register_env("CarlaMultiAgent-v0", rllib_env_creator)
     ModelCatalog.register_custom_model("cc_model", CentralizedCriticModel)
@@ -177,10 +181,8 @@ def main():
     # --- PPO Config ---
     config = (
         PPOConfig()
-        .environment(
-            env="CarlaMultiAgent-v0",
-            env_config=env_cfg,
-        )
+        .environment(env="CarlaMultiAgent-v0", env_config=env_cfg)
+        .debugging(seed=exp_seed)
         .multi_agent(
             policies={
                 "vehicle_policy": (
