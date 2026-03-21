@@ -128,15 +128,6 @@ def main():
     n_ped = ag_cfg.get("n_pedestrians_rl", 1)
     global_obs_dim = compute_global_obs_dim(n_veh, n_ped)
 
-    print(f"{'=' * 60}")
-    print(f"CARLA MAPPO Training — Centralized Critic (CTDE)")
-    print(f"{'=' * 60}")
-    print(f"  Agents: {n_veh}V + {n_ped}P | global_obs: {global_obs_dim}D")
-    print(f"  Budget: {total_ts:,} steps | Workers: {n_workers} | GPU: {n_gpus}")
-    print(f"  Policies: vehicle({VEHICLE_OBS_DIM}D), pedestrian({PEDESTRIAN_OBS_DIM}D)")
-    print(f"  Output: {out_dir}")
-    print(f"{'=' * 60}\n")
-
     # Wire remaining config fields
     exp_cfg = train_cfg.get("experiment", {})
     out_base = exp_cfg.get("output_dir", str(base / "experiments"))
@@ -146,6 +137,15 @@ def main():
     name = train_cfg.get("experiment", {}).get("name", "carla_mappo")
     out_dir = args.checkpoint_dir or str(Path(out_base) / f"{name}_{ts_str}")
     os.makedirs(out_dir, exist_ok=True)
+
+    print(f"{'=' * 60}")
+    print(f"CARLA MAPPO Training — Centralized Critic (CTDE)")
+    print(f"{'=' * 60}")
+    print(f"  Agents: {n_veh}V + {n_ped}P | global_obs: {global_obs_dim}D")
+    print(f"  Budget: {total_ts:,} steps | Workers: {n_workers} | GPU: {n_gpus}")
+    print(f"  Policies: vehicle({VEHICLE_OBS_DIM}D), pedestrian({PEDESTRIAN_OBS_DIM}D)")
+    print(f"  Output: {out_dir}")
+    print(f"{'=' * 60}\n")
 
     # --- Ray init ---
     ray.init(num_cpus=max(n_workers + 2, 2), num_gpus=n_gpus, log_to_driver=False)
