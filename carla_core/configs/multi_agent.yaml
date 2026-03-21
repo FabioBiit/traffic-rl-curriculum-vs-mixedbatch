@@ -30,4 +30,4 @@ episode:
   max_steps: 1000
   terminate_on_collision: false
   route_length_vehicle: 10                  # 50 -> 10 Reward v5 - Waypoints for vehicle route
-  route_length_pedestrian: 20               # Reserved for future waypoint-based pedestrian routing
+  route_length_pedestrian: 10               # 20 -> 10 Reward v5 - Waypoint-based pedestrian routing
