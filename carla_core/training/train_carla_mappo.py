@@ -111,13 +111,16 @@ def main():
 
     total_ts = args.timesteps or sched.get("total_timesteps", 50_000)
     n_workers = args.workers if args.workers is not None else res.get("num_workers", 0)
+    
     if n_workers > 0:
         print("[WARNING] num_workers > 0 requires separate CARLA instances per worker.")
         print("          Forcing num_workers = 0 (single CARLA instance).")
         n_workers = 0
+
     exp_seed = train_cfg.get("experiment", {}).get("seed", 42)
     env_cfg.setdefault("traffic", {})
     env_cfg["traffic"]["seed"] = exp_seed
+
     n_gpus = 0 if args.no_gpu else res.get("num_gpus", 1)
     batch_size = roll.get("train_batch_size", 4000)
     ckpt_freq = sched.get("checkpoint_freq", 10_000)
@@ -149,9 +152,6 @@ def main():
 
     # --- Ray init ---
     ray.init(num_cpus=max(n_workers + 2, 2), num_gpus=n_gpus, log_to_driver=False)
-
-    env_cfg.setdefault("traffic", {})
-    env_cfg["traffic"]["seed"] = exp_seed
 
     # --- Register ---
     register_env("CarlaMultiAgent-v0", rllib_env_creator)
