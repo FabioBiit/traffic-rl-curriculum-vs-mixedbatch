@@ -150,8 +150,6 @@ def main():
     # --- Ray init ---
     ray.init(num_cpus=max(n_workers + 2, 2), num_gpus=n_gpus, log_to_driver=False)
 
-    # Propagate seed to env config
-    exp_seed = train_cfg.get("experiment", {}).get("seed", 42)
     env_cfg.setdefault("traffic", {})
     env_cfg["traffic"]["seed"] = exp_seed
 
