@@ -255,6 +255,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
         if not self._connected:
             self._connect()
 
+        # Apply seed BEFORE any spawn
+        self._reset_count += 1
+        # Honor seed parameter if provided (PettingZoo API compliance)
+        if seed is not None:
+            self.cfg["traffic"]["seed"] = seed
+
         self._cleanup_agents()
         self._setup_agents()
 
@@ -268,12 +274,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
             self._world.tick()
 
         self._step_count = 0
-        self._reset_count += 1
-
-        # Honor seed parameter if provided (PettingZoo API compliance)
-        if seed is not None:
-            self.cfg["traffic"]["seed"] = seed
-
         self.agents = list(self.possible_agents)
 
         # Reset per-agent flags

@@ -64,6 +64,10 @@ def main():
     res = train_cfg.get("resources", {})
     opt = train_cfg.get("optimization", {})
     roll = train_cfg.get("rollout", {})
+    exp_cfg = train_cfg.get("experiment", {})
+    exp_seed = exp_cfg.get("seed", 42)
+    env_cfg.setdefault("traffic", {})
+    env_cfg["traffic"]["seed"] = exp_seed
 
     total_ts = args.timesteps or sched.get("total_timesteps", 200_000)
     n_workers = args.workers if args.workers is not None else res.get("num_workers", 0)
@@ -75,10 +79,10 @@ def main():
     batch_size = roll.get("train_batch_size", 4000)
     ckpt_freq = sched.get("checkpoint_freq", 20_000)
 
+    out_base = exp_cfg.get("output_dir", str(base / "experiments"))
     ts = time.strftime("%Y%m%d_%H%M%S")
-    name = train_cfg.get("experiment", {}).get("name", "carla_ppo")
-    out_dir = args.checkpoint_dir or str(base / "experiments" / f"{name}_{ts}")
-    os.makedirs(out_dir, exist_ok=True)
+    name = exp_cfg.get("name", "carla_ppo")
+    out_dir = args.checkpoint_dir or str(Path(out_base) / f"{name}_{ts}")
 
     print(f"{'='*50}")
     print(f"CARLA PPO Training — Single Agent")

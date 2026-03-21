@@ -5,12 +5,10 @@ Carica checkpoint MAPPO RLlib e fa girare veicoli + pedoni RL
 con rendering visivo. Spectator segue vehicle_0.
 
 Uso:
-    python carla_core/scripts/visualize_mappo_agent.py --checkpoint <path>
-    python carla_core/scripts/visualize_mappo_agent.py --checkpoint carla_core/experiments/carla_mappo_XXXXXXXX
+    python carla_core/scripts/visualize_mappo_agent.py --checkpoint <experiment_dir_or_checkpoint_path>
 
-    NOTE: --checkpoint accepts the experiment directory. RLlib auto-detects
-          the latest checkpoint via algo.restore(). If this fails, pass the
-          full checkpoint subdirectory path instead.
+    NOTE: --checkpoint is passed directly to algo.restore().
+          RLlib 2.10 accepts both experiment directories and checkpoint subdirectory paths.
     
 IMPORTANTE: Avvia CARLA CON rendering (senza -RenderOffScreen):
     C:\CARLA_0.9.16\CarlaUE4.exe -quality-level=Medium -windowed -ResX=1280 -ResY=720
