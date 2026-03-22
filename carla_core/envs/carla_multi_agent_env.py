@@ -398,7 +398,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 if ad.current_wp_idx > ad.prev_wp_idx:
                     ad.last_wp_advance_step = self._step_count
                 if ad.reverse_cooldown:
-                    ad.reverse_cooldown_steps = getattr(ad, 'reverse_cooldown_steps', 0) + 1
+                    ad.reverse_cooldown_steps += 1
                     if ad.current_wp_idx > ad.prev_wp_idx or ad.reverse_cooldown_steps >= 30:
                         ad.reverse_cooldown = False
                         ad.reverse_cooldown_steps = 0
