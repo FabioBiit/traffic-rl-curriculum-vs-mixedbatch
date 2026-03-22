@@ -620,7 +620,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
     def _setup_vehicle_route(self, ad: AgentData, skip_current_wp: bool = False):
         loc = ad.actor.get_location()
         wp = self._map.get_waypoint(loc, project_to_road=True)
-        route_len = self.cfg["episode"].get("route_length_vehicle", 10) # 50 -> 5 Reward v5 - Waypoints for vehicle route
+        route_len = self.cfg["episode"].get("route_length_vehicle", 10) # 50 -> 10 Reward v5 - Waypoints for vehicle route
         ad.route_waypoints = []
         current_wp = wp
 
@@ -628,7 +628,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.route_waypoints.append(current_wp)
 
         for _ in range(route_len):
-            nexts = current_wp.next(2.5)  # 2.5m spacing
+            nexts = current_wp.next(2.0)  # 2.0m spacing (threshold 1.5m, ratio 1.33:1)
             if not nexts:
                 break
             current_wp = nexts[0]
@@ -951,8 +951,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return
         loc = ad.actor.get_location()
         wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 2.5:
+        if loc.distance(wp_loc) < 1.5:  # 1.5m threshold — best practice (spacing 2.0m, ratio 1.33:1)
             ad.current_wp_idx += 1
+            ad.prev_dist_to_wp = 0.0
 
     def _advance_pedestrian_waypoint(self, ad: AgentData):
         """Advance pedestrian along waypoint route"""
@@ -960,9 +961,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return
         loc = ad.actor.get_location()
         wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 3.0:
+        if loc.distance(wp_loc) < 2.0: # 2.0m threshold for pedestrians
             ad.goal_just_reached = True
             ad.current_wp_idx += 1
+            ad.prev_dist_to_wp = 0.0
             # Update goal_location for obs fallback
             if ad.current_wp_idx < len(ad.route_waypoints):
                 ad.goal_location = ad.route_waypoints[ad.current_wp_idx].transform.location
@@ -1025,7 +1027,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.prev_dist_to_wp = curr_dist
 
         # ---- 3. Collision penalty (large, immediate) ----
-        if ad.collision_flag:
+        if ad.collision_flag and ad.collision_step == 0:
             reward -= 50.0
 
         # ---- 4. Off-lane penalty (stay on road) ----
@@ -1040,7 +1042,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         if speed_kmh < 2.5 and not ad.reverse_active:
             reward -= 0.15  # idle penalty
         elif 15.0 <= speed_kmh <= 50.0:
-            reward += 0.7  # optimal speed bonus
+            reward += 0.3  # optimal speed bonus
         elif speed_kmh > 50.0:
             reward -= (speed_kmh - 50.0) * 0.10 # speed penalty (scaled)
 
@@ -1082,22 +1084,22 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.prev_dist_to_wp = curr_dist
 
         # ---- 3. Collision penalty ----
-        if ad.collision_flag:
+        if ad.collision_flag and ad.collision_step == 0:
             reward -= 100.0
 
         # ---- 4. Sidewalk bonus / road penalty ----
         wp = self._map.get_waypoint(loc, project_to_road=False)
         if wp:
             if str(wp.lane_type) == "Sidewalk":
-                reward += 0.1
+                reward += 0.2
             elif str(wp.lane_type) == "Driving":
-                reward -= 0.5
+                reward -= 0.3
 
         # ---- 5. Speed target (walking pace) ----
         if speed < 0.15:
             reward -= 0.15  # idle
         elif 0.8 <= speed <= 1.8:
-            reward += 0.7  # comfortable walking pace
+            reward += 0.3  # comfortable walking pace
         elif speed > 3.0:
             reward -= (speed - 3.0) * 0.7  # running too fast
 

@@ -28,8 +28,8 @@ traffic:
 
 episode:
   max_steps: 1000
-  route_length_vehicle: 10                  # 50 -> 10 Reward v5 - Waypoints for vehicle route
-  route_length_pedestrian: 10               # Sidewalk waypoints chained with 2.5m spacing
+  route_length_vehicle: 15                  # Waypoints for vehicle route # 10 -> 15 Reward v6 # 10 -> 15, spacing 2.0m = ~30m route # 50 -> 10 Reward v5# 10 -> 15, spacing 5.0m = ~50m route
+  route_length_pedestrian: 10               # Waypoints for pedestrian route (Sidewalk waypoints)
   terminate_on_collision: false             # Collisions are now heavily penalized but do not end episode immediately.
   terminate_on_offroad: true                # End episode when ego leaves drivable road.
   terminate_on_route_completion: true       # End episode when route is completed.
