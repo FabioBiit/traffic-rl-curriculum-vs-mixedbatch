@@ -110,8 +110,8 @@ DEFAULT_MA_CONFIG = {
     "episode": {
         "max_steps": 1000,
         "terminate_on_collision": True,
-        "route_length_vehicle": 50,
-        "route_length_pedestrian": 20,
+        "route_length_vehicle": 10, # Waypoints for vehicle route
+        "route_length_pedestrian": 10, # Sidewalk waypoints for pedestrian route
     },
 }
 
@@ -388,8 +388,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
             else:
                 self._advance_pedestrian_waypoint(ad)
 
-            observations[agent_id] = self._get_obs(agent_id)
             rewards[agent_id] = self._compute_reward(agent_id)
+            self._refresh_route_if_needed(ad)
+            observations[agent_id] = self._get_obs(agent_id)
 
             # Collision cooldown: reset flag after 10 steps
             if ad.collision_flag:
@@ -554,29 +555,35 @@ class CarlaMultiAgentEnv(ParallelEnv):
         sensor.listen(on_collision)
         ad.collision_sensor = sensor
 
-    def _setup_vehicle_route(self, ad: AgentData):
-        loc = ad.actor.get_location()
-        wp = self._map.get_waypoint(loc, project_to_road=True)
-        route_len = self.cfg["episode"].get("route_length_vehicle", 50)
-        ad.route_waypoints = [wp]
-        for _ in range(route_len):
-            nexts = ad.route_waypoints[-1].next(5.0)
-            if not nexts:
-                break
-            ad.route_waypoints.append(nexts[0])
-        ad.current_wp_idx = 0
+    def _get_sidewalk_waypoint(self, loc: carla.Location):
+        """Resolve the closest sidewalk waypoint for pedestrian routing."""
+        wp = self._map.get_waypoint(
+            loc,
+            project_to_road=False,
+            lane_type=carla.LaneType.Sidewalk,
+        )
+        if wp is not None and wp.lane_type == carla.LaneType.Sidewalk:
+            return wp
 
-    def _setup_pedestrian_route(self, ad: AgentData):
-        """Build a waypoint route on the navigation mesh for the pedestrian."""
-        route_len = self.cfg["episode"].get("route_length_pedestrian", 10)
+        wp = self._map.get_waypoint(
+            loc,
+            project_to_road=True,
+            lane_type=carla.LaneType.Sidewalk,
+        )
+        if wp is not None and wp.lane_type == carla.LaneType.Sidewalk:
+            return wp
+
+        return None
+
+    def _setup_pedestrian_route_fallback(self, ad: AgentData, route_len: int):
+        """Fallback to navmesh sampling if no sidewalk waypoint is resolvable."""
         ad.route_waypoints = []
-        ad.current_wp_idx = 0
-
-        # Collect navigation waypoints by chaining random walkable locations
+        ad.goal_location = None
         current_loc = ad.actor.get_location()
+
         for _ in range(route_len):
             goal = None
-            for _ in range(20):  # retry to find a reachable point
+            for _ in range(20):
                 candidate = self._world.get_random_location_from_navigation()
                 if candidate and current_loc.distance(candidate) > 5.0:
                     goal = candidate
@@ -586,14 +593,64 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.route_waypoints.append(_NavPoint(goal))
             current_loc = goal
 
-        # Set goal_location to first waypoint for obs compatibility
         if ad.route_waypoints:
             ad.goal_location = ad.route_waypoints[0].transform.location
         else:
-            # Fallback
             loc = ad.actor.get_location()
-            ad.goal_location = carla.Location(x=loc.x + 30, y=loc.y, z=loc.z)
+            ad.goal_location = carla.Location(x=loc.x + 30.0, y=loc.y, z=loc.z)
             ad.route_waypoints = [_NavPoint(ad.goal_location)]
+
+    def _setup_vehicle_route(self, ad: AgentData, skip_current_wp: bool = False):
+        loc = ad.actor.get_location()
+        wp = self._map.get_waypoint(loc, project_to_road=True)
+        route_len = self.cfg["episode"].get("route_length_vehicle", 10) # 50 -> 5 Reward v5 - Waypoints for vehicle route
+        ad.route_waypoints = []
+        current_wp = wp
+
+        if not skip_current_wp:
+            ad.route_waypoints.append(current_wp)
+
+        for _ in range(route_len):
+            nexts = current_wp.next(2.5)  # 2.5m spacing
+            if not nexts:
+                break
+            current_wp = nexts[0]
+            ad.route_waypoints.append(current_wp)
+
+        if not ad.route_waypoints and not skip_current_wp:
+            ad.route_waypoints = [wp]
+        ad.current_wp_idx = 0
+
+    def _setup_pedestrian_route(self, ad: AgentData):
+        """Build a pedestrian route by chaining sidewalk waypoints like vehicles."""
+        route_len = self.cfg["episode"].get("route_length_pedestrian", 10)
+        ad.route_waypoints = []
+        ad.current_wp_idx = 0
+        ad.goal_location = None
+
+        start_wp = self._get_sidewalk_waypoint(ad.actor.get_location())
+        if start_wp is None:
+            self._setup_pedestrian_route_fallback(ad, route_len)
+            return
+
+        current_wp = start_wp
+
+        for _ in range(route_len):
+            nexts = [
+                wp for wp in current_wp.next(2.5)
+                if wp.lane_type == carla.LaneType.Sidewalk
+            ]
+            if not nexts:
+                break
+
+            current_wp = nexts[0]
+            ad.route_waypoints.append(current_wp)
+
+        if not ad.route_waypoints:
+            self._setup_pedestrian_route_fallback(ad, route_len)
+            return
+
+        ad.goal_location = ad.route_waypoints[0].transform.location
 
     # ------------------------------------------------------------------
     # Traffic (NPC)
@@ -675,11 +732,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
             speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
 
             if ad.reverse_active:
-                # Check exit conditions: max 60 steps, max 5m from origin, or agent moves again
+                # Check exit conditions: max 50 steps, max 7m from origin, or agent moves again
                 dist_from_origin = ad.actor.get_location().distance(ad.reverse_origin)
                 ad.reverse_steps += 1
 
-                if ad.reverse_steps >= 60 or dist_from_origin >= 5.0:
+                if ad.reverse_steps >= 50 or dist_from_origin >= 7.0:
                     # Force exit reverse
                     ad.reverse_active = False
                     ad.reverse_cooldown = True  # must advance 1 WP to re-enable
@@ -694,7 +751,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ctrl.brake = 0.0 if speed_kmh < 10.0 else 0.5
                     ctrl.steer = st
 
-            elif ad.stuck_steps >= 20 and not ad.reverse_cooldown:
+            elif ad.stuck_steps >= 7 and not ad.reverse_cooldown:
                 # Activate reverse
                 ad.reverse_active = True
                 ad.reverse_origin = ad.actor.get_location()
@@ -862,20 +919,21 @@ class CarlaMultiAgentEnv(ParallelEnv):
     # ------------------------------------------------------------------
 
     def _advance_vehicle_waypoint(self, ad: AgentData):
+        """Advance vehicle along waypoint route"""
         if ad.current_wp_idx >= len(ad.route_waypoints):
             return
         loc = ad.actor.get_location()
         wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 5.0:
+        if loc.distance(wp_loc) < 2.5:
             ad.current_wp_idx += 1
 
     def _advance_pedestrian_waypoint(self, ad: AgentData):
-        """Advance pedestrian along waypoint route (mirrors vehicle logic)."""
+        """Advance pedestrian along waypoint route"""
         if ad.current_wp_idx >= len(ad.route_waypoints):
             return
         loc = ad.actor.get_location()
         wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 3.0:
+        if loc.distance(wp_loc) < 1.5:
             ad.goal_just_reached = True
             ad.current_wp_idx += 1
             # Update goal_location for obs fallback
@@ -887,6 +945,24 @@ class CarlaMultiAgentEnv(ParallelEnv):
         if not ad.route_waypoints:
             return 0.0
         return min(ad.current_wp_idx / len(ad.route_waypoints), 1.0)
+
+    def _refresh_route_if_needed(self, ad: AgentData):
+        ep_cfg = self.cfg["episode"]
+        if ad.current_wp_idx < len(ad.route_waypoints):
+            return
+        if ep_cfg.get("terminate_on_route_completion", True):
+            return
+
+        ad.route_waypoints = []
+        ad.current_wp_idx = 0
+        ad.prev_wp_idx = 0
+        ad.prev_dist_to_wp = 0.0
+        ad.goal_location = None
+
+        if ad.agent_type == "vehicle":
+            self._setup_vehicle_route(ad, skip_current_wp=True)
+        else:
+            self._setup_pedestrian_route(ad)
 
     # ------------------------------------------------------------------
     # Rewards
@@ -900,7 +976,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return self._pedestrian_reward(ad)
 
     def _vehicle_reward(self, ad: AgentData) -> float:
-        """Reward v5 — simplified, literature-aligned."""
+        """Vehicle Reward v5"""
         reward = 0.0
         vel = ad.actor.get_velocity()
         speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
@@ -934,20 +1010,17 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # ---- 5. Speed target (moderate speed = good, too fast/slow = bad) ----
         # Target: 15-30 km/h. Below 5 = idle penalty. Above 50 = speed penalty
-        if speed_kmh < 5.0 and not ad.reverse_active:
-            reward -= 0.5
-        elif 15.0 <= speed_kmh <= 30.0:
-            reward += 0.3
+        if speed_kmh < 2.5 and not ad.reverse_active:
+            reward -= 0.15  # idle penalty
+        elif 15.0 <= speed_kmh <= 50.0:
+            reward += 0.7  # optimal speed bonus
         elif speed_kmh > 50.0:
-            reward -= (speed_kmh - 50.0) * 0.05
+            reward -= (speed_kmh - 50.0) * 0.10 # speed penalty (scaled)
 
         return float(reward)
 
     def _pedestrian_reward(self, ad: AgentData) -> float:
-        """
-        Pedestrian reward v5 — waypoint-based, aligned with vehicle reward.
-        Mirrors vehicle reward structure for experimental consistency.
-        """
+        """Pedestrian Reward v5"""
         reward = 0.0
         loc = ad.actor.get_location()
         vel = ad.actor.get_velocity()
@@ -970,7 +1043,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # ---- 3. Collision penalty ----
         if ad.collision_flag:
-            reward -= 50.0
+            reward -= 100.0
 
         # ---- 4. Sidewalk bonus / road penalty ----
         wp = self._map.get_waypoint(loc, project_to_road=False)
@@ -981,12 +1054,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 reward -= 0.5
 
         # ---- 5. Speed target (walking pace) ----
-        if speed < 0.3:
-            reward -= 0.5  # idle
+        if speed < 0.15:
+            reward -= 0.15  # idle
         elif 0.8 <= speed <= 1.8:
-            reward += 0.3  # comfortable walking pace
+            reward += 0.7  # comfortable walking pace
         elif speed > 3.0:
-            reward -= (speed - 3.0) * 0.3  # running too fast
+            reward -= (speed - 3.0) * 0.7  # running too fast
 
         return float(reward)
 
@@ -996,30 +1069,34 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
     def _check_done(self, agent_id: str) -> tuple[bool, bool]:
         ad = self._agent_data[agent_id]
+        ep_cfg = self.cfg["episode"]
         terminated = False
         truncated = False
 
         # Collision
-        if self.cfg["episode"].get("terminate_on_collision", False) and ad.collision_flag:
+        if ep_cfg.get("terminate_on_collision", False) and ad.collision_flag:
             terminated = True
 
         # Vehicle: route complete or off-road
         if ad.agent_type == "vehicle":
-            if ad.current_wp_idx >= len(ad.route_waypoints):
-                terminated = True
-            # Off-road
-            el = ad.actor.get_location()
-            wp = self._map.get_waypoint(el, project_to_road=True)
-            if wp is None or el.distance(wp.transform.location) > 5.0:
-                terminated = True
+            if ep_cfg.get("terminate_on_route_completion", True):
+                if ad.current_wp_idx >= len(ad.route_waypoints):
+                    terminated = True
+
+            if ep_cfg.get("terminate_on_offroad", True):
+                el = ad.actor.get_location()
+                wp = self._map.get_waypoint(el, project_to_road=True)
+                if wp is None or el.distance(wp.transform.location) > 5.0:
+                    terminated = True
 
         # Pedestrian: route complete
         if ad.agent_type == "pedestrian":
-            if ad.current_wp_idx >= len(ad.route_waypoints):
-                terminated = True
+            if ep_cfg.get("terminate_on_route_completion", True):
+                if ad.current_wp_idx >= len(ad.route_waypoints):
+                    terminated = True
 
         # Max steps
-        if self._step_count >= self.cfg["episode"]["max_steps"]:
+        if self._step_count >= ep_cfg["max_steps"]:
             truncated = True
 
         return terminated, truncated

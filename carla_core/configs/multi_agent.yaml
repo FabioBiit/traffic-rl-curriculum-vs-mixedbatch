@@ -2,11 +2,11 @@
 # Controls RL agents (vehicles + pedestrians), NPC traffic, and episode rules.
 
 simulator:
-  host: "127.0.0.1"
-  port: 2000
-  timeout_seconds: 20.0
+  host: "127.0.0.1"             # CARLA server host.
+  port: 2000                    # CARLA server TCP port.
+  timeout_seconds: 20.0         # Client timeout for connect/tick operations.
   sync_mode: true               # REQUIRED: must be true for RL training. Async mode not supported.
-  fixed_delta_seconds: 0.05
+  fixed_delta_seconds: 0.05     # Fixed physics step (20 FPS simulation).
 
 world:
   map: "Town03"
@@ -21,13 +21,15 @@ agents:
 
 traffic:
   enabled: true
-  n_vehicles_npc: 10                        # Autopilot NPC vehicles
-  n_pedestrians_npc: 10                     # AI-controlled NPC pedestrians
+  n_vehicles_npc: 10             # Autopilot NPC vehicles
+  n_pedestrians_npc: 10          # AI-controlled NPC pedestrians
   seed: 42
   persist_traffic: true
 
 episode:
   max_steps: 1000
-  terminate_on_collision: false
   route_length_vehicle: 10                  # 50 -> 10 Reward v5 - Waypoints for vehicle route
-  route_length_pedestrian: 10               # 20 -> 10 Reward v5 - Waypoint-based pedestrian routing
+  route_length_pedestrian: 10               # Sidewalk waypoints chained with 2.5m spacing
+  terminate_on_collision: false             # Collisions are now heavily penalized but do not end episode immediately.
+  terminate_on_offroad: true                # End episode when ego leaves drivable road.
+  terminate_on_route_completion: true       # End episode when route is completed.
