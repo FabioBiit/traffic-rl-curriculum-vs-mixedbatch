@@ -155,7 +155,6 @@ class AgentData:
         "prev_wp_idx",
         "goal_location",
         "prev_throttle",
-        # --- Reward v3: stuck / reverse / anti-loop ---
         "stuck_steps",
         "prev_dist_to_wp",
         "prev_steer",
@@ -163,10 +162,12 @@ class AgentData:
         "reverse_origin",
         "reverse_steps",
         "reverse_cooldown",
+        "reverse_cooldown_steps",
         "position_history",
         "loop_counter",
         "last_wp_advance_step",
         "goal_just_reached",
+        "loop_penalty_active"
     ]
 
     def __init__(self, agent_id: str, agent_type: str):
@@ -189,10 +190,12 @@ class AgentData:
         self.reverse_origin = None
         self.reverse_steps = 0
         self.reverse_cooldown = False
+        self.reverse_cooldown_steps = 0
         self.position_history = []
         self.loop_counter = 0
         self.last_wp_advance_step = 0
         self.goal_just_reached = False
+        self.loop_penalty_active = False
 
 
 # ---------------------------------------------------------------------------
@@ -322,10 +325,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.reverse_origin = None
             ad.reverse_steps = 0
             ad.reverse_cooldown = False
+            ad.reverse_cooldown_steps = 0
             ad.position_history = []
             ad.loop_counter = 0
             ad.last_wp_advance_step = 0
             ad.goal_just_reached = False
+            ad.loop_penalty_active = False
 
         observations = {a: self._get_obs(a) for a in self.agents}
         infos = {a: {} for a in self.agents}
@@ -353,26 +358,35 @@ class CarlaMultiAgentEnv(ParallelEnv):
             vel = ad.actor.get_velocity()
             speed = math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
 
-            # Stuck detection
+            # Stuck detection (hybrid for vehicles)
             if ad.agent_type == "vehicle":
-                # Route-progress based: stuck if no WP advance in 100 steps
                 steps_since_wp = self._step_count - ad.last_wp_advance_step
-                is_stuck = steps_since_wp > 100  # 5 sec without WP progress
+                speed_kmh = 3.6 * speed
+                is_stuck = (steps_since_wp > 60) or (speed_kmh < 2.0 and ad.stuck_steps >= 30)
             else:
-                is_stuck = speed < 0.3  # < 0.3 m/s
+                is_stuck = speed < 0.3
 
             if is_stuck and not ad.reverse_active:
                 ad.stuck_steps += 1
             else:
                 ad.stuck_steps = 0
 
-            # Position history sampling (every 50 steps)
+            # Position history sampling (every 50 steps) + loop detection
             if self._step_count % 50 == 0:
                 loc = ad.actor.get_location()
                 ad.position_history.append((loc.x, loc.y))
-                if len(ad.position_history) > 20:  # keep last 1000 steps
+                if len(ad.position_history) > 20:
                     ad.position_history.pop(0)
 
+                # Loop detection: bounding box of last 10 samples (500 steps)
+                if len(ad.position_history) >= 10:
+                    recent = ad.position_history[-10:]
+                    xs = [p[0] for p in recent]
+                    ys = [p[1] for p in recent]
+                    bbox = max(max(xs) - min(xs), max(ys) - min(ys))
+                    ad.loop_penalty_active = bbox < 5.0
+                else:
+                    ad.loop_penalty_active = False
 
         for agent_id in list(self.agents):
             ad = self._agent_data[agent_id]
@@ -383,8 +397,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 # Fix finding 1: update last_wp_advance_step HERE, after advance
                 if ad.current_wp_idx > ad.prev_wp_idx:
                     ad.last_wp_advance_step = self._step_count
-                if ad.reverse_cooldown and ad.current_wp_idx > ad.prev_wp_idx:
-                    ad.reverse_cooldown = False
+                if ad.reverse_cooldown:
+                    ad.reverse_cooldown_steps = getattr(ad, 'reverse_cooldown_steps', 0) + 1
+                    if ad.current_wp_idx > ad.prev_wp_idx or ad.reverse_cooldown_steps >= 30:
+                        ad.reverse_cooldown = False
+                        ad.reverse_cooldown_steps = 0
             else:
                 self._advance_pedestrian_waypoint(ad)
 
@@ -736,7 +753,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 dist_from_origin = ad.actor.get_location().distance(ad.reverse_origin)
                 ad.reverse_steps += 1
 
-                if ad.reverse_steps >= 50 or dist_from_origin >= 7.0:
+                if ad.reverse_steps >= 80 or dist_from_origin >= 10.0:
                     # Force exit reverse
                     ad.reverse_active = False
                     ad.reverse_cooldown = True  # must advance 1 WP to re-enable
@@ -745,11 +762,21 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ctrl.steer = st
                     ctrl.reverse = False
                 else:
-                    # Reverse mode: clamp speed to ~10 km/h
+                    # Reverse mode: clamp speed to ~10 km/h, add steering bias
                     ctrl.reverse = True
-                    ctrl.throttle = min(max(tb, 0.0), 0.3)  # soft throttle cap
+                    ctrl.throttle = min(max(tb, 0.0), 0.4)
                     ctrl.brake = 0.0 if speed_kmh < 10.0 else 0.5
-                    ctrl.steer = st
+                    # Steer toward next WP (projected) to exit smarter
+                    if ad.current_wp_idx < len(ad.route_waypoints):
+                        wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
+                        el = ad.actor.get_location()
+                        fwd = ad.actor.get_transform().get_forward_vector()
+                        dx = wp_loc.x - el.x
+                        dy = wp_loc.y - el.y
+                        cross = dx * fwd.y - dy * fwd.x
+                        ctrl.steer = np.clip(-np.sign(cross) * 0.5, -1, 1)
+                    else:
+                        ctrl.steer = st
 
             elif ad.stuck_steps >= 7 and not ad.reverse_cooldown:
                 # Activate reverse
@@ -933,7 +960,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return
         loc = ad.actor.get_location()
         wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 1.5:
+        if loc.distance(wp_loc) < 3.0:
             ad.goal_just_reached = True
             ad.current_wp_idx += 1
             # Update goal_location for obs fallback
@@ -1017,6 +1044,19 @@ class CarlaMultiAgentEnv(ParallelEnv):
         elif speed_kmh > 50.0:
             reward -= (speed_kmh - 50.0) * 0.10 # speed penalty (scaled)
 
+        # ---- 6. Steering smoothness ----
+        ctrl = ad.actor.get_control()
+        steer_delta = abs(ctrl.steer - ad.prev_steer)
+        if steer_delta < 0.1:
+            reward += 0.1   # smooth driving bonus
+        elif steer_delta > 0.5:
+            reward -= 0.3   # jerk penalty
+        ad.prev_steer = ctrl.steer
+
+        # ---- 7. Anti-loop penalty ----
+        if ad.loop_penalty_active:
+            reward -= 1.0
+
         return float(reward)
 
     def _pedestrian_reward(self, ad: AgentData) -> float:
@@ -1060,6 +1100,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
             reward += 0.7  # comfortable walking pace
         elif speed > 3.0:
             reward -= (speed - 3.0) * 0.7  # running too fast
+
+        # ---- 6. Anti-loop penalty ----
+        if ad.loop_penalty_active:
+            reward -= 1.0
 
         return float(reward)
 
