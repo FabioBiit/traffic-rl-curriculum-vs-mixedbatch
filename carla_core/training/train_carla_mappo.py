@@ -218,6 +218,7 @@ def main():
             entropy_coeff=opt.get("entropy_coeff", 0.01),
             vf_loss_coeff=opt.get("vf_loss_coeff", 0.5),
             grad_clip=opt.get("grad_clip", 0.5),
+            use_kl_loss=opt.get("use_kl_loss", True)
         )
         .evaluation(
             evaluation_interval=max(1, int(sched.get("eval_freq", 10_000) / batch_size)),
