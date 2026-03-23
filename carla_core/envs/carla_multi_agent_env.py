@@ -628,7 +628,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.route_waypoints.append(current_wp)
 
         for _ in range(route_len):
-            nexts = current_wp.next(2.0)  # 2.0m spacing (threshold 1.5m, ratio 1.33:1)
+            nexts = current_wp.next(2.0)  # 2.0m spacing vehicle (ratio 1:1)
             if not nexts:
                 break
             current_wp = nexts[0]
@@ -951,7 +951,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return
         loc = ad.actor.get_location()
         wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 1.5:  # 1.5m threshold — best practice (spacing 2.0m, ratio 1.33:1)
+        if loc.distance(wp_loc) < 2.0: # 2.0m threshold vehicle (ratio 1:1)
             ad.current_wp_idx += 1
             ad.prev_dist_to_wp = 0.0
 

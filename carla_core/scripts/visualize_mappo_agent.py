@@ -72,7 +72,7 @@ def compute_global_obs_dim(n_veh, n_ped):
     return n_veh * VEHICLE_OBS_DIM + n_ped * PEDESTRIAN_OBS_DIM
 
 
-def update_spectator(world, actor, distance=10.0, height=6.0):
+def update_spectator(world, actor, distance=10.0, height=6.0):    
     """Follow camera: spectator dietro e sopra l'attore."""
     t = actor.get_transform()
     fwd = t.get_forward_vector()
@@ -87,6 +87,32 @@ def update_spectator(world, actor, distance=10.0, height=6.0):
         carla.Transform(cam_loc, carla.Rotation(pitch=pitch, yaw=t.rotation.yaw))
     )
 
+
+def draw_waypoints(world, agent_data):
+    """Draw route waypoints for all agents in CARLA debug view."""
+    for ad in agent_data.values():
+        for i, wp in enumerate(ad.route_waypoints):
+            loc = wp.transform.location
+            if i < ad.current_wp_idx:
+                color = carla.Color(0, 255, 0)       # green — reached
+            elif i == ad.current_wp_idx:
+                color = carla.Color(255, 0, 0)        # red — current target
+            else:
+                color = carla.Color(255, 255, 0)      # yellow — future
+
+            world.debug.draw_point(
+                loc + carla.Location(z=0.5),
+                size=0.15,
+                color=color,
+                life_time=0.1,
+            )
+            world.debug.draw_string(
+                loc + carla.Location(z=1.0),
+                f"{i}",
+                draw_shadow=False,
+                color=color,
+                life_time=0.1,
+            )
 
 # ---------------------------------------------------------------------------
 # Main
@@ -239,6 +265,9 @@ def main():
                         update_spectator(env._world, followed.actor, distance=5.0, height=3.0)
                     else:
                         update_spectator(env._world, followed.actor)
+
+                # Draw WP for all agents
+                draw_waypoints(env._world, env._agent_data)
 
                 time.sleep(0.03)  # ~30 FPS
 
