@@ -218,7 +218,8 @@ def main():
             entropy_coeff=opt.get("entropy_coeff", 0.01),
             vf_loss_coeff=opt.get("vf_loss_coeff", 0.5),
             grad_clip=opt.get("grad_clip", 0.5),
-            use_kl_loss=opt.get("use_kl_loss", True)
+            #kl_target=opt.get("kl_target", 0.01), # Reward v8 (Se v7 non converge)
+            use_kl_loss=opt.get("use_kl_loss", True) # Commenta per v8
         )
         .evaluation(
             evaluation_interval=max(1, int(sched.get("eval_freq", 10_000) / batch_size)),
