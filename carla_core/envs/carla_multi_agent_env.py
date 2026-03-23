@@ -766,8 +766,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ctrl.reverse = True
                     ctrl.throttle = min(max(tb, 0.0), 0.4)
                     ctrl.brake = 0.0 if speed_kmh < 10.0 else 0.5
-                    # Steer toward next WP (projected) to exit smarter
-                    if ad.current_wp_idx < len(ad.route_waypoints):
+                    if ad.reverse_steps > 30 and dist_from_origin < 2.0:
+                        ctrl.steer = float(np.sign(np.random.randn()) * 0.7)
+                    elif ad.current_wp_idx < len(ad.route_waypoints):
                         wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
                         el = ad.actor.get_location()
                         fwd = ad.actor.get_transform().get_forward_vector()
