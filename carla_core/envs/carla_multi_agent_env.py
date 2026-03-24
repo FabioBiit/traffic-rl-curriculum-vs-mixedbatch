@@ -158,11 +158,6 @@ class AgentData:
         "stuck_steps",
         "prev_dist_to_wp",
         "prev_steer",
-        "reverse_active",
-        "reverse_origin",
-        "reverse_steps",
-        "reverse_cooldown",
-        "reverse_cooldown_steps",
         "position_history",
         "loop_counter",
         "last_wp_advance_step",
@@ -186,11 +181,6 @@ class AgentData:
         self.stuck_steps = 0
         self.prev_dist_to_wp = 0.0
         self.prev_steer = 0.0
-        self.reverse_active = False
-        self.reverse_origin = None
-        self.reverse_steps = 0
-        self.reverse_cooldown = False
-        self.reverse_cooldown_steps = 0
         self.position_history = []
         self.loop_counter = 0
         self.last_wp_advance_step = 0
@@ -321,11 +311,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.stuck_steps = 0
             ad.prev_dist_to_wp = 0.0
             ad.prev_steer = 0.0
-            ad.reverse_active = False
-            ad.reverse_origin = None
-            ad.reverse_steps = 0
-            ad.reverse_cooldown = False
-            ad.reverse_cooldown_steps = 0
             ad.position_history = []
             ad.loop_counter = 0
             ad.last_wp_advance_step = 0
@@ -366,7 +351,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             else:
                 is_stuck = speed < 0.3
 
-            if is_stuck and not ad.reverse_active:
+            if is_stuck:
                 ad.stuck_steps += 1
             else:
                 ad.stuck_steps = 0
@@ -397,11 +382,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 # Fix finding 1: update last_wp_advance_step HERE, after advance
                 if ad.current_wp_idx > ad.prev_wp_idx:
                     ad.last_wp_advance_step = self._step_count
-                if ad.reverse_cooldown:
-                    ad.reverse_cooldown_steps += 1
-                    if ad.current_wp_idx > ad.prev_wp_idx or ad.reverse_cooldown_steps >= 30:
-                        ad.reverse_cooldown = False
-                        ad.reverse_cooldown_steps = 0
             else:
                 self._advance_pedestrian_waypoint(ad)
 
@@ -419,12 +399,23 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ad.collision_step = 0
 
             term, trunc = self._check_done(agent_id)
-            terminations[agent_id] = term
-            truncations[agent_id] = trunc
+            # Determine termination reason
+            reason = "alive"
+            if trunc:
+                reason = "timeout"
+            elif term:
+                if ad.collision_flag:
+                    reason = "collision"
+                elif ad.current_wp_idx >= len(ad.route_waypoints):
+                    reason = "route_complete"
+                else:
+                    reason = "offroad"
+
             infos[agent_id] = {
                 "step": self._step_count,
                 "collision": ad.collision_flag,
                 "route_completion": self._route_completion(ad),
+                "termination_reason": reason,
             }
 
         # Remove terminated/truncated agents
@@ -1072,7 +1063,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         truncated = False
 
         # Collision
-        if ep_cfg.get("terminate_on_collision", False) and ad.collision_flag:
+        if ep_cfg.get("terminate_on_collision", True) and ad.collision_flag:
             terminated = True
 
         # Vehicle: route complete or off-road

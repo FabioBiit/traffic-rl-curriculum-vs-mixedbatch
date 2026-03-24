@@ -19,6 +19,7 @@ Uso:
     python carla_core/training/train_carla_mappo.py --no-gpu --timesteps 10000
 """
 
+import json
 import argparse
 import os
 import signal
@@ -151,6 +152,22 @@ def main():
     print(f"  Policies: vehicle({VEHICLE_OBS_DIM}D), pedestrian({PEDESTRIAN_OBS_DIM}D)")
     print(f"  Output: {out_dir}")
     print(f"{'=' * 60}\n")
+
+    run_meta = {
+        "timestamp": ts_str,
+        "name": name,
+        "total_timesteps": total_ts,
+        "seed": exp_seed,
+        "n_vehicles_rl": n_veh,
+        "n_pedestrians_rl": n_ped,
+        "global_obs_dim": global_obs_dim,
+        "optimization": opt,
+        "rollout": roll,
+        "model": model_cfg,
+        "env_config": env_cfg,
+    }
+    with open(os.path.join(out_dir, "run_config.json"), "w") as f:
+        json.dump(run_meta, f, indent=2, default=str)
 
     # --- Ray init ---
     ray.init(num_cpus=max(n_workers + 2, 2), num_gpus=n_gpus, log_to_driver=False)
@@ -291,6 +308,14 @@ def main():
         print(f"\n[ERROR] Training crash at step {ts_done}: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
+        # Salva su file
+        log_path = os.path.join(out_dir, "crash_log.txt")
+        with open(log_path, "w") as f:
+            f.write(f"Step: {ts_done}\n")
+            f.write(f"Iteration: {iteration}\n")
+            f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Error: {type(e).__name__}: {e}\n\n")
+            traceback.print_exc(file=f)
     finally:
         try:
             final = algo.save(out_dir)
