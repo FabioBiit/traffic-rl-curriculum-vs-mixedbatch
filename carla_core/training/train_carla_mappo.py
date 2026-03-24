@@ -247,6 +247,13 @@ def main():
             iteration += 1
             ts_done = result.get("timesteps_total", 0)
 
+            # NaN detection
+            _rew_check = result.get("episode_reward_mean", 0)
+            if _rew_check is not None and isinstance(_rew_check, float) and (np.isnan(_rew_check) or np.isinf(_rew_check)):
+                print(f"\n[NaN/Inf DETECTED] episode_reward_mean={_rew_check} at step {ts_done}")
+                print("Saving checkpoint and stopping.")
+                break
+
             # Per-policy rewards
             pol_rew = result.get("policy_reward_mean", {})
             veh_r = pol_rew.get("vehicle_policy", 0)

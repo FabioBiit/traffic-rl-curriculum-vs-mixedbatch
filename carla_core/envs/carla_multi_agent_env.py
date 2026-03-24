@@ -741,61 +741,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
         if ad.agent_type == "vehicle":
             tb = float(np.clip(action[0], -1, 1))
             st = float(np.clip(action[1], -1, 1))
+
             ctrl = carla.VehicleControl()
-            ctrl.hand_brake = False
-
-            # --- Reverse logic ---
-            vel = ad.actor.get_velocity()
-            speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
-
-            if ad.reverse_active:
-                # Check exit conditions: max 50 steps, max 7m from origin, or agent moves again
-                dist_from_origin = ad.actor.get_location().distance(ad.reverse_origin)
-                ad.reverse_steps += 1
-
-                if ad.reverse_steps >= 80 or dist_from_origin >= 10.0:
-                    # Force exit reverse
-                    ad.reverse_active = False
-                    ad.reverse_cooldown = True  # must advance 1 WP to re-enable
-                    ctrl.throttle = 0.0
-                    ctrl.brake = 1.0
-                    ctrl.steer = st
-                    ctrl.reverse = False
-                else:
-                    # Reverse mode: clamp speed to ~10 km/h, add steering bias
-                    ctrl.reverse = True
-                    ctrl.throttle = min(max(tb, 0.0), 0.4)
-                    ctrl.brake = 0.0 if speed_kmh < 10.0 else 0.5
-                    if ad.reverse_steps > 30 and dist_from_origin < 2.0:
-                        ctrl.steer = float(np.sign(np.random.randn()) * 0.7)
-                    elif ad.current_wp_idx < len(ad.route_waypoints):
-                        wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-                        el = ad.actor.get_location()
-                        fwd = ad.actor.get_transform().get_forward_vector()
-                        dx = wp_loc.x - el.x
-                        dy = wp_loc.y - el.y
-                        cross = dx * fwd.y - dy * fwd.x
-                        ctrl.steer = np.clip(-np.sign(cross) * 0.5, -1, 1)
-                    else:
-                        ctrl.steer = st
-
-            elif ad.stuck_steps >= 7 and not ad.reverse_cooldown:
-                # Activate reverse
-                ad.reverse_active = True
-                ad.reverse_origin = ad.actor.get_location()
-                ad.reverse_steps = 0
-                ctrl.reverse = True
-                ctrl.throttle = 0.2
-                ctrl.brake = 0.0
-                ctrl.steer = st
-
-            else:
-                # Normal driving
-                ctrl.throttle = max(tb, 0.0)
-                ctrl.brake = max(-tb, 0.0)
-                ctrl.steer = st
-                ctrl.reverse = False
-
+            ctrl.throttle = max(tb, 0.0)
+            ctrl.brake = max(-tb, 0.0)
+            ctrl.steer = st
+            ctrl.reverse = False
             ad.actor.apply_control(ctrl)
 
         elif ad.agent_type == "pedestrian":
@@ -1040,7 +991,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # ---- 5. Speed target (moderate speed = good, too fast/slow = bad) ----
         # Target: 15-30 km/h. Below 5 = idle penalty. Above 50 = speed penalty
-        if speed_kmh < 2.5 and not ad.reverse_active:
+        if speed_kmh < 2.5:
             reward -= 0.15  # idle penalty
         elif 15.0 <= speed_kmh <= 50.0:
             reward += 0.3  # optimal speed bonus
