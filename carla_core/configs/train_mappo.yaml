@@ -34,7 +34,7 @@ optimization:
   vf_loss_coeff: 0.5
   grad_clip: 0.5                # 1.0 -> 0.5 Reward v8 #0.5 -> 1.0 Reward v7
   vf_clip_param: 10.0           # Value function clipping Reward v8 
-  use_kl_loss: true
+  use_kl_loss: true             # Reward v8
   kl_target: 0.02               # Reward v8
   kl_coeff: 0.3                 # Reward v8
 
