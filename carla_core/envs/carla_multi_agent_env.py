@@ -334,11 +334,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
             vel = ad.actor.get_velocity()
             speed = math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
 
-            # Stuck detection (hybrid for vehicles)
+            # Stuck detection
             if ad.agent_type == "vehicle":
                 steps_since_wp = self._step_count - ad.last_wp_advance_step
-                speed_kmh = 3.6 * speed
-                is_stuck = (steps_since_wp > 60) or (speed_kmh < 2.0 and ad.stuck_steps >= 30)
+                is_stuck = steps_since_wp > 60
             else:
                 is_stuck = speed < 0.3
 
@@ -378,7 +377,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
             rewards[agent_id] = self._compute_reward(agent_id)
             self._refresh_route_if_needed(ad)
-            observations[agent_id] = self._get_obs(agent_id)
 
             # Collision cooldown: reset flag after 10 steps (For Future: es Hard Map)
             if ad.collision_flag:
@@ -390,6 +388,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ad.collision_step = 0
 
             term, trunc = self._check_done(agent_id)
+            
+            #Fix Run 9 -> terminate_on_collision: True
+            terminations[agent_id] = term
+            truncations[agent_id] = trunc
+            
             # Determine termination reason
             reason = "alive"
             if trunc:
@@ -408,6 +411,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 "route_completion": self._route_completion(ad),
                 "termination_reason": reason,
             }
+
+            # Only emit next observations for agents that remain alive this step.
+            if not term and not trunc:
+                observations[agent_id] = self._get_obs(agent_id)
+
 
         # Remove terminated/truncated agents
         self.agents = [a for a in self.agents
@@ -507,7 +515,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         for agent_id, ad in self._agent_data.items():
             if ad.agent_type == "vehicle":
                 self._setup_collision_sensor(ad)
-                self._setup_vehicle_route(ad)
+                self._setup_vehicle_route(ad, skip_current_wp=True)
 
         # Spawn RL pedestrians
         ped_bps = list(bp_lib.filter(self.cfg["agents"]["pedestrian_blueprint"]))
@@ -1098,6 +1106,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
             pass
 
     def _cleanup_agents(self):
+        # Stop sensors BEFORE destroying to prevent callback-during-destroy deadlock
+        for ad in self._agent_data.values():
+            if ad.collision_sensor:
+                try:
+                    ad.collision_sensor.stop()
+                except Exception:
+                    pass
         for ad in self._agent_data.values():
             if ad.collision_sensor:
                 self._safe_destroy(ad.collision_sensor)

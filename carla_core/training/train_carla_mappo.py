@@ -244,6 +244,7 @@ def main():
         .rollouts(
             num_rollout_workers=n_workers,
             rollout_fragment_length=roll.get("rollout_fragment_length", 200),
+            batch_mode="complete_episodes",
         )
         .training(
             train_batch_size=batch_size,
