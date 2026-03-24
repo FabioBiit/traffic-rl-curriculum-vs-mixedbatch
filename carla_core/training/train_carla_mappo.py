@@ -356,7 +356,6 @@ def main():
         # Save last training result (full RLlib dict)
         try:
             if iteration > 0:
-                import json
                 result_path = os.path.join(out_dir, "last_result.json")
                 with open(result_path, "w") as f:
                     json.dump(_sanitize_for_json(result), f, indent=2)
