@@ -290,7 +290,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 self._traffic_spawned = True
 
         for _ in range(10):
-            self._world.tick()
+            self._world.tick(10.0)  # 10 second timeout
 
         self._step_count = 0
         self.agents = list(self.possible_agents)
@@ -318,7 +318,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if agent_id in self._agent_data:
                 self._apply_action(agent_id, action)
 
-        self._world.tick()
+        self._world.tick(10.0)  # 10 second timeout
         self._step_count += 1
 
         observations = {}
@@ -380,7 +380,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             self._refresh_route_if_needed(ad)
             observations[agent_id] = self._get_obs(agent_id)
 
-            # Collision cooldown: reset flag after 10 steps (For Futere: es Hard Map)
+            # Collision cooldown: reset flag after 10 steps (For Future: es Hard Map)
             if ad.collision_flag:
                 if ad.collision_step == 0:
                     ad.collision_step = self._step_count  # mark when collision happened
@@ -501,7 +501,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.actor = actor
             self._agent_data[agent_id] = ad
 
-        self._world.tick()
+        self._world.tick(10.0)  # 10 second timeout
 
         # Setup collision sensors and routes for vehicles
         for agent_id, ad in self._agent_data.items():
@@ -532,7 +532,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.actor = actor
             self._agent_data[agent_id] = ad
 
-        self._world.tick()
+        self._world.tick(10.0)  # 10 second timeout
 
         # Setup collision sensors and routes for pedestrians
         for agent_id, ad in self._agent_data.items():
@@ -693,14 +693,14 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if w:
                 self._npc_walkers.append(w)
 
-        self._world.tick()
+        self._world.tick(10.0)  # 10 second timeout
 
         for w in self._npc_walkers:
             ctrl = self._world.try_spawn_actor(ctrl_bp, carla.Transform(), w)
             if ctrl:
                 self._npc_controllers.append(ctrl)
 
-        self._world.tick()
+        self._world.tick(10.0)  # 10 second timeout
 
         for ctrl in self._npc_controllers:
             target = self._world.get_random_location_from_navigation()
@@ -962,6 +962,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # ---- 3. Collision penalty (large, immediate) ----
         if ad.collision_flag and ad.collision_step == 0:
             reward -= 50.0
+
+            # Future Finetuing: scale by speed at collision (normalized)
+            # reward -= (20.0 + speed_kmh * 0.5)  # range: -20 (fermo) a -45 (50 km/h)
+
+            # Future Finetuning: scale by collision intensity (normalized)
+            # intensity_score = min(ad.collision_intensity / 100000, 1.0)
+            # reward -= (20.0 + (speed_kmh +intensity_score) * 0.5)  # range: -20 (fermo) a -45 (50 km/h)
 
         # ---- 4. Off-lane penalty (stay on road) ----
         wp = self._map.get_waypoint(el, project_to_road=True)
