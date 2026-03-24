@@ -405,7 +405,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 else:
                     reason = "offroad"
 
-            infos[agent_id] = {
+            info = {
                 "step": self._step_count,
                 "collision": ad.collision_flag,
                 "route_completion": self._route_completion(ad),
@@ -415,6 +415,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             # Only emit next observations for agents that remain alive this step.
             if not term and not trunc:
                 observations[agent_id] = self._get_obs(agent_id)
+                infos[agent_id] = info
 
 
         # Remove terminated/truncated agents
