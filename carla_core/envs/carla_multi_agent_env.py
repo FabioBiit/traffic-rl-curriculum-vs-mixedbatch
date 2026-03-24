@@ -154,14 +154,11 @@ class AgentData:
         "current_wp_idx",
         "prev_wp_idx",
         "goal_location",
-        "prev_throttle",
         "stuck_steps",
         "prev_dist_to_wp",
         "prev_steer",
         "position_history",
-        "loop_counter",
         "last_wp_advance_step",
-        "goal_just_reached",
         "loop_penalty_active"
     ]
 
@@ -177,14 +174,11 @@ class AgentData:
         self.current_wp_idx = 0
         self.prev_wp_idx = 0
         self.goal_location = None
-        self.prev_throttle = 0.0
         self.stuck_steps = 0
         self.prev_dist_to_wp = 0.0
         self.prev_steer = 0.0
         self.position_history = []
-        self.loop_counter = 0
         self.last_wp_advance_step = 0
-        self.goal_just_reached = False
         self.loop_penalty_active = False
 
 
@@ -307,14 +301,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.collision_intensity = 0.0
             ad.collision_step = 0
             ad.prev_wp_idx = 0
-            ad.prev_throttle = 0.0
             ad.stuck_steps = 0
             ad.prev_dist_to_wp = 0.0
             ad.prev_steer = 0.0
             ad.position_history = []
-            ad.loop_counter = 0
             ad.last_wp_advance_step = 0
-            ad.goal_just_reached = False
             ad.loop_penalty_active = False
 
         observations = {a: self._get_obs(a) for a in self.agents}
@@ -389,13 +380,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
             self._refresh_route_if_needed(ad)
             observations[agent_id] = self._get_obs(agent_id)
 
-            # Collision cooldown: reset flag after 10 steps
+            # Collision cooldown: reset flag after 10 steps (For Futere: es Hard Map)
             if ad.collision_flag:
                 if ad.collision_step == 0:
                     ad.collision_step = self._step_count  # mark when collision happened
                 elif self._step_count - ad.collision_step >= 10:
                     ad.collision_flag = False
-                    ad.collision_intensity = 0.0
+                    ad.collision_intensity = 0.0 # (For Future in Custom Metrics Callback)
                     ad.collision_step = 0
 
             term, trunc = self._check_done(agent_id)
@@ -905,7 +896,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
         loc = ad.actor.get_location()
         wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
         if loc.distance(wp_loc) < 2.0: # 2.0m threshold for pedestrians
-            ad.goal_just_reached = True
             ad.current_wp_idx += 1
             ad.prev_dist_to_wp = 0.0
             # Update goal_location for obs fallback
@@ -1015,7 +1005,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
             reward += wp_delta * 50.0
-            ad.goal_just_reached = False  # consumed
         ad.prev_wp_idx = ad.current_wp_idx
 
         # ---- 2. Distance to next WP (dense guidance) ----
