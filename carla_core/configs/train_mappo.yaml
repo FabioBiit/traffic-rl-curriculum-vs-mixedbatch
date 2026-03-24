@@ -26,15 +26,17 @@ rollout:
   num_sgd_iter: 15              # 10 -> 15 Reward v6
 
 optimization:
-  lr: 0.0003                    # 0.0005 -> 0.0003 Reward v7 # 0.0003 -> 0.0005 Reward v6
+  lr: 0.0005                    # 0.0003 -> 0.0005 Reward v8 # 0.0005 -> 0.0003 Reward v7 # 0.0003 -> 0.0005 Reward v6
   gamma: 0.99
   gae_lambda: 0.95
   clip_param: 0.2
-  entropy_coeff: 0.03           # 0.05 -> 0.03 Reward v6 # 0.01 -> 0.05 Reward v5, 
+  entropy_coeff: 0.03           # 0.05 -> 0.03 Reward v6 # 0.01 -> 0.05 Reward v5 
   vf_loss_coeff: 0.5
-  grad_clip: 1.0                # 0.5 -> 1.0 Reward v7
-  # kl_target: 0.02             # 0.01 -> 0.02 Reward v7 (Se v7 non converge)
-  use_kl_loss: false            # Disabilita KL penalty # Commenta per v8
+  grad_clip: 0.5                # 1.0 -> 0.5 Reward v8 #0.5 -> 1.0 Reward v7
+  vf_clip_param: 10.0           # Value function clipping Reward v8 
+  use_kl_loss: true
+  kl_target: 0.02               # Reward v8
+  kl_coeff: 0.3                 # Reward v8
 
 schedule:
   total_timesteps: 500000
