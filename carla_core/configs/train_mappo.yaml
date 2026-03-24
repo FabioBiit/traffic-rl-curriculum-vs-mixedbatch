@@ -39,7 +39,7 @@ optimization:
   kl_coeff: 0.3                 # Reward v8
 
 schedule:
-  total_timesteps: 500000
+  total_timesteps: 1000000
   checkpoint_freq: 50000
   eval_freq: 50000
   stop_on_nan: true             # NOT WIRED — reserved for future NaN detection

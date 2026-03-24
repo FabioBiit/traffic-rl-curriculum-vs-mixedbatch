@@ -280,6 +280,10 @@ def main():
 
     except KeyboardInterrupt:
         print("\nInterrotto.")
+    except Exception as e:
+        print(f"\n[ERROR] Training crash at step {ts_done}: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         try:
             final = algo.save(out_dir)
