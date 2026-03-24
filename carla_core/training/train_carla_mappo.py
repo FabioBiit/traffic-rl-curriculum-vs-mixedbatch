@@ -86,6 +86,27 @@ def compute_global_obs_dim(n_vehicles, n_pedestrians):
     return n_vehicles * VEHICLE_OBS_DIM + n_pedestrians * PEDESTRIAN_OBS_DIM
 
 
+def _sanitize_for_json(obj):
+    """Recursively convert non-serializable objects for JSON export."""
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, (int, float, bool, str)) or obj is None:
+        return obj
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, type):
+        return str(obj)
+    elif callable(obj):
+        return f"<function {getattr(obj, '__name__', str(obj))}>"
+    else:
+        return str(obj)
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -331,6 +352,18 @@ def main():
         print(f"  Output: {out_dir}")
 
         algo.stop()
+
+        # Save last training result (full RLlib dict)
+        try:
+            if iteration > 0:
+                import json
+                result_path = os.path.join(out_dir, "last_result.json")
+                with open(result_path, "w") as f:
+                    json.dump(_sanitize_for_json(result), f, indent=2)
+                print(f"  Last result: {result_path}")
+        except Exception as e:
+            print(f"  [WARN] Could not save last_result.json: {e}")
+
         ray.shutdown()
 
 
