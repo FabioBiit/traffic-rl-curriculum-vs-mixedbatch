@@ -397,14 +397,50 @@ class CarlaMultiAgentEnv(ParallelEnv):
             else:
                 path_eff = 0.0
 
-            # Only emit next observations for agents that remain alive this step.
+            # --- Determine termination reason ---
+            if term or trunc:
+                if ad.collision_flag:
+                    termination_reason = "collision"
+                elif ad.agent_type == "vehicle" and ad.current_wp_idx >= len(ad.route_waypoints):
+                    termination_reason = "route_complete"
+                elif ad.agent_type == "pedestrian" and ad.current_wp_idx >= len(ad.route_waypoints):
+                    termination_reason = "route_complete"
+                elif ad.agent_type == "vehicle" and self.cfg["episode"].get("terminate_on_offroad", True):
+                    el = ad.actor.get_location()
+                    wp_check = self._map.get_waypoint(el, project_to_road=True)
+                    if wp_check is None or el.distance(wp_check.transform.location) > 5.0:
+                        termination_reason = "offroad"
+                    elif trunc:
+                        # Stuck: timeout + (low route_completion OR loop_penalty)
+                        rc = self._route_completion(ad)
+                        if rc < 0.3 or ad.loop_penalty_active:
+                            termination_reason = "stuck"
+                        else:
+                            termination_reason = "timeout"
+                    else:
+                        termination_reason = "timeout"
+                elif trunc:
+                    rc = self._route_completion(ad)
+                    if rc < 0.3 or ad.loop_penalty_active:
+                        termination_reason = "stuck"
+                    else:
+                        termination_reason = "timeout"
+                else:
+                    termination_reason = "timeout"
+            else:
+                termination_reason = "alive"
+
+            # Emit info for ALL agents (including terminated/truncated)
+            infos[agent_id] = {
+                "step": self._step_count,
+                "collision": ad.collision_flag,
+                "route_completion": self._route_completion(ad),
+                "path_efficiency": path_eff,
+                "termination_reason": termination_reason,
+            }
+
+            # Only emit next observations for agents that remain alive
             if not term and not trunc:
-                infos[agent_id] = {
-                    "step": self._step_count,
-                    "collision": ad.collision_flag,
-                    "route_completion": self._route_completion(ad),
-                    "path_efficiency": path_eff
-                }
                 observations[agent_id] = self._get_obs(agent_id)
 
         # Remove terminated/truncated agents

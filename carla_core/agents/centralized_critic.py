@@ -9,6 +9,9 @@ Componenti:
   1. CentralizedCriticModel  — TorchModelV2 con actor/critic separati
   2. CentralizedCriticCallbacks — inietta global_obs nel SampleBatch
      via on_postprocess_trajectory(), ricalcola VF e GAE
+  3. on_episode_start/step/end — Custom metrics per TensorBoard
+     (success_rate, collision_rate, offroad_rate, stuck_rate, timeout_rate,
+      route_completion, path_efficiency) per-policy
 
 Struttura reti:
   Actor MLP:  obs_dim → 256 → 256 → action_logits
@@ -135,18 +138,104 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Callbacks: inject global_obs + recompute GAE
+# Callbacks: inject global_obs + recompute GAE + custom metrics
 # ---------------------------------------------------------------------------
 
 class CentralizedCriticCallbacks(DefaultCallbacks):
     """
     RLlib callbacks for centralized critic MAPPO.
 
+    on_episode_start():  init per-episode outcome tracking
+    on_episode_step():   capture termination_reason when each agent terminates
+    on_episode_end():    aggregate per-policy metrics → TensorBoard custom_metrics
     on_postprocess_trajectory():
       1. Concatena own_obs + opponent_obs → global_obs
       2. Ricalcola VF predictions con global_obs
       3. Ricalcola GAE advantages
     """
+
+    # ------------------------------------------------------------------
+    # Episode-level metrics (Block 1)
+    # ------------------------------------------------------------------
+
+    def on_episode_start(
+        self, *, worker, base_env, policies, episode,
+        env_index=None, **kwargs,
+    ):
+        """Initialize per-episode agent outcome tracking."""
+        episode.user_data["agent_outcomes"] = {}
+
+    def on_episode_step(
+        self, *, worker, base_env, policies, episode,
+        env_index=None, **kwargs,
+    ):
+        """Capture each agent's termination info at the step they terminate."""
+        for agent_id in episode.get_agents():
+            # Skip agents already captured
+            if agent_id in episode.user_data["agent_outcomes"]:
+                continue
+            info = episode.last_info_for(agent_id)
+            if not info:
+                continue
+            tr = info.get("termination_reason")
+            if tr and tr != "alive":
+                episode.user_data["agent_outcomes"][agent_id] = {
+                    "termination_reason": tr,
+                    "route_completion": info.get("route_completion", 0.0),
+                    "path_efficiency": info.get("path_efficiency", 0.0),
+                }
+
+    def on_episode_end(
+        self, *, worker, base_env, policies, episode,
+        env_index=None, **kwargs,
+    ):
+        """Aggregate per-policy metrics → TensorBoard custom_metrics."""
+        outcomes = episode.user_data.get("agent_outcomes", {})
+
+        for policy_id in ("vehicle_policy", "pedestrian_policy"):
+            prefix = "vehicle" if policy_id == "vehicle_policy" else "pedestrian"
+            agent_data = {
+                aid: out for aid, out in outcomes.items()
+                if aid.startswith(prefix)
+            }
+            n = len(agent_data)
+            if n == 0:
+                continue
+
+            reasons = [d["termination_reason"] for d in agent_data.values()]
+            episode.custom_metrics[f"{policy_id}/success_rate"] = (
+                reasons.count("route_complete") / n
+            )
+            episode.custom_metrics[f"{policy_id}/collision_rate"] = (
+                reasons.count("collision") / n
+            )
+            episode.custom_metrics[f"{policy_id}/offroad_rate"] = (
+                reasons.count("offroad") / n
+            )
+            episode.custom_metrics[f"{policy_id}/stuck_rate"] = (
+                reasons.count("stuck") / n
+            )
+            episode.custom_metrics[f"{policy_id}/timeout_rate"] = (
+                reasons.count("timeout") / n
+            )
+            episode.custom_metrics[f"{policy_id}/route_completion"] = float(
+                np.mean([d["route_completion"] for d in agent_data.values()])
+            )
+            episode.custom_metrics[f"{policy_id}/path_efficiency"] = float(
+                np.mean([d["path_efficiency"] for d in agent_data.values()])
+            )
+
+        # Debug: warn about agents with no captured outcome
+        all_agents = set(episode.get_agents())
+        missing = all_agents - set(outcomes.keys())
+        if missing:
+            logger.warning(
+                f"Episode {episode.episode_id}: no termination_reason for: {missing}"
+            )
+
+    # ------------------------------------------------------------------
+    # Trajectory postprocessing (centralized critic)
+    # ------------------------------------------------------------------
 
     def on_postprocess_trajectory(
         self,

@@ -25,6 +25,7 @@ import os
 import signal
 import sys
 import time
+import threading
 from pathlib import Path
 
 import torch
@@ -56,6 +57,41 @@ from carla_core.agents.centralized_critic import (
 
 os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
 
+_episode_log_lock = threading.Lock()
+
+def _append_episode_json(path, record):
+    """Thread-safe append of a JSON line to the episode log file."""
+    line = json.dumps(record, default=str) + "\n"
+    with _episode_log_lock:
+        with open(path, "a") as f:
+            f.write(line)
+
+class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
+    """Extends CentralizedCriticCallbacks with episode-level JSON logging."""
+
+    def on_episode_end(self, *, worker, base_env, policies, episode,
+                       env_index=None, **kwargs):
+        # Let parent compute custom_metrics first
+        super().on_episode_end(
+            worker=worker, base_env=base_env, policies=policies,
+            episode=episode, env_index=env_index, **kwargs,
+        )
+        # Episode JSON logging
+        log_path = os.environ.get("MAPPO_EPISODE_LOG")
+        if not log_path:
+            return
+        outcomes = episode.user_data.get("agent_outcomes", {})
+        for agent_id, out in outcomes.items():
+            policy_id = "vehicle_policy" if agent_id.startswith("vehicle") else "pedestrian_policy"
+            _append_episode_json(log_path, {
+                "episode_id": episode.episode_id,
+                "agent_id": agent_id,
+                "policy": policy_id,
+                "termination_reason": out["termination_reason"],
+                "route_completion": round(out["route_completion"], 4),
+                "path_efficiency": round(out["path_efficiency"], 4),
+                "step_count": episode.length,
+            })
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -328,6 +364,9 @@ def main():
     out_dir = args.checkpoint_dir or str(Path(out_base) / f"{name}_{ts_str}")
     os.makedirs(out_dir, exist_ok=True)
 
+    # Episode-level JSON log path (read by MAPPOTrainingCallbacks)
+    os.environ["MAPPO_EPISODE_LOG"] = os.path.join(out_dir, "episodes.jsonl")
+
     print(f"{'=' * 60}")
     print(f"CARLA MAPPO Training — Centralized Critic (CTDE)")
     print(f"{'=' * 60}")
@@ -403,7 +442,7 @@ def main():
             policy_mapping_fn=policy_mapping_fn,
             policies_to_train=["vehicle_policy", "pedestrian_policy"],
         )
-        .callbacks(CentralizedCriticCallbacks)
+        .callbacks(MAPPOTrainingCallbacks)
         .resources(num_gpus=n_gpus)
         .rollouts(
             num_rollout_workers=n_workers,
