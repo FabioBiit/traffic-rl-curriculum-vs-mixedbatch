@@ -240,6 +240,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Per-agent data
         self._agent_data: dict[str, AgentData] = {}
         self._step_count = 0
+        self._terminated_agent_infos = {}
         self._reset_count = 0
 
     # ------------------------------------------------------------------
@@ -295,6 +296,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             self._world.tick(10.0)  # 10 second timeout
 
         self._step_count = 0
+        self._terminated_agent_infos = {}
         self.agents = list(self.possible_agents)
 
         # Reset per-agent flags
@@ -430,8 +432,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
             else:
                 termination_reason = "alive"
 
-            # Emit info for ALL agents (including terminated/truncated)
-            infos[agent_id] = {
+            # Build info dict for this agent
+            agent_info = {
                 "step": self._step_count,
                 "collision": ad.collision_flag,
                 "route_completion": self._route_completion(ad),
@@ -439,9 +441,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 "termination_reason": termination_reason,
             }
 
-            # Only emit next observations for agents that remain alive
             if not term and not trunc:
+                # Agent alive: emit both obs and info (RLlib contract)
                 observations[agent_id] = self._get_obs(agent_id)
+                infos[agent_id] = agent_info
+            else:
+                # Agent terminated: store in side-channel for callback
+                self._terminated_agent_infos[agent_id] = agent_info
 
         # Remove terminated/truncated agents
         self.agents = [a for a in self.agents

@@ -169,9 +169,15 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
         self, *, worker, base_env, policies, episode,
         env_index=None, **kwargs,
     ):
-        """Capture each agent's termination info at the step they terminate."""
+        """Capture each agent's termination info at the step they terminate.
+
+        Reads from two sources:
+          1. episode.last_info_for() — for agents still in the obs dict
+          2. env._terminated_agent_infos — side-channel for agents whose
+             info can't be in the RLlib infos dict (keys must ⊆ obs keys)
+        """
+        # --- Source 1: standard RLlib info path ---
         for agent_id in episode.get_agents():
-            # Skip agents already captured
             if agent_id in episode.user_data["agent_outcomes"]:
                 continue
             info = episode.last_info_for(agent_id)
@@ -184,6 +190,27 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                     "route_completion": info.get("route_completion", 0.0),
                     "path_efficiency": info.get("path_efficiency", 0.0),
                 }
+
+        # --- Source 2: side-channel for terminated agents ---
+        try:
+            raw_env = base_env.get_sub_environments()[0]
+            # ParallelPettingZooEnv wraps our env in .par_env (or .env)
+            inner = getattr(raw_env, "par_env", None) or getattr(raw_env, "env", None)
+            if inner is None:
+                inner = raw_env
+            term_infos = getattr(inner, "_terminated_agent_infos", {})
+            for agent_id, info in term_infos.items():
+                if agent_id in episode.user_data["agent_outcomes"]:
+                    continue
+                tr = info.get("termination_reason")
+                if tr and tr != "alive":
+                    episode.user_data["agent_outcomes"][agent_id] = {
+                        "termination_reason": tr,
+                        "route_completion": info.get("route_completion", 0.0),
+                        "path_efficiency": info.get("path_efficiency", 0.0),
+                    }
+        except (AttributeError, IndexError):
+            pass  # Graceful fallback if env structure differs       
 
     def on_episode_end(
         self, *, worker, base_env, policies, episode,

@@ -25,7 +25,6 @@ import os
 import signal
 import sys
 import time
-import threading
 from pathlib import Path
 
 import torch
@@ -57,14 +56,14 @@ from carla_core.agents.centralized_critic import (
 
 os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
 
-_episode_log_lock = threading.Lock()
-
 def _append_episode_json(path, record):
-    """Thread-safe append of a JSON line to the episode log file."""
+    """Append a JSON line to the episode log file.
+    With num_workers=0 (single CARLA instance), no lock is needed.
+    The file is opened/closed per-write for crash safety.
+    """
     line = json.dumps(record, default=str) + "\n"
-    with _episode_log_lock:
-        with open(path, "a") as f:
-            f.write(line)
+    with open(path, "a") as f:
+        f.write(line)
 
 class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
     """Extends CentralizedCriticCallbacks with episode-level JSON logging."""
@@ -92,6 +91,16 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
                 "path_efficiency": round(out["path_efficiency"], 4),
                 "step_count": episode.length,
             })
+
+        # Aggregate metrics (all agents, both policies)
+        all_reasons = [d["termination_reason"] for d in outcomes.values()]
+        n_total = len(all_reasons)
+        if n_total > 0:
+            episode.custom_metrics["success_rate"] = all_reasons.count("route_complete") / n_total
+            episode.custom_metrics["collision_rate"] = all_reasons.count("collision") / n_total
+            episode.custom_metrics["route_completion"] = float(
+                np.mean([d["route_completion"] for d in outcomes.values()])
+            )
 
 # ---------------------------------------------------------------------------
 # Helpers
