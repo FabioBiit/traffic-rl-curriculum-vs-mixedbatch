@@ -240,6 +240,7 @@ def main():
             time.sleep(2.0)  # Stabilizzazione server dopo spawn
             ep_rewards = {a: 0.0 for a in env.possible_agents}
             ep_max_route = {a: 0.0 for a in env.possible_agents}
+            ep_final_info = {}
             step = 0
 
             print(f"--- Ep {ep + 1}/{args.episodes} ---")
@@ -261,6 +262,12 @@ def main():
                 for a in infos:
                     rc = infos[a].get("route_completion", 0)
                     ep_max_route[a] = max(ep_max_route[a], rc)
+                    ep_final_info[a] = infos[a]
+
+                for a, info in env._terminated_agent_infos.items():
+                    rc = info.get("route_completion", 0)
+                    ep_max_route[a] = max(ep_max_route[a], rc)
+                    ep_final_info[a] = info
 
                 # Spectator segue l'agente scelto con --follow
                 followed = env._agent_data.get(args.follow)
@@ -278,7 +285,7 @@ def main():
 
             print(f"  Steps: {step}")
             for a in env.possible_agents:
-                info = infos.get(a, {})
+                info = ep_final_info.get(a, {})
                 collision = info.get("collision", False)
                 route = ep_max_route.get(a, 0)
                 print(f"  {a}: R={ep_rewards[a]:+.1f} | "

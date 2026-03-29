@@ -7,11 +7,6 @@ experiment:
   name: "carla_mappo"
   output_dir: "carla_core/experiments"
   seed: 42
-  device: "cuda"
-
-algorithm:
-  name: "mappo"
-  framework: "rllib"
 
 resources:
   num_workers: 0                # 0 = local driver only (CARLA single instance)
@@ -45,12 +40,3 @@ schedule:
 model:
   hidden_size: 256              # MLP hidden layer size for actor and critic
   n_hidden_layers: 2            # Number of hidden layers
-
-logging:
-  tensorboard: true
-  wandb: false
-  log_level: "INFO"
-
-reproducibility:
-  deterministic_cudnn: false
-  torch_deterministic_algorithms: false

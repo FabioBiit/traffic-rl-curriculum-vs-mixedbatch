@@ -25,6 +25,7 @@ import os
 import signal
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 import torch
@@ -68,6 +69,10 @@ def _append_episode_json(path, record):
 class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
     """Extends CentralizedCriticCallbacks with episode-level JSON logging."""
 
+    def __init__(self):
+        super().__init__()
+        self._success_window = deque(maxlen=50)
+
     def on_episode_end(self, *, worker, base_env, policies, episode,
                        env_index=None, **kwargs):
         # Let parent compute custom_metrics first
@@ -77,29 +82,33 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
         )
         # Episode JSON logging
         log_path = os.environ.get("MAPPO_EPISODE_LOG")
-        if not log_path:
-            return
         outcomes = episode.user_data.get("agent_outcomes", {})
-        for agent_id, out in outcomes.items():
-            policy_id = "vehicle_policy" if agent_id.startswith("vehicle") else "pedestrian_policy"
-            _append_episode_json(log_path, {
-                "episode_id": episode.episode_id,
-                "agent_id": agent_id,
-                "policy": policy_id,
-                "termination_reason": out["termination_reason"],
-                "route_completion": round(out["route_completion"], 4),
-                "path_efficiency": round(out["path_efficiency"], 4),
-                "step_count": episode.length,
-            })
+        if log_path:
+            for agent_id, out in outcomes.items():
+                policy_id = "vehicle_policy" if agent_id.startswith("vehicle") else "pedestrian_policy"
+                _append_episode_json(log_path, {
+                    "episode_id": episode.episode_id,
+                    "agent_id": agent_id,
+                    "policy": policy_id,
+                    "termination_reason": out["termination_reason"],
+                    "route_completion": round(out["route_completion"], 4),
+                    "path_efficiency": round(out["path_efficiency"], 4),
+                    "step_count": episode.length,
+                })
 
         # Aggregate metrics (all agents, both policies)
         all_reasons = [d["termination_reason"] for d in outcomes.values()]
         n_total = len(all_reasons)
         if n_total > 0:
-            episode.custom_metrics["success_rate"] = all_reasons.count("route_complete") / n_total
+            success_rate = all_reasons.count("route_complete") / n_total
+            self._success_window.append(success_rate)
+            episode.custom_metrics["success_rate"] = success_rate
             episode.custom_metrics["collision_rate"] = all_reasons.count("collision") / n_total
             episode.custom_metrics["route_completion"] = float(
                 np.mean([d["route_completion"] for d in outcomes.values()])
+            )
+            episode.custom_metrics["window_success_rate"] = float(
+                np.mean(self._success_window)
             )
 
 # ---------------------------------------------------------------------------
