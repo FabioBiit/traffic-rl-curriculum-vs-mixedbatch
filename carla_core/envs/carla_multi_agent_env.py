@@ -148,18 +148,19 @@ class AgentData:
         "actor",
         "collision_sensor",
         "collision_flag",
-        "collision_intensity",
         "collision_step",
         "route_waypoints",
         "current_wp_idx",
         "prev_wp_idx",
         "goal_location",
-        "stuck_steps",
         "prev_dist_to_wp",
         "prev_steer",
         "position_history",
         "last_wp_advance_step",
-        "loop_penalty_active"
+        "loop_penalty_active",
+        "route_optimal_length",     # somma distanze WP-to-WP (calcolata al reset)
+        "actual_distance_traveled", # accumulata step-by-step
+        "prev_location"             # per calcolo distanza incrementale
     ]
 
     def __init__(self, agent_id: str, agent_type: str):
@@ -168,18 +169,19 @@ class AgentData:
         self.actor = None
         self.collision_sensor = None
         self.collision_flag = False
-        self.collision_intensity = 0.0
         self.collision_step = 0
         self.route_waypoints = []
         self.current_wp_idx = 0
         self.prev_wp_idx = 0
         self.goal_location = None
-        self.stuck_steps = 0
         self.prev_dist_to_wp = 0.0
         self.prev_steer = 0.0
         self.position_history = []
         self.last_wp_advance_step = 0
         self.loop_penalty_active = False
+        self.route_optimal_length = 0.0
+        self.actual_distance_traveled = 0.0
+        self.prev_location = None
 
 
 # ---------------------------------------------------------------------------
@@ -298,15 +300,16 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Reset per-agent flags
         for ad in self._agent_data.values():
             ad.collision_flag = False
-            ad.collision_intensity = 0.0
             ad.collision_step = 0
             ad.prev_wp_idx = 0
-            ad.stuck_steps = 0
             ad.prev_dist_to_wp = 0.0
             ad.prev_steer = 0.0
             ad.position_history = []
             ad.last_wp_advance_step = 0
             ad.loop_penalty_active = False
+            ad.route_optimal_length = 0.0
+            ad.actual_distance_traveled = 0.0
+            ad.prev_location = None
 
         observations = {a: self._get_obs(a) for a in self.agents}
         infos = {a: {} for a in self.agents}
@@ -321,30 +324,25 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._world.tick(10.0)  # 10 second timeout
         self._step_count += 1
 
+         # --- Accumulate actual distance traveled ---
+        for agent_id, ad in self._agent_data.items():
+            if not ad.actor or not ad.actor.is_alive:
+                continue
+            loc = ad.actor.get_location()
+            if ad.prev_location is not None:
+                ad.actual_distance_traveled += ad.prev_location.distance(loc)
+            ad.prev_location = loc
+
         observations = {}
         rewards = {}
         terminations = {}
         truncations = {}
         infos = {}
 
-        # --- Update stuck counters and position history ---
+        # --- Update position history and loop detection ---
         for agent_id, ad in self._agent_data.items():
             if not ad.actor or not ad.actor.is_alive:
                 continue
-            vel = ad.actor.get_velocity()
-            speed = math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
-
-            # Stuck detection
-            if ad.agent_type == "vehicle":
-                steps_since_wp = self._step_count - ad.last_wp_advance_step
-                is_stuck = steps_since_wp > 60
-            else:
-                is_stuck = speed < 0.3
-
-            if is_stuck:
-                ad.stuck_steps += 1
-            else:
-                ad.stuck_steps = 0
 
             # Position history sampling (every 50 steps) + loop detection
             if self._step_count % 50 == 0:
@@ -384,7 +382,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ad.collision_step = self._step_count  # mark when collision happened
                 elif self._step_count - ad.collision_step >= 10:
                     ad.collision_flag = False
-                    ad.collision_intensity = 0.0 # (For Future in Custom Metrics Callback)
                     ad.collision_step = 0
 
             term, trunc = self._check_done(agent_id)
@@ -392,32 +389,23 @@ class CarlaMultiAgentEnv(ParallelEnv):
             #Fix Run 9 -> terminate_on_collision: True
             terminations[agent_id] = term
             truncations[agent_id] = trunc
-            
-            # Determine termination reason
-            reason = "alive"
-            if trunc:
-                reason = "timeout"
-            elif term:
-                if ad.collision_flag:
-                    reason = "collision"
-                elif ad.current_wp_idx >= len(ad.route_waypoints):
-                    reason = "route_complete"
-                else:
-                    reason = "offroad"
 
-            info = {
-                "step": self._step_count,
-                "collision": ad.collision_flag,
-                "route_completion": self._route_completion(ad),
-                "termination_reason": reason,
-            }
-
-            infos[agent_id] = info
+            # Path efficiency: optimal / actual (1.0 = perfect, <1.0 = inefficient)
+            if ad.actual_distance_traveled > 0.1:
+                path_eff = min(ad.route_optimal_length / ad.actual_distance_traveled, 1.0)
+            else:
+                path_eff = 0.0
 
             # Only emit next observations for agents that remain alive this step.
             if not term and not trunc:
+                infos[agent_id] = {
+                    "step": self._step_count,
+                    "collision": ad.collision_flag,
+                    "route_completion": self._route_completion(ad),
+                    "path_efficiency": path_eff,
+                    "termination_reason": "alive",
+                }
                 observations[agent_id] = self._get_obs(agent_id)
-
 
         # Remove terminated/truncated agents
         self.agents = [a for a in self.agents
@@ -557,8 +545,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         def on_collision(event, _ad=ad):
             _ad.collision_flag = True
-            imp = event.normal_impulse
-            _ad.collision_intensity = math.sqrt(imp.x**2 + imp.y**2 + imp.z**2)
             _ad.collision_step = 0  # signal: new collision, step() will set actual value
 
         sensor.listen(on_collision)
@@ -609,6 +595,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.goal_location = carla.Location(x=loc.x + 30.0, y=loc.y, z=loc.z)
             ad.route_waypoints = [_NavPoint(ad.goal_location)]
 
+        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        ad.prev_location = ad.actor.get_location()
+
     def _setup_vehicle_route(self, ad: AgentData, skip_current_wp: bool = False):
         loc = ad.actor.get_location()
         wp = self._map.get_waypoint(loc, project_to_road=True)
@@ -628,7 +617,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         if not ad.route_waypoints and not skip_current_wp:
             ad.route_waypoints = [wp]
+
         ad.current_wp_idx = 0
+        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        ad.prev_location = ad.actor.get_location()
 
     def _setup_pedestrian_route(self, ad: AgentData):
         """Build a pedestrian route by chaining sidewalk waypoints like vehicles."""
@@ -660,6 +652,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return
 
         ad.goal_location = ad.route_waypoints[0].transform.location
+        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        ad.prev_location = ad.actor.get_location()
 
     # ------------------------------------------------------------------
     # Traffic (NPC)
@@ -918,6 +912,17 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return 0.0
         return min(ad.current_wp_idx / len(ad.route_waypoints), 1.0)
 
+    def _compute_route_optimal_length(self, ad: AgentData) -> float:
+        """Sum of consecutive WP-to-WP distances = optimal path length."""
+        if len(ad.route_waypoints) < 2:
+            return 0.0
+        total = 0.0
+        for i in range(len(ad.route_waypoints) - 1):
+            loc_a = ad.route_waypoints[i].transform.location
+            loc_b = ad.route_waypoints[i + 1].transform.location
+            total += loc_a.distance(loc_b)
+        return total
+
     def _refresh_route_if_needed(self, ad: AgentData):
         ep_cfg = self.cfg["episode"]
         if ad.current_wp_idx < len(ad.route_waypoints):
@@ -975,10 +980,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
             # Future Finetuing: scale by speed at collision (normalized)
             # reward -= (20.0 + speed_kmh * 0.5)  # range: -20 (fermo) a -45 (50 km/h)
-
-            # Future Finetuning: scale by collision intensity (normalized)
-            # intensity_score = min(ad.collision_intensity / 100000, 1.0)
-            # reward -= (20.0 + (speed_kmh +intensity_score) * 0.5)  # range: -20 (fermo) a -45 (50 km/h)
 
         # ---- 4. Off-lane penalty (stay on road) ----
         wp = self._map.get_waypoint(el, project_to_road=True)
