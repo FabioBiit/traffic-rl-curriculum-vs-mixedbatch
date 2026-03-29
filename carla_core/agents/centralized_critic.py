@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 # Key injected into SampleBatch for centralized critic
 GLOBAL_OBS = "global_obs"
 
+def _raise_on_nonfinite_np(name: str, arr: np.ndarray):
+    arr = np.asarray(arr)
+    if np.isfinite(arr).all():
+        return
+    bad = np.argwhere(~np.isfinite(arr))
+    first = tuple(bad[0].tolist()) if bad.size else ()
+    value = arr[first] if first else arr
+    raise ValueError(f"{name} contains non-finite values at {first}: {value}")
+
+
+def _raise_on_nonfinite_torch(name: str, tensor: torch.Tensor):
+    if torch.isfinite(tensor).all():
+        return
+    bad = (~torch.isfinite(tensor)).nonzero(as_tuple=False)
+    first = tuple(bad[0].tolist()) if bad.numel() else ()
+    value = tensor[first].detach().cpu().item() if first else float("nan")
+    raise ValueError(f"{name} contains non-finite values at {first}: {value}")
+
 
 # ---------------------------------------------------------------------------
 # Model
@@ -90,7 +108,9 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
     @override(ModelV2)
     def forward(self, input_dict, state, seq_lens):
         obs = input_dict["obs_flat"].float()
+        _raise_on_nonfinite_torch("obs_flat", obs)
         action_logits = self.actor(obs)
+        _raise_on_nonfinite_torch("action_logits", action_logits)
 
         # During training: global_obs injected by callbacks
         if GLOBAL_OBS in input_dict:
@@ -103,7 +123,9 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
             )
             global_obs[:, :obs.shape[-1]] = obs
 
+        _raise_on_nonfinite_torch("global_obs", global_obs)
         self._cur_value = self.critic(global_obs).squeeze(-1)
+        _raise_on_nonfinite_torch("value_function", self._cur_value)
         return action_logits, state
 
     @override(ModelV2)
@@ -139,6 +161,7 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
         **kwargs,
     ):
         own_obs = postprocessed_batch[SampleBatch.CUR_OBS]
+        _raise_on_nonfinite_np(f"{agent_id}.own_obs", own_obs)
         batch_size = own_obs.shape[0]
 
         # Collect other agents' obs
@@ -154,6 +177,7 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             else:
                 other_batch = other_data
             opp_obs = other_batch[SampleBatch.CUR_OBS]
+            _raise_on_nonfinite_np(f"{agent_id}.opp_obs[{other_id}]", opp_obs)
 
             # Align batch sizes
             if len(opp_obs) > batch_size:
@@ -189,6 +213,7 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                 global_obs = own_obs[:, :expected_dim]
 
         global_obs = global_obs.astype(np.float32)
+        _raise_on_nonfinite_np(f"{agent_id}.global_obs", global_obs)
         postprocessed_batch[GLOBAL_OBS] = global_obs
 
         # Recompute VF predictions with global_obs
@@ -197,6 +222,7 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             global_obs_t = torch.as_tensor(global_obs, dtype=torch.float32, device=device)
             vf_preds = policy.model.critic(global_obs_t).squeeze(-1).cpu().numpy()
 
+        _raise_on_nonfinite_np(f"{agent_id}.vf_preds", vf_preds)
         postprocessed_batch[SampleBatch.VF_PREDS] = vf_preds
 
         # Bootstrap value for incomplete trajectories
@@ -219,9 +245,12 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             elif last_global.shape[-1] > expected_dim:
                 last_global = last_global[:, :expected_dim]
 
+            _raise_on_nonfinite_np(f"{agent_id}.last_global", last_global)
             with torch.no_grad():
                 t = torch.as_tensor(last_global, dtype=torch.float32, device=device)
                 last_r = policy.model.critic(t).squeeze(-1).item()
+            if not np.isfinite(last_r):
+                raise ValueError(f"{agent_id}.last_r is non-finite: {last_r}")
 
         # Recompute GAE
         train_batch = compute_advantages(

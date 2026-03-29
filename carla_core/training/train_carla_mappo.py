@@ -107,6 +107,166 @@ def _sanitize_for_json(obj):
     else:
         return str(obj)
 
+
+def _find_nonfinite(obj, path="result"):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            found = _find_nonfinite(v, f"{path}.{k}")
+            if found:
+                return found
+        return None
+
+    if isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            found = _find_nonfinite(v, f"{path}[{i}]")
+            if found:
+                return found
+        return None
+
+    if isinstance(obj, np.ndarray):
+        if not np.isfinite(obj).all():
+            bad = np.argwhere(~np.isfinite(obj))
+            first = tuple(bad[0].tolist()) if bad.size else ()
+            value = obj[first] if first else obj
+            return f"{path} contains non-finite values at {first}: {value}"
+        return None
+
+    if isinstance(obj, torch.Tensor):
+        if not torch.isfinite(obj).all():
+            bad = (~torch.isfinite(obj)).nonzero(as_tuple=False)
+            first = tuple(bad[0].tolist()) if bad.numel() else ()
+            value = obj[first].detach().cpu().item() if first else float('nan')
+            return f"{path} contains non-finite values at {first}: {value}"
+        return None
+
+    if isinstance(obj, (float, np.floating)):
+        if not np.isfinite(float(obj)):
+            return f"{path}={obj}"
+
+    return None
+
+
+def _raise_on_nonfinite_result(result):
+    checks = {
+        "result.episode_reward_mean": result.get("episode_reward_mean"),
+        "result.policy_reward_mean": result.get("policy_reward_mean"),
+        "result.sampler_results": result.get("sampler_results"),
+        "result.info.learner": result.get("info", {}).get("learner", {}),
+    }
+
+    for path, value in checks.items():
+        found = _find_nonfinite(value, path)
+        if found:
+            raise ValueError(f"NaN/Inf detected in training result: {found}")
+
+
+def _get_nested(mapping, *keys):
+    cur = mapping
+    for key in keys:
+        if not isinstance(cur, dict) or key not in cur:
+            return None
+        cur = cur[key]
+    return cur
+
+
+def _coerce_float(value, default=None):
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_custom_metric(result, *names):
+    containers = [
+        result.get("custom_metrics", {}),
+        _get_nested(result, "sampler_results", "custom_metrics") or {},
+        _get_nested(result, "evaluation", "custom_metrics") or {},
+        _get_nested(result, "evaluation", "sampler_results", "custom_metrics") or {},
+    ]
+    for name in names:
+        for container in containers:
+            if name in container:
+                return _coerce_float(container[name])
+    return None
+
+
+def _extract_reward_std(result):
+    reward_lists = [
+        _get_nested(result, "hist_stats", "episode_reward"),
+        _get_nested(result, "sampler_results", "hist_stats", "episode_reward"),
+    ]
+    for rewards in reward_lists:
+        if rewards:
+            arr = np.asarray(rewards, dtype=np.float64)
+            arr = arr[np.isfinite(arr)]
+            if arr.size:
+                return float(np.std(arr))
+    return None
+
+
+def _derive_mode(exp_cfg, name):
+    mode = exp_cfg.get("mode")
+    if mode:
+        return str(mode)
+
+    lower_name = name.lower()
+    if "curriculum" in lower_name:
+        return "curriculum"
+    if "batch" in lower_name:
+        return "batch"
+    return "unknown"
+
+
+def _build_results_payload(*, exp_cfg, name, total_ts, ts_done, elapsed_s, result, timeseries):
+    result = result or {}
+    status = "COMPLETATO" if ts_done >= total_ts else "STOP_EARLY_COLLASSO"
+    mode = _derive_mode(exp_cfg, name)
+    total_episodes = int(result.get("episodes_total", 0) or 0)
+
+    success_rate = _extract_custom_metric(result, "success_rate_mean", "success_rate")
+    collision_rate = _extract_custom_metric(
+        result,
+        "collision_rate_mean",
+        "collision_rate",
+        "vehicle_collision_rate_mean",
+    )
+
+    evaluation = {
+        level: {
+            "success_rate": float("nan"),
+            "collision_rate": float("nan"),
+        }
+        for level in ["easy", "medium", "hard", "test"]
+    }
+
+    payload = {
+        "meta": {
+            "mode": mode,
+            "status": status,
+            "simulator": "CARLA",
+            "algorithm": "MAPPO",
+            "name": name,
+            "seed": exp_cfg.get("seed", 42),
+            "total_timesteps_budget": int(total_ts),
+            "total_timesteps_actual": int(ts_done),
+            "total_episodes": total_episodes,
+            "wall_clock_seconds": float(elapsed_s),
+        },
+        "timeseries": timeseries,
+        "evaluation": evaluation,
+        "training_summary": {
+            "cumulative_success_rate": float("nan") if success_rate is None else float(success_rate),
+            "cumulative_collision_rate": float("nan") if collision_rate is None else float(collision_rate),
+            "best_reward_mean": _coerce_float(max((p["reward_mean"] for p in timeseries if p["reward_mean"] is not None), default=None), float("nan")),
+            "final_reward_mean": _coerce_float(result.get("episode_reward_mean"), float("nan")),
+            "final_episode_length_mean": _coerce_float(result.get("episode_len_mean"), float("nan")),
+        },
+        "curriculum_history": [],
+    }
+    return payload
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -126,12 +286,15 @@ def main():
     # --- Load configs ---
     train_cfg = load_yaml(args.train_config or base / "configs" / "train_mappo.yaml")
     env_cfg = load_yaml(args.env_config or base / "configs" / "multi_agent.yaml")
+    eval_cfg = load_yaml(base / "configs" / "eval.yaml")
 
     sched = train_cfg.get("schedule", {})
     res = train_cfg.get("resources", {})
     opt = train_cfg.get("optimization", {})
     roll = train_cfg.get("rollout", {})
     model_cfg = train_cfg.get("model", {})
+    stop_on_nan = sched.get("stop_on_nan", True)
+    eval_section = eval_cfg.get("evaluation", {})
 
     total_ts = args.timesteps or sched.get("total_timesteps", 50_000)
     n_workers = args.workers if args.workers is not None else res.get("num_workers", 0)
@@ -186,6 +349,7 @@ def main():
         "rollout": roll,
         "model": model_cfg,
         "env_config": env_cfg,
+        "eval_config": eval_cfg,
     }
     with open(os.path.join(out_dir, "run_config.json"), "w") as f:
         json.dump(run_meta, f, indent=2, default=str)
@@ -264,9 +428,10 @@ def main():
         )
         .evaluation(
             evaluation_interval=max(1, int(sched.get("eval_freq", 10_000) / batch_size)),
-            evaluation_duration=5,
+            evaluation_duration=eval_section.get("episodes_per_map", 5),
             evaluation_duration_unit="episodes",
             evaluation_num_workers=0,
+            evaluation_config={"explore": not eval_section.get("deterministic_policy", True)},
         )
         .framework("torch")
     )
@@ -279,6 +444,8 @@ def main():
     iteration = 0
     t0 = time.time()
     best_reward = float("-inf")
+    timeseries = []
+    result = {}
 
     try:
         while ts_done < total_ts:
@@ -286,12 +453,8 @@ def main():
             iteration += 1
             ts_done = result.get("timesteps_total", 0)
 
-            # NaN detection
-            _rew_check = result.get("episode_reward_mean", 0)
-            if _rew_check is not None and isinstance(_rew_check, float) and (np.isnan(_rew_check) or np.isinf(_rew_check)):
-                print(f"\n[NaN/Inf DETECTED] episode_reward_mean={_rew_check} at step {ts_done}")
-                print("Saving checkpoint and stopping.")
-                break
+            if stop_on_nan:
+                _raise_on_nonfinite_result(result)
 
             # Per-policy rewards
             pol_rew = result.get("policy_reward_mean", {})
@@ -304,6 +467,25 @@ def main():
             elapsed = time.time() - t0
             pct = ts_done / total_ts * 100
             eta = (elapsed / max(ts_done, 1)) * (total_ts - ts_done)
+
+            timeseries.append({
+                "timestep": int(ts_done),
+                "success_rate": _extract_custom_metric(result, "success_rate_mean", "success_rate"),
+                "collision_rate": _extract_custom_metric(
+                    result,
+                    "collision_rate_mean",
+                    "collision_rate",
+                    "vehicle_collision_rate_mean",
+                ),
+                "window_success_rate": _extract_custom_metric(
+                    result,
+                    "window_success_rate_mean",
+                    "window_success_rate",
+                ),
+                "reward_mean": _coerce_float(tot_r),
+                "reward_std": _extract_reward_std(result),
+                "episode_length_mean": _coerce_float(ep_len),
+            })
 
             bar_len = 30
             filled = int(bar_len * ts_done / total_ts)
@@ -363,6 +545,23 @@ def main():
                 print(f"  Last result: {result_path}")
         except Exception as e:
             print(f"  [WARN] Could not save last_result.json: {e}")
+
+        try:
+            results_payload = _build_results_payload(
+                exp_cfg=exp_cfg,
+                name=name,
+                total_ts=total_ts,
+                ts_done=ts_done,
+                elapsed_s=time.time() - t0,
+                result=result,
+                timeseries=timeseries,
+            )
+            results_path = os.path.join(out_dir, "results.json")
+            with open(results_path, "w") as f:
+                json.dump(_sanitize_for_json(results_payload), f, indent=2)
+            print(f"  Results schema: {results_path}")
+        except Exception as e:
+            print(f"  [WARN] Could not save results.json: {e}")
 
         ray.shutdown()
 

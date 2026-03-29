@@ -373,7 +373,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
             else:
                 self._advance_pedestrian_waypoint(ad)
 
-            rewards[agent_id] = self._compute_reward(agent_id)
+            reward = self._compute_reward(agent_id)
+            rewards[agent_id] = self._validate_reward(reward, agent_id)
             self._refresh_route_if_needed(ad)
 
             # Collision cooldown: reset flag after 10 steps (For Future: es Hard Map)
@@ -402,8 +403,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     "step": self._step_count,
                     "collision": ad.collision_flag,
                     "route_completion": self._route_completion(ad),
-                    "path_efficiency": path_eff,
-                    "termination_reason": "alive",
+                    "path_efficiency": path_eff
                 }
                 observations[agent_id] = self._get_obs(agent_id)
 
@@ -719,10 +719,34 @@ class CarlaMultiAgentEnv(ParallelEnv):
     # Actions
     # ------------------------------------------------------------------
 
+    def _validate_action(self, action: np.ndarray, agent_id: str) -> np.ndarray:
+        action = np.asarray(action, dtype=np.float32)
+        if action.shape != (2,):
+            raise ValueError(f"[{agent_id}] invalid action shape: {action.shape}")
+        if not np.isfinite(action).all():
+            raise ValueError(f"[{agent_id}] non-finite action: {action}")
+        return action
+
+    def _sanitize_obs(self, obs: np.ndarray, agent_id: str) -> np.ndarray:
+        obs = np.asarray(obs, dtype=np.float32)
+        obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
+        obs = np.clip(obs, -1.0, 1.0)
+        if not np.isfinite(obs).all():
+            raise ValueError(f"[{agent_id}] non-finite observation after sanitization")
+        return obs.astype(np.float32, copy=False)
+
+    def _validate_reward(self, reward: float, agent_id: str) -> float:
+        reward = float(reward)
+        if not np.isfinite(reward):
+            raise ValueError(f"[{agent_id}] non-finite reward: {reward}")
+        return reward
+
     def _apply_action(self, agent_id: str, action: np.ndarray):
         ad = self._agent_data[agent_id]
         if not ad.actor or not ad.actor.is_alive:
             return
+
+        action = self._validate_action(action, agent_id)
 
         if ad.agent_type == "vehicle":
             tb = float(np.clip(action[0], -1, 1))
@@ -803,7 +827,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # Nearby vehicles
         self._fill_nearby(obs, 15, ad, N_NEARBY_VEHICLES_FOR_VEHICLE, "vehicle.*")
-        return np.clip(obs, -1, 1)
+        return self._sanitize_obs(obs, ad.agent_id)
 
     def _get_pedestrian_obs(self, ad: AgentData) -> np.ndarray:
         """18D obs for pedestrian — now uses waypoint route like vehicles."""
@@ -851,7 +875,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # Nearby vehicles (danger detection)
         self._fill_nearby(obs, 12, ad, N_NEARBY_VEHICLES_FOR_PEDESTRIAN, "vehicle.*")
-        return np.clip(obs, -1, 1)
+        return self._sanitize_obs(obs, ad.agent_id)
 
     def _fill_nearby(self, obs, start_idx, ad, n, filter_str):
         """Fill obs with relative position/speed of nearest actors."""
