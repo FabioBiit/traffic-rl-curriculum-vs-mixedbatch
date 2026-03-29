@@ -260,6 +260,38 @@ def _extract_reward_std(result):
     return None
 
 
+def _extract_eval_metric(result, *names):
+    containers = [
+        _get_nested(result, "evaluation", "custom_metrics") or {},
+        _get_nested(result, "evaluation", "sampler_results", "custom_metrics") or {},
+    ]
+    for name in names:
+        for container in containers:
+            if name in container:
+                return _coerce_float(container[name])
+    return None
+
+
+def _build_evaluation_payload(result):
+    sr = _extract_eval_metric(result, "success_rate_mean", "success_rate")
+    cr = _extract_eval_metric(
+        result,
+        "collision_rate_mean",
+        "collision_rate",
+        "vehicle_collision_rate_mean",
+    )
+
+    if sr is None and cr is None:
+        return {}
+
+    return {
+        "test": {
+            "success_rate": sr,
+            "collision_rate": cr,
+        }
+    }
+
+
 def _derive_mode(exp_cfg, name):
     mode = exp_cfg.get("mode")
     if mode:
@@ -287,13 +319,7 @@ def _build_results_payload(*, exp_cfg, name, total_ts, ts_done, elapsed_s, resul
         "vehicle_collision_rate_mean",
     )
 
-    evaluation = {
-        level: {
-            "success_rate": float("nan"),
-            "collision_rate": float("nan"),
-        }
-        for level in ["easy", "medium", "hard", "test"]
-    }
+    evaluation = _build_evaluation_payload(result)
 
     payload = {
         "meta": {

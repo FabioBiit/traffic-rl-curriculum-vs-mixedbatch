@@ -128,6 +128,14 @@ def extract_timeseries(data, field):
     return timesteps, values
 
 
+def is_valid_metric(value):
+    return value is not None and not np.isnan(value)
+
+
+def fmt_pct_or_na(value):
+    return f"{value:.1%}" if is_valid_metric(value) else "N/A"
+
+
 # ============================================================
 # GRAFICI â€” Funzioni individuali
 # ============================================================
@@ -351,10 +359,10 @@ def plot_summary_table(batch_data, curriculum_data, output_path):
          f"{meta_c['total_episodes']:,}"],
         ["Wall-Clock Time", f"{meta_b['wall_clock_seconds']:.0f}s",
          f"{meta_c['wall_clock_seconds']:.0f}s"],
-        ["Train Success Rate", f"{summ_b['cumulative_success_rate']:.1%}",
-         f"{summ_c['cumulative_success_rate']:.1%}"],
-        ["Train Collision Rate", f"{summ_b['cumulative_collision_rate']:.1%}",
-         f"{summ_c['cumulative_collision_rate']:.1%}"],
+        ["Train Success Rate", fmt_pct_or_na(summ_b["cumulative_success_rate"]),
+         fmt_pct_or_na(summ_c["cumulative_success_rate"])],
+        ["Train Collision Rate", fmt_pct_or_na(summ_b["cumulative_collision_rate"]),
+         fmt_pct_or_na(summ_c["cumulative_collision_rate"])],
     ]
 
     # Aggiungi eval per livello
@@ -366,16 +374,23 @@ def plot_summary_table(batch_data, curriculum_data, output_path):
             cr_c = eval_c[level]["collision_rate"]
 
             # Evidenzia il vincitore con freccia
-            sr_winner = " >" if sr_b > sr_c else " <" if sr_b < sr_c else " ="
-            cr_winner = " <" if cr_b < cr_c else " >" if cr_b > cr_c else " ="
+            if is_valid_metric(sr_b) and is_valid_metric(sr_c):
+                sr_winner = " >" if sr_b > sr_c else " <" if sr_b < sr_c else " ="
+            else:
+                sr_winner = ""
+
+            if is_valid_metric(cr_b) and is_valid_metric(cr_c):
+                cr_winner = " <" if cr_b < cr_c else " >" if cr_b > cr_c else " ="
+            else:
+                cr_winner = ""
 
             rows.append([
                 f"Eval {level.capitalize()} SR",
-                f"{sr_b:.1%}{sr_winner}", f"{sr_c:.1%}"
+                f"{fmt_pct_or_na(sr_b)}{sr_winner}", fmt_pct_or_na(sr_c)
             ])
             rows.append([
                 f"Eval {level.capitalize()} CR",
-                f"{cr_b:.1%}{cr_winner}", f"{cr_c:.1%}"
+                f"{fmt_pct_or_na(cr_b)}{cr_winner}", fmt_pct_or_na(cr_c)
             ])
 
     # Crea tabella come immagine
@@ -445,15 +460,17 @@ def save_comparison_txt(batch_data, curriculum_data, output_path):
                 b_cr = eval_b[level]["collision_rate"]
                 c_cr = eval_c[level]["collision_rate"]
 
-                if b_sr > c_sr:
+                if is_valid_metric(b_sr) and is_valid_metric(c_sr) and b_sr > c_sr:
                     winner = "Batch"
-                elif c_sr > b_sr:
+                elif is_valid_metric(b_sr) and is_valid_metric(c_sr) and c_sr > b_sr:
                     winner = "Curriculum"
+                elif not is_valid_metric(b_sr) or not is_valid_metric(c_sr):
+                    winner = "N/A"
                 else:
                     winner = "Pari"
 
-                f.write(f"{level:<10} {b_sr:<12.1%} {c_sr:<12.1%} "
-                        f"{b_cr:<12.1%} {c_cr:<12.1%} {winner:<12}\n")
+                f.write(f"{level:<10} {fmt_pct_or_na(b_sr):<12} {fmt_pct_or_na(c_sr):<12} "
+                        f"{fmt_pct_or_na(b_cr):<12} {fmt_pct_or_na(c_cr):<12} {winner:<12}\n")
 
         # Curriculum promotions
         f.write(f"\nCurriculum Promotions:\n")

@@ -240,8 +240,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Per-agent data
         self._agent_data: dict[str, AgentData] = {}
         self._step_count = 0
-        self._terminated_agent_infos = {}
         self._reset_count = 0
+        self._terminated_agent_infos = {}
 
     # ------------------------------------------------------------------
     # PettingZoo API
