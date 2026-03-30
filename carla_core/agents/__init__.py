@@ -6,10 +6,12 @@ from carla_core.agents.centralized_critic import (
     CentralizedCriticModel,
     CentralizedCriticCallbacks,
     GLOBAL_OBS,
+    compute_global_obs_dim_with_mask
 )
 
 __all__ = [
     "CentralizedCriticModel",
     "CentralizedCriticCallbacks",
     "GLOBAL_OBS",
+    "compute_global_obs_dim_with_mask"
 ]

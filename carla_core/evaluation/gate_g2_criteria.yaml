@@ -1,0 +1,37 @@
+# Gate G2 — MLP Baseline Freeze Criteria
+# ========================================
+# Date: April 2026
+# Evaluator: Run10 (1M steps, 3V+3P, Town03, Reward v6)
+# Consumed by: manual pass/fail decision before Block 4
+
+# ---------------------------------------------------------------
+# PASS criteria (ALL must hold on 5-episode eval)
+# ---------------------------------------------------------------
+
+training:
+  completes_without_crash: true          # No RuntimeError / ValueError / NaN
+  episodes_jsonl_produced: true          # episodes.jsonl non-empty
+  tensorboard_custom_metrics: true       # vehicle_policy/success_rate visible in TB
+  kl_vehicle: "< 0.05"                   # Stable policy updates
+  kl_pedestrian: "< 0.10"                # Stable policy updates
+
+performance:
+  vehicle_reward_mean: ">= 400"          # Run9 baseline: +588
+  pedestrian_reward_mean: ">= 200"       # Run9 baseline: +288
+  vehicle_route_completion: ">= 0.90"    # 5-ep eval mean
+  pedestrian_route_completion: ">= 0.80" # 5-ep eval mean
+  episode_length_mean: "< 900"           # Not timeout-dominated
+
+# ---------------------------------------------------------------
+# FAIL actions
+# ---------------------------------------------------------------
+# If training crashes       → fix bug, re-run
+# If metrics regressed >20% → bisect which Block 1/2 change caused it
+# If KL explodes            → revert to Run9 hyperparams, re-run
+
+# ---------------------------------------------------------------
+# On PASS
+# ---------------------------------------------------------------
+# 1. Save checkpoint as baseline_mlp_g2/
+# 2. Tag git commit: g2-freeze-mlp
+# 3. No further changes to reward, obs, or model until Block 4

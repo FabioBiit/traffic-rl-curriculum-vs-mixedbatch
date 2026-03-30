@@ -44,7 +44,9 @@ from carla_core.envs.carla_multi_agent_env import (
 from carla_core.agents.centralized_critic import (
     CentralizedCriticModel,
     CentralizedCriticCallbacks,
+    compute_global_obs_dim_with_mask
 )
+
 
 os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
 
@@ -69,7 +71,7 @@ def policy_mapping_fn(agent_id, episode=None, worker=None, **kwargs):
 
 
 def compute_global_obs_dim(n_veh, n_ped):
-    return n_veh * VEHICLE_OBS_DIM + n_ped * PEDESTRIAN_OBS_DIM
+    return compute_global_obs_dim_with_mask(n_veh, n_ped)
 
 
 def update_spectator(world, actor, distance=10.0, height=6.0):    

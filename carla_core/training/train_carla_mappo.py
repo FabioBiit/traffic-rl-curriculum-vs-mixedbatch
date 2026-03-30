@@ -53,6 +53,7 @@ from carla_core.envs.carla_multi_agent_env import (
 from carla_core.agents.centralized_critic import (
     CentralizedCriticModel,
     CentralizedCriticCallbacks,
+    compute_global_obs_dim_with_mask,
 )
 
 os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
@@ -396,7 +397,7 @@ def main():
     ag_cfg = env_cfg.get("agents", {})
     n_veh = ag_cfg.get("n_vehicles_rl", 1)
     n_ped = ag_cfg.get("n_pedestrians_rl", 1)
-    global_obs_dim = compute_global_obs_dim(n_veh, n_ped)
+    global_obs_dim = compute_global_obs_dim_with_mask(n_veh, n_ped)
 
     # Wire remaining config fields
     exp_cfg = train_cfg.get("experiment", {})
