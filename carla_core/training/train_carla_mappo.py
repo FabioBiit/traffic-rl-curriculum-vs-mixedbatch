@@ -140,11 +140,6 @@ def policy_mapping_fn(agent_id, episode=None, worker=None, **kwargs):
     raise ValueError(f"Unknown agent_id: {agent_id}")
 
 
-def compute_global_obs_dim(n_vehicles, n_pedestrians):
-    """global_obs = concat all agent obs."""
-    return n_vehicles * VEHICLE_OBS_DIM + n_pedestrians * PEDESTRIAN_OBS_DIM
-
-
 def _sanitize_for_json(obj):
     """Recursively convert non-serializable objects for JSON export."""
     if isinstance(obj, dict):
@@ -521,11 +516,11 @@ def _run_evaluation_scenarios(algo, base_env_cfg, eval_cfg, seed_base):
     episodes_per_map = int(eval_section.get("episodes_per_map", 1))
     explore = not eval_section.get("deterministic_policy", True)
     parallel_envs = int(eval_section.get("parallel_envs", 1))
-    if parallel_envs > 1:
-        logger.warning(
-            "eval.parallel_envs=%s requested, but evaluation is forced sequential "
-            "for a single CARLA instance.",
-            parallel_envs,
+    if parallel_envs != 1:
+        raise ValueError(
+            "eval.parallel_envs=%s is not supported in CARLA multi-agent evaluation "
+            "with a single simulator instance. Use parallel_envs=1."
+            % parallel_envs
         )
     timeout_seconds = _coerce_float(limits.get("timeout_seconds"))
     metric_keys, unsupported_metric_keys = _resolve_eval_metric_keys(eval_cfg)
@@ -672,14 +667,20 @@ def _save_evaluation_artifacts(
 
 def _derive_mode(exp_cfg, name):
     mode = exp_cfg.get("mode")
-    if mode:
+    if mode in {"batch", "curriculum"}:
         return str(mode)
 
-    lower_name = name.lower()
-    if "curriculum" in lower_name:
-        return "curriculum"
-    if "batch" in lower_name:
-        return "batch"
+    candidates = [
+        str(name),
+        str(exp_cfg.get("name", "")),
+        str(exp_cfg.get("output_dir", "")),
+    ]
+    for candidate in candidates:
+        lower_name = candidate.lower()
+        if "curriculum" in lower_name:
+            return "curriculum"
+        if "batch" in lower_name:
+            return "batch"
     return "unknown"
 
 
@@ -807,6 +808,16 @@ def main():
     ts_str = time.strftime("%Y%m%d_%H%M%S")
     name = exp_cfg.get("name", "carla_mappo")
     out_dir = args.checkpoint_dir or str(Path(out_base) / f"{name}_{ts_str}")
+    resolved_mode = _derive_mode(
+        {**exp_cfg, "output_dir": out_base},
+        out_dir,
+    )
+    if resolved_mode == "unknown":
+        raise ValueError(
+            "Unable to resolve experiment mode. Set experiment.mode to "
+            "'batch' or 'curriculum', or pass --mode explicitly."
+        )
+    exp_cfg["mode"] = resolved_mode
     os.makedirs(out_dir, exist_ok=True)
 
     # Episode-level JSON log path (read by MAPPOTrainingCallbacks)
@@ -950,6 +961,8 @@ def main():
     evaluation_metric_keys = []
     cumulative_success_rate = None
     cumulative_collision_rate = None
+    should_run_final_evaluation = True
+    final_evaluation_skip_reason = None
 
     try:
         while ts_done < total_ts:
@@ -1020,8 +1033,12 @@ def main():
                 print(f"    -> Checkpoint: {ckpt}")
 
     except KeyboardInterrupt:
+        should_run_final_evaluation = False
+        final_evaluation_skip_reason = "manual interrupt"
         print("\nInterrotto.")
     except Exception as e:
+        should_run_final_evaluation = False
+        final_evaluation_skip_reason = f"training error: {type(e).__name__}"
         print(f"\n[ERROR] Training crash at step {ts_done}: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
@@ -1041,7 +1058,7 @@ def main():
             print(f"\nCheckpoint fallito: {e}")
 
         try:
-            if eval_section.get("enabled", True) and iteration > 0:
+            if eval_section.get("enabled", True) and iteration > 0 and should_run_final_evaluation:
                 print("\nValutazione finale multi-scenario in corso...")
                 evaluation_raw, evaluation, evaluation_traces, evaluation_metric_keys = _run_evaluation_scenarios(
                     algo=algo,
@@ -1060,7 +1077,8 @@ def main():
                         evaluation_metric_keys=evaluation_metric_keys,
                     )
             else:
-                print("\nValutazione finale multi-scenario saltata.")
+                reason = final_evaluation_skip_reason or "disabled or no completed iterations"
+                print(f"\nValutazione finale multi-scenario saltata ({reason}).")
         except Exception as e:
             print(f"  [WARN] Final evaluation failed: {e}")
 
