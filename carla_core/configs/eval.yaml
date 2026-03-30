@@ -25,15 +25,16 @@ scenarios:
 
 limits:
   max_steps_per_episode: 1500   # Hard cap to prevent very long episodes.
-  timeout_seconds: 120          # Max wall-clock seconds per eval task.
+  timeout_seconds: 120          # Max wall-clock seconds per eval episode.
 
 metrics:
   success_rate: true            # Track successful route completion rate.
   collision_rate: true          # Track collision frequency.
   route_completion: true        # Track route completion percentage.
+  path_efficiency: true         # Track optimal-path / actual-path ratio.
   avg_episode_length: true      # Track average episode duration (steps).
   avg_reward: true              # Track average reward per episode.
-  infraction_count: true        # Track infractions (traffic violations if available).
+  infraction_count: false       # Not available in the current CARLA multi-agent pipeline.
   timeout_rate: true            # Track episodes ending by timeout/cap.
 
 outputs:

@@ -359,9 +359,9 @@ def plot_summary_table(batch_data, curriculum_data, output_path):
          f"{meta_c['total_episodes']:,}"],
         ["Wall-Clock Time", f"{meta_b['wall_clock_seconds']:.0f}s",
          f"{meta_c['wall_clock_seconds']:.0f}s"],
-        ["Train Success Rate", fmt_pct_or_na(summ_b["cumulative_success_rate"]),
+        ["Train Cumulative Success Rate", fmt_pct_or_na(summ_b["cumulative_success_rate"]),
          fmt_pct_or_na(summ_c["cumulative_success_rate"])],
-        ["Train Collision Rate", fmt_pct_or_na(summ_b["cumulative_collision_rate"]),
+        ["Train Cumulative Collision Rate", fmt_pct_or_na(summ_b["cumulative_collision_rate"]),
          fmt_pct_or_na(summ_c["cumulative_collision_rate"])],
     ]
 

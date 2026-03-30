@@ -5,6 +5,7 @@
 
 experiment:
   name: "carla_mappo"
+  mode: "batch"                  # Default compare-mode; override with --mode curriculum when needed
   output_dir: "carla_core/experiments"
   seed: 42
 

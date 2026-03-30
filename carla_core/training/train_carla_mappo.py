@@ -237,6 +237,43 @@ def _coerce_float(value, default=None):
         return default
 
 
+def _safe_rate(numerator, denominator):
+    if denominator <= 0:
+        return None
+    return float(numerator) / float(denominator)
+
+
+def _read_episode_log_delta(log_path, start_offset):
+    stats = {"total": 0, "success": 0, "collision": 0}
+    if not log_path or not os.path.exists(log_path):
+        return 0, stats
+
+    file_size = os.path.getsize(log_path)
+    offset = min(max(int(start_offset), 0), file_size)
+
+    with open(log_path, "r", encoding="utf-8") as f:
+        f.seek(offset)
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            offset = f.tell()
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed episodes.jsonl line at offset %s", offset)
+                continue
+
+            termination_reason = record.get("termination_reason")
+            stats["total"] += 1
+            if termination_reason == "route_complete":
+                stats["success"] += 1
+            if termination_reason == "collision":
+                stats["collision"] += 1
+
+    return offset, stats
+
+
 def _extract_custom_metric(result, *names):
     containers = [
         result.get("custom_metrics", {}),
@@ -318,14 +355,111 @@ def _mean_metric_dicts(rows, keys):
     return merged
 
 
-def _run_eval_episode(algo, env_config, seed_base, episode_idx, explore):
+def _compute_eval_path_efficiency(ad):
+    if getattr(ad, "actual_distance_traveled", 0.0) > 0.0 and getattr(ad, "route_optimal_length", 0.0) > 0.0:
+        return float(min(ad.route_optimal_length / ad.actual_distance_traveled, 1.0))
+    return 0.0
+
+
+def _resolve_eval_metric_keys(eval_cfg):
+    metric_cfg = eval_cfg.get("metrics", {}) or {}
+    metric_aliases = [
+        ("success_rate", "success_rate", True),
+        ("collision_rate", "collision_rate", True),
+        ("route_completion", "route_completion", True),
+        ("avg_episode_length", "episode_length_mean", True),
+        ("avg_reward", "reward_mean", True),
+        ("timeout_rate", "timeout_rate", True),
+        ("path_efficiency", "path_efficiency", True),
+        ("infraction_count", "infraction_count", False),
+    ]
+
+    selected = []
+    unsupported = []
+    for cfg_key, metric_key, supported in metric_aliases:
+        enabled = bool(metric_cfg.get(cfg_key, cfg_key == "path_efficiency"))
+        if not enabled:
+            continue
+        if supported:
+            selected.append(metric_key)
+        else:
+            unsupported.append(metric_key)
+
+    # Keep compatibility metrics even if they are toggled off in config.
+    for metric_key in ("success_rate", "collision_rate"):
+        if metric_key not in selected:
+            selected.append(metric_key)
+
+    return selected, unsupported
+
+
+def _save_evaluation_plots(out_path, run_name, evaluation_raw, metric_keys):
+    flat_rows = []
+    for map_name, profiles in evaluation_raw.items():
+        for profile_name, metrics in profiles.items():
+            flat_rows.append((f"{map_name}/{profile_name}", metrics))
+
+    if not flat_rows or not metric_keys:
+        return
+
+    available_keys = []
+    for key in metric_keys:
+        if any(row.get(key) is not None for _, row in flat_rows):
+            available_keys.append(key)
+
+    if not available_keys:
+        return
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:
+        logger.warning("Evaluation plots skipped: matplotlib unavailable (%s)", exc)
+        return
+
+    labels = [label for label, _ in flat_rows]
+    cols = 2 if len(available_keys) > 1 else 1
+    rows = (len(available_keys) + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(7 * cols, 3.8 * rows))
+    axes = np.atleast_1d(axes).ravel()
+
+    for ax, key in zip(axes, available_keys):
+        values = [metrics.get(key) for _, metrics in flat_rows]
+        plot_values = [np.nan if value is None else value for value in values]
+        x = np.arange(len(labels))
+        ax.bar(x, plot_values, color="#1f77b4")
+        ax.set_title(key.replace("_", " ").title())
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=45, ha="right")
+        finite_vals = [v for v in values if v is not None and np.isfinite(v)]
+        if finite_vals and all(0.0 <= v <= 1.0 for v in finite_vals):
+            ax.set_ylim(0.0, 1.0)
+        ax.grid(True, axis="y", alpha=0.3, linestyle="--")
+
+    for ax in axes[len(available_keys):]:
+        ax.remove()
+
+    fig.tight_layout()
+    plot_path = out_path / f"{run_name}_evaluation_plots.png"
+    fig.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _run_eval_episode(algo, env_config, seed_base, episode_idx, explore, timeout_seconds=None):
     env = CarlaMultiAgentEnv(config=env_config)
     try:
         obs, _ = env.reset(seed=seed_base + episode_idx)
         ep_rewards = {a: 0.0 for a in env.possible_agents}
         step_count = 0
+        t_ep = time.time()
+        wall_clock_timeout = False
 
         while env.agents:
+            if timeout_seconds is not None and (time.time() - t_ep) >= timeout_seconds:
+                wall_clock_timeout = True
+                break
+
             actions = {}
             for agent_id in env.agents:
                 policy_id = policy_mapping_fn(agent_id)
@@ -339,6 +473,17 @@ def _run_eval_episode(algo, env_config, seed_base, episode_idx, explore):
                 ep_rewards[agent_id] += reward
 
         outcomes = dict(getattr(env, "_terminated_agent_infos", {}))
+        if wall_clock_timeout:
+            for agent_id in list(env.agents):
+                ad = env._agent_data.get(agent_id)
+                if ad is None:
+                    continue
+                outcomes[agent_id] = {
+                    "termination_reason": "timeout",
+                    "route_completion": env._route_completion(ad),
+                    "path_efficiency": _compute_eval_path_efficiency(ad),
+                }
+
         reasons = [info.get("termination_reason") for info in outcomes.values()]
         n_agents = len(reasons)
         route_vals = [info.get("route_completion", 0.0) for info in outcomes.values()]
@@ -352,6 +497,9 @@ def _run_eval_episode(algo, env_config, seed_base, episode_idx, explore):
             "path_efficiency": float(np.mean(path_vals)) if path_vals else None,
             "reward_mean": float(np.mean(list(ep_rewards.values()))) if ep_rewards else None,
             "episode_length_mean": float(step_count),
+            "infraction_count": None,
+            "wall_clock_timeout": wall_clock_timeout,
+            "wall_clock_seconds": float(time.time() - t_ep),
         }
     finally:
         env.close()
@@ -379,18 +527,19 @@ def _run_evaluation_scenarios(algo, base_env_cfg, eval_cfg, seed_base):
             "for a single CARLA instance.",
             parallel_envs,
         )
+    timeout_seconds = _coerce_float(limits.get("timeout_seconds"))
+    metric_keys, unsupported_metric_keys = _resolve_eval_metric_keys(eval_cfg)
+    if unsupported_metric_keys:
+        logger.warning(
+            "Evaluation metrics requested but not available in current pipeline: %s",
+            ", ".join(sorted(unsupported_metric_keys)),
+        )
 
     raw = {}
+    traces = []
     train_map = base_env_cfg.get("world", {}).get("map")
-    metric_keys = [
-        "success_rate",
-        "collision_rate",
-        "timeout_rate",
-        "route_completion",
-        "path_efficiency",
-        "reward_mean",
-        "episode_length_mean",
-    ]
+    aggregate_keys = list(dict.fromkeys(metric_keys + unsupported_metric_keys))
+    save_traces = bool(eval_cfg.get("outputs", {}).get("save_per_episode_trace", False))
 
     for map_name in maps:
         map_rows = {}
@@ -415,10 +564,18 @@ def _run_evaluation_scenarios(algo, base_env_cfg, eval_cfg, seed_base):
                         seed_base=seed_base,
                         episode_idx=ep_idx,
                         explore=explore,
+                        timeout_seconds=timeout_seconds,
                     )
                 )
+                if save_traces:
+                    traces.append({
+                        "map": map_name,
+                        "profile": profile_name,
+                        "episode_index": ep_idx,
+                        **episode_rows[-1],
+                    })
 
-            map_rows[profile_name] = _mean_metric_dicts(episode_rows, metric_keys)
+            map_rows[profile_name] = _mean_metric_dicts(episode_rows, aggregate_keys)
         raw[map_name] = map_rows
 
     summary = {}
@@ -446,10 +603,18 @@ def _run_evaluation_scenarios(algo, base_env_cfg, eval_cfg, seed_base):
             "collision_rate": test_metrics.get("collision_rate"),
         }
 
-    return raw, summary
+    return raw, summary, traces, aggregate_keys
 
 
-def _save_evaluation_artifacts(base_dir, run_name, eval_cfg, evaluation_raw, evaluation_summary):
+def _save_evaluation_artifacts(
+    base_dir,
+    run_name,
+    eval_cfg,
+    evaluation_raw,
+    evaluation_summary,
+    evaluation_traces=None,
+    evaluation_metric_keys=None,
+):
     outputs = eval_cfg.get("outputs", {})
     if not outputs:
         return
@@ -467,6 +632,8 @@ def _save_evaluation_artifacts(base_dir, run_name, eval_cfg, evaluation_raw, eva
         "evaluation": evaluation_summary,
         "evaluation_raw": evaluation_raw,
     }
+    if outputs.get("save_per_episode_trace", False):
+        payload["evaluation_traces"] = evaluation_traces or []
 
     if outputs.get("save_json", False):
         json_path = out_path / f"{run_name}_evaluation.json"
@@ -475,29 +642,32 @@ def _save_evaluation_artifacts(base_dir, run_name, eval_cfg, evaluation_raw, eva
 
     if outputs.get("save_csv", False):
         csv_path = out_path / f"{run_name}_evaluation.csv"
+        csv_metric_keys = evaluation_metric_keys or []
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=[
-                    "map",
-                    "profile",
-                    "success_rate",
-                    "collision_rate",
-                    "timeout_rate",
-                    "route_completion",
-                    "path_efficiency",
-                    "reward_mean",
-                    "episode_length_mean",
-                ],
+                fieldnames=["map", "profile", *csv_metric_keys],
             )
             writer.writeheader()
             for map_name, profiles in evaluation_raw.items():
                 for profile_name, metrics in profiles.items():
-                    writer.writerow({
-                        "map": map_name,
-                        "profile": profile_name,
-                        **metrics,
-                    })
+                    row = {"map": map_name, "profile": profile_name}
+                    for key in csv_metric_keys:
+                        row[key] = metrics.get(key)
+                    writer.writerow(row)
+
+    if outputs.get("save_per_episode_trace", False):
+        trace_path = out_path / f"{run_name}_evaluation_traces.json"
+        with open(trace_path, "w") as f:
+            json.dump(_sanitize_for_json(evaluation_traces or []), f, indent=2)
+
+    if outputs.get("save_plots", False):
+        _save_evaluation_plots(
+            out_path=out_path,
+            run_name=run_name,
+            evaluation_raw=evaluation_raw,
+            metric_keys=evaluation_metric_keys or [],
+        )
 
 
 def _derive_mode(exp_cfg, name):
@@ -524,19 +694,26 @@ def _build_results_payload(
     timeseries,
     evaluation=None,
     evaluation_raw=None,
+    cumulative_success_rate=None,
+    cumulative_collision_rate=None,
 ):
     result = result or {}
     status = "COMPLETATO" if ts_done >= total_ts else "STOP_EARLY_COLLASSO"
     mode = _derive_mode(exp_cfg, name)
     total_episodes = int(result.get("episodes_total", 0) or 0)
 
-    success_rate = _extract_custom_metric(result, "success_rate_mean", "success_rate")
-    collision_rate = _extract_custom_metric(
-        result,
-        "collision_rate_mean",
-        "collision_rate",
-        "vehicle_collision_rate_mean",
-    )
+    success_rate = cumulative_success_rate
+    if success_rate is None:
+        success_rate = _extract_custom_metric(result, "success_rate_mean", "success_rate")
+
+    collision_rate = cumulative_collision_rate
+    if collision_rate is None:
+        collision_rate = _extract_custom_metric(
+            result,
+            "collision_rate_mean",
+            "collision_rate",
+            "vehicle_collision_rate_mean",
+        )
 
     evaluation = evaluation if evaluation is not None else _build_evaluation_payload(result)
     evaluation_raw = evaluation_raw or {}
@@ -577,6 +754,7 @@ def main():
     parser.add_argument("--timesteps", type=int, default=None)
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--no-gpu", action="store_true")
+    parser.add_argument("--mode", type=str, choices=["batch", "curriculum"], default=None)
     parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--train-config", type=str, default=None)
     parser.add_argument("--env-config", type=str, default=None)
@@ -621,6 +799,8 @@ def main():
 
     # Wire remaining config fields
     exp_cfg = train_cfg.get("experiment", {})
+    if args.mode:
+        exp_cfg["mode"] = args.mode
     out_base = exp_cfg.get("output_dir", str(base / "experiments"))
 
     # Output dir
@@ -631,6 +811,9 @@ def main():
 
     # Episode-level JSON log path (read by MAPPOTrainingCallbacks)
     os.environ["MAPPO_EPISODE_LOG"] = os.path.join(out_dir, "episodes.jsonl")
+    episode_log_path = os.environ["MAPPO_EPISODE_LOG"]
+    episode_log_offset = os.path.getsize(episode_log_path) if os.path.exists(episode_log_path) else 0
+    cumulative_agent_outcomes = {"total": 0, "success": 0, "collision": 0}
 
     print(f"{'=' * 60}")
     print(f"CARLA MAPPO Training — Centralized Critic (CTDE)")
@@ -644,6 +827,7 @@ def main():
     run_meta = {
         "timestamp": ts_str,
         "name": name,
+        "mode": _derive_mode(exp_cfg, name),
         "total_timesteps": total_ts,
         "seed": exp_seed,
         "n_vehicles_rl": n_veh,
@@ -762,6 +946,10 @@ def main():
     result = {}
     evaluation = {}
     evaluation_raw = {}
+    evaluation_traces = []
+    evaluation_metric_keys = []
+    cumulative_success_rate = None
+    cumulative_collision_rate = None
 
     try:
         while ts_done < total_ts:
@@ -780,19 +968,28 @@ def main():
             ep_len = result.get("episode_len_mean", 0)
             eps = result.get("episodes_total", 0)
 
+            episode_log_offset, delta_stats = _read_episode_log_delta(
+                episode_log_path, episode_log_offset
+            )
+            for key, value in delta_stats.items():
+                cumulative_agent_outcomes[key] += value
+            cumulative_success_rate = _safe_rate(
+                cumulative_agent_outcomes["success"],
+                cumulative_agent_outcomes["total"],
+            )
+            cumulative_collision_rate = _safe_rate(
+                cumulative_agent_outcomes["collision"],
+                cumulative_agent_outcomes["total"],
+            )
+
             elapsed = time.time() - t0
             pct = ts_done / total_ts * 100
             eta = (elapsed / max(ts_done, 1)) * (total_ts - ts_done)
 
             timeseries.append({
                 "timestep": int(ts_done),
-                "success_rate": _extract_custom_metric(result, "success_rate_mean", "success_rate"),
-                "collision_rate": _extract_custom_metric(
-                    result,
-                    "collision_rate_mean",
-                    "collision_rate",
-                    "vehicle_collision_rate_mean",
-                ),
+                "success_rate": cumulative_success_rate,
+                "collision_rate": cumulative_collision_rate,
                 "window_success_rate": _extract_custom_metric(
                     result,
                     "window_success_rate_mean",
@@ -846,7 +1043,7 @@ def main():
         try:
             if eval_section.get("enabled", True) and iteration > 0:
                 print("\nValutazione finale multi-scenario in corso...")
-                evaluation_raw, evaluation = _run_evaluation_scenarios(
+                evaluation_raw, evaluation, evaluation_traces, evaluation_metric_keys = _run_evaluation_scenarios(
                     algo=algo,
                     base_env_cfg=env_cfg,
                     eval_cfg=eval_cfg,
@@ -859,6 +1056,8 @@ def main():
                         eval_cfg=eval_cfg,
                         evaluation_raw=evaluation_raw,
                         evaluation_summary=evaluation,
+                        evaluation_traces=evaluation_traces,
+                        evaluation_metric_keys=evaluation_metric_keys,
                     )
             else:
                 print("\nValutazione finale multi-scenario saltata.")
@@ -895,6 +1094,8 @@ def main():
                 timeseries=timeseries,
                 evaluation=evaluation,
                 evaluation_raw=evaluation_raw,
+                cumulative_success_rate=cumulative_success_rate,
+                cumulative_collision_rate=cumulative_collision_rate,
             )
             results_path = os.path.join(out_dir, "results.json")
             with open(results_path, "w") as f:
