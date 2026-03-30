@@ -16,7 +16,7 @@ world:
 agents:
   n_vehicles_rl: 3               # RL-controlled vehicles
   n_pedestrians_rl: 3            # RL-controlled pedestrians
-  vehicle_blueprint: "vehicle.audi.etron"
+  vehicle_blueprint: "vehicle.mercedes.coupe"
   pedestrian_blueprint: "walker.pedestrian.*"
 
 traffic:
