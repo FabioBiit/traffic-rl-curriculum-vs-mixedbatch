@@ -117,6 +117,17 @@ def compute_global_obs_dim_with_mask(n_vehicles: int, n_pedestrians: int) -> int
     return n_vehicles * _VEHICLE_OBS_DIM + n_pedestrians * _PEDESTRIAN_OBS_DIM + n_agents
 
 
+def _resolve_custom_model_config(model_config: dict, kwargs: dict) -> dict:
+    """Merge RLlib custom model options from legacy config and modern kwargs.
+
+    Precedence is explicit kwargs over model_config["custom_model_config"] to
+    support both calling conventions without changing current trainer wiring.
+    """
+    cfg = dict(model_config.get("custom_model_config", {}) or {})
+    cfg.update(kwargs or {})
+    return cfg
+
+
 # ---------------------------------------------------------------------------
 # PopArt — Adaptive Value Normalization (Block 4.2)
 # ---------------------------------------------------------------------------
@@ -221,19 +232,27 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         popart_beta (float): EMA decay for PopArt stats (default 3e-4)
     """
 
-    def __init__(self, obs_space, action_space, num_outputs, model_config, name):
+    def __init__(
+        self,
+        obs_space,
+        action_space,
+        num_outputs,
+        model_config,
+        name,
+        **kwargs,
+    ):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs,
                               model_config, name)
         nn.Module.__init__(self)
 
-        custom = model_config.get("custom_model_config", {})
-        hidden = custom.get("hidden_size", 256)
-        n_layers = custom.get("n_hidden_layers", 2)
-        self._global_obs_dim = custom.get("global_obs_dim", 42)
+        custom = _resolve_custom_model_config(model_config, kwargs)
+        hidden = int(custom.get("hidden_size", 256))
+        n_layers = int(custom.get("n_hidden_layers", 2))
+        self._global_obs_dim = int(custom.get("global_obs_dim", 42))
         self._agent_order = list(custom.get("agent_order", []))
         self._slot_obs_dims = dict(custom.get("slot_obs_dims", {}))
-        self._use_popart = custom.get("use_popart", False)
-        popart_beta = custom.get("popart_beta", 3e-4)
+        self._use_popart = bool(custom.get("use_popart", False))
+        popart_beta = float(custom.get("popart_beta", 3e-4))
 
         local_obs_dim = int(np.prod(obs_space.shape))
 
