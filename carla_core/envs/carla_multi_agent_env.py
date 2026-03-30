@@ -12,8 +12,8 @@ Policy mapping:
     vehicle_* -> vehicle_policy
     pedestrian_* -> pedestrian_policy
 
-Vehicle obs (24D): same as CarlaEnv v0.3
-Pedestrian obs (18D):
+Vehicle obs (25D): same as CarlaEnv v0.3
+Pedestrian obs (19D):
     [0:3]   position (x, y, z) normalized
     [3:6]   velocity (vx, vy, vz) normalized
     [6]     speed scalar normalized
@@ -22,6 +22,7 @@ Pedestrian obs (18D):
     [10]    angle to current waypoint (normalized -1..1)
     [11]    on_sidewalk (0 or 1)
     [12:18] nearest 2 vehicles: (rel_x, rel_y, rel_speed) x 2
+    [18]    route_completion (0..1)
 
 Vehicle action (2D continuous): [throttle_brake, steer]
 Pedestrian action (2D continuous): [speed_frac, direction_delta]
