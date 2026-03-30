@@ -299,6 +299,10 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             if len(opp_obs) > batch_size:
                 opp_obs = opp_obs[:batch_size]
             elif len(opp_obs) < batch_size:
+                logger.debug(
+                    f"{agent_id}: padding opp_obs[{other_id}] "
+                    f"from {len(opp_obs)} to {batch_size} (tile last row)"
+                )
                 pad_n = batch_size - len(opp_obs)
                 opp_obs = np.concatenate(
                     [opp_obs, np.tile(opp_obs[-1:], (pad_n, 1))], axis=0
@@ -312,12 +316,22 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             global_obs = np.concatenate([own_obs] + opponent_obs_list, axis=-1)
             # Pad if needed (e.g., some agents terminated early)
             if global_obs.shape[-1] < expected_dim:
+                logger.warning(
+                    f"{agent_id}: global_obs dim {global_obs.shape[-1]} < "
+                    f"expected {expected_dim}, zero-padding "
+                    f"{expected_dim - global_obs.shape[-1]}D"
+                )
                 pad = np.zeros(
                     (batch_size, expected_dim - global_obs.shape[-1]),
                     dtype=np.float32,
                 )
                 global_obs = np.concatenate([global_obs, pad], axis=-1)
             elif global_obs.shape[-1] > expected_dim:
+                logger.warning(
+                    f"{agent_id}: global_obs dim {global_obs.shape[-1]} > "
+                    f"expected {expected_dim}, truncating "
+                    f"{global_obs.shape[-1] - expected_dim}D"
+                )
                 global_obs = global_obs[:, :expected_dim]
         else:
             # No opponents — zero-pad
@@ -353,12 +367,20 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
 
             # Pad/truncate to expected_dim
             if last_global.shape[-1] < expected_dim:
+                logger.debug(
+                    f"{agent_id}: bootstrap last_global padded "
+                    f"from {last_global.shape[-1]} to {expected_dim}"
+                )
                 last_global = np.concatenate(
                     [last_global, np.zeros((1, expected_dim - last_global.shape[-1]),
                                            dtype=np.float32)],
                     axis=-1,
                 )
             elif last_global.shape[-1] > expected_dim:
+                logger.debug(
+                    f"{agent_id}: bootstrap last_global truncated "
+                    f"from {last_global.shape[-1]} to {expected_dim}"
+                )
                 last_global = last_global[:, :expected_dim]
 
             _raise_on_nonfinite_np(f"{agent_id}.last_global", last_global)

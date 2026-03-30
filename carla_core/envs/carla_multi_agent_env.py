@@ -1101,7 +1101,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # ---- 3. Collision penalty ----
         if ad.collision_flag and ad.collision_step == 0:
-            reward -= 100.0
+            reward -= 50.0
 
         # ---- 4. Sidewalk bonus / road penalty ----
         wp = self._map.get_waypoint(loc, project_to_road=False)
