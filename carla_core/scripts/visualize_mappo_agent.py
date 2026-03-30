@@ -158,6 +158,8 @@ def main():
         "hidden_size": hidden_size,
         "n_hidden_layers": n_hidden,
         "global_obs_dim": global_obs_dim,
+        "use_popart": model_cfg.get("use_popart", False),
+        "popart_beta": model_cfg.get("popart_beta", 3e-4),
     }
 
     n_gpus = 0 if args.no_gpu else 1

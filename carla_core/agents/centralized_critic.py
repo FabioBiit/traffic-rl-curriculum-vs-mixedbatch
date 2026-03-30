@@ -10,19 +10,21 @@ Componenti:
   2. CentralizedCriticCallbacks — inietta global_obs nel SampleBatch
      via on_postprocess_trajectory(), ricalcola VF e GAE
   3. on_episode_start/step/end — Custom metrics per TensorBoard
+  4. PopArtLayer — Adaptive value normalization (Block 4.2)
 
 Fixed-slot global_obs layout (Block 4.1):
   [v0_24D | v1_24D | v2_24D | p0_18D | p1_18D | p2_18D | alive_mask_6D]
   Total: 3*24 + 3*18 + 6 = 132D (for 3V+3P config)
 
-  - Each agent always occupies the SAME slot regardless of which agent
-    is being postprocessed
-  - Terminated agents → zero-fill in their slot, alive_mask=0
-  - alive_mask: 1.0 if agent present in batch, 0.0 otherwise
+PopArt (Block 4.2):
+  Wraps the critic's output layer with running mean/std normalization.
+  Enabled via custom_model_config["use_popart"] = True.
+  Reference: van Hasselt et al. 2016 "Learning values across many orders
+  of magnitude", Hessel et al. 2019 "Multi-task with PopArt".
 
 Struttura reti:
   Actor MLP:  obs_dim → 256 → 256 → action_logits
-  Critic MLP: global_obs_dim → 256 → 256 → 1 (value)
+  Critic MLP: global_obs_dim → 256 → 256 → 1 (value, PopArt-normalized)
 """
 
 import logging
@@ -94,6 +96,92 @@ def compute_global_obs_dim_with_mask(n_vehicles: int, n_pedestrians: int) -> int
 
 
 # ---------------------------------------------------------------------------
+# PopArt — Adaptive Value Normalization (Block 4.2)
+# ---------------------------------------------------------------------------
+
+class PopArtLayer(nn.Module):
+    """Linear layer with PopArt normalization for value function output.
+
+    Maintains running mean (mu) and std (sigma) of value targets.
+    Output is in normalized space; denormalize() maps back to original scale.
+
+    On each update(targets):
+      1. Compute new mu, sigma from targets
+      2. Adjust weight & bias to preserve the output mapping (the "Art" step)
+      3. Store new mu, sigma
+
+    Reference: van Hasselt et al. 2016, Eq. 7-9.
+
+    Args:
+        in_features: input dimension (last hidden layer size)
+        beta: EMA decay for running statistics (default 3e-4)
+    """
+
+    def __init__(self, in_features: int, beta: float = 3e-4):
+        super().__init__()
+        self.beta = beta
+        self.linear = nn.Linear(in_features, 1)
+
+        # Running statistics (not model parameters — buffers)
+        self.register_buffer("mu", torch.zeros(1))
+        self.register_buffer("sigma", torch.ones(1))
+        self.register_buffer("count", torch.zeros(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass: returns NORMALIZED value prediction."""
+        return self.linear(x)
+
+    def denormalize(self, normalized_value: torch.Tensor) -> torch.Tensor:
+        """Map from normalized space back to original value scale."""
+        return normalized_value * self.sigma + self.mu
+
+    def normalize_targets(self, targets: torch.Tensor) -> torch.Tensor:
+        """Normalize value targets for loss computation."""
+        return (targets - self.mu) / self.sigma.clamp(min=1e-6)
+
+    @torch.no_grad()
+    def update(self, targets: torch.Tensor):
+        """Update running statistics and adjust weights (Art step).
+
+        Args:
+            targets: raw (unnormalized) value targets from GAE computation.
+        """
+        targets = targets.detach().float()
+        if targets.numel() == 0:
+            return
+
+        new_mu = targets.mean()
+        new_sigma = targets.std().clamp(min=1e-6)
+
+        if self.count.item() == 0:
+            # First update: initialize directly
+            self.mu.copy_(new_mu)
+            self.sigma.copy_(new_sigma)
+            self.count.add_(1)
+            return
+
+        old_mu = self.mu.clone()
+        old_sigma = self.sigma.clone()
+
+        # EMA update
+        self.mu.mul_(1 - self.beta).add_(new_mu * self.beta)
+        self.sigma.mul_(1 - self.beta).add_(new_sigma * self.beta)
+        self.count.add_(1)
+
+        # Art step: adjust W, b so that output is preserved
+        # old: y = W @ x + b  → denorm: y * old_sigma + old_mu
+        # new: y' = W' @ x + b' → denorm: y' * new_sigma + new_mu
+        # We want: W' @ x * new_sigma + new_mu = W @ x * old_sigma + old_mu
+        # => W' = W * (old_sigma / new_sigma)
+        # => b' = (b * old_sigma + old_mu - new_mu) / new_sigma
+        ratio = old_sigma / self.sigma.clamp(min=1e-6)
+        self.linear.weight.data.mul_(ratio)
+        self.linear.bias.data.mul_(ratio).add_(
+            (old_mu - self.mu) / self.sigma.clamp(min=1e-6)
+        )
+
+
+# ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
 
@@ -105,7 +193,8 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         hidden_size (int): hidden layer size (default 256)
         n_hidden_layers (int): number of hidden layers (default 2)
         global_obs_dim (int): dimension of concatenated global observation
-                              (includes alive_mask from Block 4.1)
+        use_popart (bool): enable PopArt value normalization (default False)
+        popart_beta (float): EMA decay for PopArt stats (default 3e-4)
     """
 
     def __init__(self, obs_space, action_space, num_outputs, model_config, name):
@@ -117,6 +206,8 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         hidden = custom.get("hidden_size", 256)
         n_layers = custom.get("n_hidden_layers", 2)
         self._global_obs_dim = custom.get("global_obs_dim", 42)
+        self._use_popart = custom.get("use_popart", False)
+        popart_beta = custom.get("popart_beta", 3e-4)
 
         local_obs_dim = int(np.prod(obs_space.shape))
 
@@ -129,14 +220,20 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         actor_layers.append(nn.Linear(in_dim, num_outputs))
         self.actor = nn.Sequential(*actor_layers)
 
-        # Critic: global obs → scalar value
-        critic_layers = []
+        # Critic: global obs → hidden representation
+        critic_hidden_layers = []
         in_dim = self._global_obs_dim
         for _ in range(n_layers):
-            critic_layers.extend([nn.Linear(in_dim, hidden), nn.Tanh()])
+            critic_hidden_layers.extend([nn.Linear(in_dim, hidden), nn.Tanh()])
             in_dim = hidden
-        critic_layers.append(nn.Linear(in_dim, 1))
-        self.critic = nn.Sequential(*critic_layers)
+        self.critic_hidden = nn.Sequential(*critic_hidden_layers)
+
+        # Critic output: either PopArt or plain Linear
+        if self._use_popart:
+            self.critic_head = PopArtLayer(hidden, beta=popart_beta)
+            logger.info(f"PopArt enabled (beta={popart_beta})")
+        else:
+            self.critic_head = nn.Linear(hidden, 1)
 
         self._cur_value = None
 
@@ -144,7 +241,8 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
             f"CentralizedCriticModel '{name}': "
             f"actor {local_obs_dim}->{num_outputs}, "
             f"critic {self._global_obs_dim}->1, "
-            f"hidden={hidden}x{n_layers}"
+            f"hidden={hidden}x{n_layers}, "
+            f"popart={self._use_popart}"
         )
 
     @override(ModelV2)
@@ -166,7 +264,18 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
             global_obs[:, :obs.shape[-1]] = obs
 
         _raise_on_nonfinite_torch("global_obs", global_obs)
-        self._cur_value = self.critic(global_obs).squeeze(-1)
+
+        critic_features = self.critic_hidden(global_obs)
+        normalized_value = self.critic_head(critic_features).squeeze(-1)
+
+        # Denormalize if PopArt is enabled
+        if self._use_popart and isinstance(self.critic_head, PopArtLayer):
+            self._cur_value = self.critic_head.denormalize(
+                normalized_value.unsqueeze(-1)
+            ).squeeze(-1)
+        else:
+            self._cur_value = normalized_value
+
         _raise_on_nonfinite_torch("value_function", self._cur_value)
         return action_logits, state
 
@@ -174,6 +283,17 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
     def value_function(self):
         assert self._cur_value is not None, "forward() must be called first"
         return self._cur_value
+
+    def critic_forward_raw(self, global_obs: torch.Tensor) -> torch.Tensor:
+        """Raw critic inference: global_obs → denormalized value.
+
+        Used by callbacks for VF recomputation (bypasses actor).
+        """
+        features = self.critic_hidden(global_obs)
+        normalized = self.critic_head(features).squeeze(-1)
+        if self._use_popart and isinstance(self.critic_head, PopArtLayer):
+            return self.critic_head.denormalize(normalized.unsqueeze(-1)).squeeze(-1)
+        return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +310,8 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
     on_postprocess_trajectory():
       1. Build fixed-slot global_obs with alive_mask (Block 4.1)
       2. Recompute VF predictions with global_obs
-      3. Recompute GAE advantages
+      3. Update PopArt statistics if enabled (Block 4.2)
+      4. Recompute GAE advantages
     """
 
     # ------------------------------------------------------------------
@@ -319,7 +440,8 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
         batch_size = own_obs.shape[0]
 
         policy = policies[policy_id]
-        expected_dim = policy.model._global_obs_dim
+        model = policy.model
+        expected_dim = model._global_obs_dim
 
         # --- Build canonical slot order from all known agents ---
         all_agent_ids = set(original_batches.keys())
@@ -346,7 +468,6 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             opp_obs = other_batch[SampleBatch.CUR_OBS]
             _raise_on_nonfinite_np(f"{agent_id}.opp_obs[{aid}]", opp_obs)
 
-            # Align batch sizes
             if len(opp_obs) > batch_size:
                 opp_obs = opp_obs[:batch_size]
             elif len(opp_obs) < batch_size:
@@ -361,7 +482,6 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             agent_obs_map[aid] = opp_obs
 
         # --- Assemble fixed-slot global_obs ---
-        # Layout: [slot_0_obs | slot_1_obs | ... | slot_N_obs | alive_mask]
         slots = []
         alive_mask = np.zeros((batch_size, n_agents), dtype=np.float32)
 
@@ -402,10 +522,10 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
         postprocessed_batch[GLOBAL_OBS] = global_obs
 
         # --- Recompute VF predictions with global_obs ---
-        device = next(policy.model.parameters()).device
+        device = next(model.parameters()).device
         with torch.no_grad():
             global_obs_t = torch.as_tensor(global_obs, dtype=torch.float32, device=device)
-            vf_preds = policy.model.critic(global_obs_t).squeeze(-1).cpu().numpy()
+            vf_preds = model.critic_forward_raw(global_obs_t).cpu().numpy()
 
         _raise_on_nonfinite_np(f"{agent_id}.vf_preds", vf_preds)
         postprocessed_batch[SampleBatch.VF_PREDS] = vf_preds
@@ -448,7 +568,7 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             _raise_on_nonfinite_np(f"{agent_id}.last_global", last_global)
             with torch.no_grad():
                 t = torch.as_tensor(last_global, dtype=torch.float32, device=device)
-                last_r = policy.model.critic(t).squeeze(-1).item()
+                last_r = model.critic_forward_raw(t).item()
             if not np.isfinite(last_r):
                 raise ValueError(f"{agent_id}.last_r is non-finite: {last_r}")
 
@@ -461,5 +581,13 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             use_gae=True,
             use_critic=True,
         )
+
+        # --- PopArt: update statistics with value targets (Block 4.2) ---
+        if model._use_popart and isinstance(model.critic_head, PopArtLayer):
+            value_targets = train_batch[SampleBatch.VALUE_TARGETS]
+            targets_t = torch.as_tensor(
+                value_targets, dtype=torch.float32, device=device
+            )
+            model.critic_head.update(targets_t)
 
         return train_batch
