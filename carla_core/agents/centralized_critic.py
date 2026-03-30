@@ -46,8 +46,8 @@ logger = logging.getLogger(__name__)
 GLOBAL_OBS = "global_obs"
 
 # Obs dimensions per agent type (must match env constants)
-_VEHICLE_OBS_DIM = 24
-_PEDESTRIAN_OBS_DIM = 18
+_VEHICLE_OBS_DIM = 25
+_PEDESTRIAN_OBS_DIM = 19
 
 
 def _raise_on_nonfinite_np(name: str, arr: np.ndarray):
@@ -69,20 +69,42 @@ def _raise_on_nonfinite_torch(name: str, tensor: torch.Tensor):
     raise ValueError(f"{name} contains non-finite values at {first}: {value}")
 
 
-def _agent_obs_dim(agent_id: str) -> int:
-    """Return expected obs dim for an agent based on its ID prefix."""
+def _agent_obs_dim(agent_id: str, fallback: int = 0) -> int:
+    """
+    Return expected obs dim for an agent based on its ID prefix.
+    For non-CARLA agents (e.g. MPE test), returns fallback if provided,
+    or raises ValueError.
+    """
     if agent_id.startswith("vehicle"):
         return _VEHICLE_OBS_DIM
     elif agent_id.startswith("pedestrian"):
         return _PEDESTRIAN_OBS_DIM
+    if fallback > 0:
+        return fallback
     raise ValueError(f"Unknown agent type for: {agent_id}")
 
 
 def _build_slot_order(agent_ids) -> List[str]:
-    """Build canonical slot order: vehicles sorted, then pedestrians sorted."""
+    """
+    Build canonical slot order: vehicles sorted, then pedestrians sorted.
+    Agents that don't match vehicle/pedestrian prefix are appended last
+    (sorted), for compatibility with non-CARLA envs (e.g. MPE test).
+    """
     vehicles = sorted(a for a in agent_ids if a.startswith("vehicle"))
     pedestrians = sorted(a for a in agent_ids if a.startswith("pedestrian"))
-    return vehicles + pedestrians
+    others = sorted(a for a in agent_ids
+                    if not a.startswith("vehicle") and not a.startswith("pedestrian"))
+    return vehicles + pedestrians + others
+
+
+def _slot_obs_dim_for_agent(agent_id: str, model, fallback: int = 0) -> int:
+    """Resolve slot obs dim using model-provided slot dims when available."""
+    slot_dims = getattr(model, "_slot_obs_dims", {}) or {}
+    if agent_id.startswith("vehicle") and "vehicle" in slot_dims:
+        return int(slot_dims["vehicle"])
+    if agent_id.startswith("pedestrian") and "pedestrian" in slot_dims:
+        return int(slot_dims["pedestrian"])
+    return _agent_obs_dim(agent_id, fallback=fallback)
 
 
 def compute_global_obs_dim_with_mask(n_vehicles: int, n_pedestrians: int) -> int:
@@ -193,6 +215,8 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         hidden_size (int): hidden layer size (default 256)
         n_hidden_layers (int): number of hidden layers (default 2)
         global_obs_dim (int): dimension of concatenated global observation
+        agent_order (list[str]): canonical fixed slot order for all agents
+        slot_obs_dims (dict): expected obs dim by agent type/prefix
         use_popart (bool): enable PopArt value normalization (default False)
         popart_beta (float): EMA decay for PopArt stats (default 3e-4)
     """
@@ -206,6 +230,8 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         hidden = custom.get("hidden_size", 256)
         n_layers = custom.get("n_hidden_layers", 2)
         self._global_obs_dim = custom.get("global_obs_dim", 42)
+        self._agent_order = list(custom.get("agent_order", []))
+        self._slot_obs_dims = dict(custom.get("slot_obs_dims", {}))
         self._use_popart = custom.get("use_popart", False)
         popart_beta = custom.get("popart_beta", 3e-4)
 
@@ -242,7 +268,8 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
             f"actor {local_obs_dim}->{num_outputs}, "
             f"critic {self._global_obs_dim}->1, "
             f"hidden={hidden}x{n_layers}, "
-            f"popart={self._use_popart}"
+            f"popart={self._use_popart}, "
+            f"agent_order={len(self._agent_order) if self._agent_order else 'dynamic'}"
         )
 
     @override(ModelV2)
@@ -443,21 +470,28 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
         model = policy.model
         expected_dim = model._global_obs_dim
 
-        # --- Build canonical slot order from all known agents ---
-        all_agent_ids = set(original_batches.keys())
-        all_agent_ids.add(agent_id)
-        slot_order = _build_slot_order(all_agent_ids)
+        # --- Build canonical slot order from config (preferred) or observed agents ---
+        if getattr(model, "_agent_order", None):
+            slot_order = list(model._agent_order)
+        else:
+            all_agent_ids = set(original_batches.keys())
+            all_agent_ids.add(agent_id)
+            slot_order = _build_slot_order(all_agent_ids)
         n_agents = len(slot_order)
 
         # --- Extract obs per agent, aligned to batch_size ---
         agent_obs_map = {}
+        agent_alive_map = {}
         for aid in slot_order:
+            obs_dim = _slot_obs_dim_for_agent(aid, model, fallback=own_obs.shape[-1])
             if aid == agent_id:
-                agent_obs_map[aid] = own_obs
+                agent_obs_map[aid] = own_obs.astype(np.float32, copy=False)
+                agent_alive_map[aid] = np.ones((batch_size,), dtype=np.float32)
                 continue
 
             if aid not in original_batches:
                 agent_obs_map[aid] = None
+                agent_alive_map[aid] = np.zeros((batch_size,), dtype=np.float32)
                 continue
 
             other_data = original_batches[aid]
@@ -468,30 +502,43 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             opp_obs = other_batch[SampleBatch.CUR_OBS]
             _raise_on_nonfinite_np(f"{agent_id}.opp_obs[{aid}]", opp_obs)
 
+            if opp_obs.shape[-1] != obs_dim:
+                raise ValueError(
+                    f"{agent_id}: opp_obs[{aid}] dim {opp_obs.shape[-1]} "
+                    f"!= expected slot dim {obs_dim}"
+                )
+
+            alive = np.zeros((batch_size,), dtype=np.float32)
             if len(opp_obs) > batch_size:
                 opp_obs = opp_obs[:batch_size]
+                alive[:] = 1.0
             elif len(opp_obs) < batch_size:
                 logger.debug(
                     f"{agent_id}: padding opp_obs[{aid}] "
-                    f"from {len(opp_obs)} to {batch_size} (tile last row)"
+                    f"from {len(opp_obs)} to {batch_size} (zero-fill missing rows)"
                 )
                 pad_n = batch_size - len(opp_obs)
-                opp_obs = np.concatenate(
-                    [opp_obs, np.tile(opp_obs[-1:], (pad_n, 1))], axis=0
-                )
-            agent_obs_map[aid] = opp_obs
+                pad = np.zeros((pad_n, obs_dim), dtype=np.float32)
+                opp_obs = np.concatenate([opp_obs.astype(np.float32), pad], axis=0)
+                alive[:len(other_batch[SampleBatch.CUR_OBS])] = 1.0
+            else:
+                alive[:] = 1.0
+            agent_obs_map[aid] = opp_obs.astype(np.float32, copy=False)
+            agent_alive_map[aid] = alive
 
         # --- Assemble fixed-slot global_obs ---
         slots = []
         alive_mask = np.zeros((batch_size, n_agents), dtype=np.float32)
 
         for i, aid in enumerate(slot_order):
-            obs_dim = _agent_obs_dim(aid)
+            obs_dim = _slot_obs_dim_for_agent(aid, model, fallback=own_obs.shape[-1])
             obs_data = agent_obs_map.get(aid)
 
             if obs_data is not None and obs_data.shape[-1] == obs_dim:
-                slots.append(obs_data.astype(np.float32))
-                alive_mask[:, i] = 1.0
+                slots.append(obs_data.astype(np.float32, copy=False))
+                alive_mask[:, i] = agent_alive_map.get(
+                    aid, np.zeros((batch_size,), dtype=np.float32)
+                )
             else:
                 if obs_data is not None:
                     logger.warning(
@@ -503,20 +550,11 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
         slots.append(alive_mask)
         global_obs = np.concatenate(slots, axis=-1)
 
-        # --- Validate dim (safety net) ---
         if global_obs.shape[-1] != expected_dim:
-            logger.warning(
+            raise ValueError(
                 f"{agent_id}: assembled global_obs dim {global_obs.shape[-1]} != "
-                f"expected {expected_dim}. Pad/truncate to match."
+                f"expected {expected_dim}"
             )
-            if global_obs.shape[-1] < expected_dim:
-                pad = np.zeros(
-                    (batch_size, expected_dim - global_obs.shape[-1]),
-                    dtype=np.float32,
-                )
-                global_obs = np.concatenate([global_obs, pad], axis=-1)
-            else:
-                global_obs = global_obs[:, :expected_dim]
 
         _raise_on_nonfinite_np(f"{agent_id}.global_obs", global_obs)
         postprocessed_batch[GLOBAL_OBS] = global_obs
@@ -537,33 +575,24 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             last_mask = np.zeros((1, n_agents), dtype=np.float32)
 
             for i, aid in enumerate(slot_order):
-                obs_dim = _agent_obs_dim(aid)
+                obs_dim = _slot_obs_dim_for_agent(aid, model, fallback=own_obs.shape[-1])
                 obs_data = agent_obs_map.get(aid)
                 if obs_data is not None and obs_data.shape[-1] == obs_dim:
                     last_slots.append(obs_data[-1:].astype(np.float32))
-                    last_mask[:, i] = 1.0
+                    last_mask[:, i] = agent_alive_map.get(
+                        aid, np.zeros((batch_size,), dtype=np.float32)
+                    )[-1]
                 else:
                     last_slots.append(np.zeros((1, obs_dim), dtype=np.float32))
 
             last_slots.append(last_mask)
             last_global = np.concatenate(last_slots, axis=-1)
 
-            if last_global.shape[-1] < expected_dim:
-                logger.debug(
-                    f"{agent_id}: bootstrap last_global padded "
-                    f"from {last_global.shape[-1]} to {expected_dim}"
+            if last_global.shape[-1] != expected_dim:
+                raise ValueError(
+                    f"{agent_id}: bootstrap last_global dim {last_global.shape[-1]} "
+                    f"!= expected {expected_dim}"
                 )
-                last_global = np.concatenate(
-                    [last_global, np.zeros((1, expected_dim - last_global.shape[-1]),
-                                           dtype=np.float32)],
-                    axis=-1,
-                )
-            elif last_global.shape[-1] > expected_dim:
-                logger.debug(
-                    f"{agent_id}: bootstrap last_global truncated "
-                    f"from {last_global.shape[-1]} to {expected_dim}"
-                )
-                last_global = last_global[:, :expected_dim]
 
             _raise_on_nonfinite_np(f"{agent_id}.last_global", last_global)
             with torch.no_grad():

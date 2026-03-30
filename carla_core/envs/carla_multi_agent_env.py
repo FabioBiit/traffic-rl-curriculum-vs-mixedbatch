@@ -65,8 +65,8 @@ if sys.platform == "win32":
 # Constants
 # ---------------------------------------------------------------------------
 
-VEHICLE_OBS_DIM = 24
-PEDESTRIAN_OBS_DIM = 18
+VEHICLE_OBS_DIM = 25
+PEDESTRIAN_OBS_DIM = 19
 N_NEARBY_VEHICLES_FOR_VEHICLE = 3
 N_NEARBY_VEHICLES_FOR_PEDESTRIAN = 2
 PEDESTRIAN_MAX_SPEED = 5.0  # m/s (~18 km/h, running)
@@ -869,6 +869,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # Nearby vehicles
         self._fill_nearby(obs, 15, ad, N_NEARBY_VEHICLES_FOR_VEHICLE, "vehicle.*")
+
+        # Previous steering value (Block 4.3)
+        obs[24] = np.clip(ad.prev_steer, -1.0, 1.0)
+
         return self._sanitize_obs(obs, ad.agent_id)
 
     def _get_pedestrian_obs(self, ad: AgentData) -> np.ndarray:
@@ -917,6 +921,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # Nearby vehicles (danger detection)
         self._fill_nearby(obs, 12, ad, N_NEARBY_VEHICLES_FOR_PEDESTRIAN, "vehicle.*")
+
+        # Route completion fraction (Block 4.3)
+        obs[18] = self._route_completion(ad)
+
         return self._sanitize_obs(obs, ad.agent_id)
 
     def _fill_nearby(self, obs, start_idx, ad, n, filter_str):

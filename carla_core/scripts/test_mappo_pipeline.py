@@ -67,8 +67,8 @@ def main():
         obs_dim = obs_space.shape[0]
         raw.close()
 
-        # global_obs = 3 agents * obs_dim
-        global_obs_dim = 3 * obs_dim
+        # global_obs = 3 agents * obs_dim + alive_mask (3 agents)
+        global_obs_dim = 3 * obs_dim + 3
         cc_cfg = {
             "hidden_size": 64,
             "n_hidden_layers": 1,

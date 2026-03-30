@@ -129,6 +129,14 @@ def main():
                         help="Agent da seguire con la camera (es: vehicle_0, pedestrian_1)")
     parser.add_argument("--env-config", type=str, default=None)
     parser.add_argument("--train-config", type=str, default=None)
+    parser.add_argument("--map", type=str, default=None,
+                        help="Override della mappa CARLA (es: Town05)")
+    parser.add_argument("--npc-vehicles", type=int, default=None,
+                        help="Override del numero di veicoli NPC")
+    parser.add_argument("--npc-pedestrians", type=int, default=None,
+                        help="Override del numero di pedoni NPC")
+    parser.add_argument("--keep-training-load", action="store_true",
+                        help="Usa il carico NPC del file env-config senza riduzione automatica")
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -140,11 +148,18 @@ def main():
     # Override: rendering ON + riduzione carico per stabilità streaming
     env_cfg.setdefault("world", {})
     env_cfg["world"]["no_rendering"] = False
+    if args.map:
+        env_cfg["world"]["map"] = args.map
     env_cfg.setdefault("simulator", {})
     env_cfg["simulator"]["timeout_seconds"] = 30.0
     env_cfg.setdefault("traffic", {})
-    env_cfg["traffic"]["n_vehicles_npc"] = 3
-    env_cfg["traffic"]["n_pedestrians_npc"] = 3
+    if not args.keep_training_load:
+        env_cfg["traffic"]["n_vehicles_npc"] = 3
+        env_cfg["traffic"]["n_pedestrians_npc"] = 3
+    if args.npc_vehicles is not None:
+        env_cfg["traffic"]["n_vehicles_npc"] = int(args.npc_vehicles)
+    if args.npc_pedestrians is not None:
+        env_cfg["traffic"]["n_pedestrians_npc"] = int(args.npc_pedestrians)
 
     ag_cfg = env_cfg.get("agents", {})
     n_veh = ag_cfg.get("n_vehicles_rl", 1)
@@ -154,10 +169,18 @@ def main():
     model_cfg = train_cfg.get("model", {})
     hidden_size = model_cfg.get("hidden_size", 256)
     n_hidden = model_cfg.get("n_hidden_layers", 2)
+    agent_order = [f"vehicle_{i}" for i in range(n_veh)] + [
+        f"pedestrian_{i}" for i in range(n_ped)
+    ]
     cc_config = {
         "hidden_size": hidden_size,
         "n_hidden_layers": n_hidden,
         "global_obs_dim": global_obs_dim,
+        "agent_order": agent_order,
+        "slot_obs_dims": {
+            "vehicle": VEHICLE_OBS_DIM,
+            "pedestrian": PEDESTRIAN_OBS_DIM,
+        },
         "use_popart": model_cfg.get("use_popart", False),
         "popart_beta": model_cfg.get("popart_beta", 3e-4),
     }
@@ -172,6 +195,10 @@ def main():
     print(f"  Checkpoint: {args.checkpoint}")
     print(f"  Episodes: {args.episodes}")
     print(f"  Following: {args.follow}")
+    print(f"  Map: {env_cfg['world'].get('map')}")
+    print(f"  NPC traffic: {env_cfg['traffic'].get('n_vehicles_npc', 0)}V + "
+          f"{env_cfg['traffic'].get('n_pedestrians_npc', 0)}P")
+    print(f"  Rendering: {'ON' if not env_cfg['world'].get('no_rendering', True) else 'OFF'}")
     print(f"  global_obs_dim: {global_obs_dim}")
     print(f"{'=' * 60}\n")
 
