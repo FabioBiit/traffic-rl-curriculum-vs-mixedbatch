@@ -743,6 +743,7 @@ def _run_evaluation_scenarios(
     scenario_idx = 0
     completed_scenario_durations = []
     eval_t0 = time.time()
+    scenario_stall_warning_s = 600.0
 
     print()
     print(f"{'=' * 19}EVAL{'=' * 20}")
@@ -795,13 +796,15 @@ def _run_evaluation_scenarios(
             )
             eval_algo = eval_config.build()
             heartbeat_stop = threading.Event()
+            scenario_stall_warned = [False]
 
             def _heartbeat():
-                while not heartbeat_stop.wait(30.0):
+                while not heartbeat_stop.wait(60.0):
+                    current_elapsed_s = time.time() - scenario_t0
                     progress, has_estimate = _estimate_eval_progress(
                         total_scenarios=total_scenarios,
                         completed_scenarios=completed_scenarios,
-                        current_elapsed_s=time.time() - scenario_t0,
+                        current_elapsed_s=current_elapsed_s,
                         completed_scenario_durations=completed_scenario_durations,
                     )
                     estimate_label = "estimated" if has_estimate else "estimated, baseline pending"
@@ -811,6 +814,15 @@ def _run_evaluation_scenarios(
                         f"({completed_scenarios}/{total_scenarios} scenari completati, "
                         f"{scenario_idx}/{total_scenarios} in corso)"
                     )
+                    if (
+                        not scenario_stall_warned[0]
+                        and current_elapsed_s >= scenario_stall_warning_s
+                    ):
+                        print(
+                            f"    [WARN] Scenario {map_name}/{profile_name} ancora in corso "
+                            f"dopo {current_elapsed_s / 60:.1f}m senza completamento."
+                        )
+                        scenario_stall_warned[0] = True
 
             heartbeat_thread = threading.Thread(
                 target=_heartbeat,
