@@ -4,6 +4,7 @@
 simulator:
   host: "127.0.0.1"             # CARLA server host.
   port: 2000                    # CARLA server TCP port.
+  traffic_manager_port: 8000    # Traffic Manager port for this CARLA session.
   timeout_seconds: 20.0         # Client timeout for connect/tick operations.
   sync_mode: true               # REQUIRED: must be true for RL training. Async mode not supported.
   fixed_delta_seconds: 0.05     # Fixed physics step (20 FPS simulation).

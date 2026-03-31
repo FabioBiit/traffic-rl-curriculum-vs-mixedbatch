@@ -59,7 +59,7 @@ FONT_SIZE_LEGEND = 11
 # CARICAMENTO DATI
 # ============================================================
 
-def load_results(json_path, strict_status=False):
+def load_results(json_path, strict_status=True):
     """
     Carica un file results.json e valida la struttura.
     
@@ -97,6 +97,21 @@ def load_results(json_path, strict_status=False):
         print(f"ATTENZIONE: {msg}")
     elif status not in valid_statuses:
         msg = f"Run non completata in {json_path}: status={status}"
+        if strict_status:
+            raise ValueError(msg)
+        print(f"ATTENZIONE: {msg}")
+
+    final_eval_completed = data["meta"].get("final_evaluation_completed")
+    if final_eval_completed is False:
+        reason = data["meta"].get(
+            "final_evaluation_skip_reason",
+            "motivo non specificato",
+        )
+        msg = (
+            f"Final evaluation incompleta in {json_path}: {reason}. "
+            "Il confronto puo' essere fuorviante. "
+            "Riesegui con --allow-partial-eval se vuoi forzare comunque il confronto."
+        )
         if strict_status:
             raise ValueError(msg)
         print(f"ATTENZIONE: {msg}")
@@ -509,8 +524,8 @@ Esempio:
                         help="Path al results.json del training Curriculum")
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT_DIR,
                         help="Directory di output per i grafici (default: carla_core/results/plots)")
-    parser.add_argument("--strict-status", action="store_true",
-                        help="Se attivo, fallisce quando meta.status e' mancante o != COMPLETATO")
+    parser.add_argument("--allow-partial-eval", action="store_true",
+                        help="Permette il confronto anche se la final evaluation e' incompleta")
     args = parser.parse_args()
 
     # Carica dati
@@ -519,13 +534,13 @@ Esempio:
     print("=" * 60)
 
     print(f"\nCaricamento Batch: {args.batch}")
-    batch_data = load_results(args.batch, strict_status=args.strict_status)
+    batch_data = load_results(args.batch, strict_status=not args.allow_partial_eval)
     print(f"  Mode: {batch_data['meta']['mode']}, "
           f"Timesteps: {batch_data['meta']['total_timesteps_actual']:,}, "
           f"Episodes: {batch_data['meta']['total_episodes']:,}")
 
     print(f"\nCaricamento Curriculum: {args.curriculum}")
-    curriculum_data = load_results(args.curriculum, strict_status=args.strict_status)
+    curriculum_data = load_results(args.curriculum, strict_status=not args.allow_partial_eval)
     print(f"  Mode: {curriculum_data['meta']['mode']}, "
           f"Timesteps: {curriculum_data['meta']['total_timesteps_actual']:,}, "
           f"Episodes: {curriculum_data['meta']['total_episodes']:,}")

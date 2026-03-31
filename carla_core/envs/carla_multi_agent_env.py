@@ -91,6 +91,7 @@ class _NavPoint:
 DEFAULT_MA_CONFIG = {
     "simulator": {
         "host": "127.0.0.1", "port": 2000,
+        "traffic_manager_port": 8000,
         "timeout_seconds": 20.0, "sync_mode": True,
         "fixed_delta_seconds": 0.05,
     },
@@ -479,6 +480,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         sim = self.cfg["simulator"]
         self._client = carla.Client(sim["host"], sim["port"])
         self._client.set_timeout(sim["timeout_seconds"])
+        tm_port = int(sim.get("traffic_manager_port", 8000))
 
         target_map = self.cfg["world"]["map"]
         current_map = self._client.get_world().get_map().name.split("/")[-1]
@@ -500,7 +502,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             settings.no_rendering_mode = True
         self._world.apply_settings(settings)
 
-        self._tm = self._client.get_trafficmanager(8000)
+        self._tm = self._client.get_trafficmanager(tm_port)
         self._tm.set_synchronous_mode(True)
         self._tm.set_global_distance_to_leading_vehicle(2.5)
         self._tm.set_random_device_seed(self.cfg["traffic"].get("seed", 42))

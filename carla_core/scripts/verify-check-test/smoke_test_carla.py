@@ -13,12 +13,13 @@ Esegui con:
     python carla_core/scripts/smoke_test_carla.py
 
 Opzioni:
-    --host 127.0.0.1   Host del server CARLA
-    --port 2000         Porta TCP del server
-    --map Town03        Mappa da caricare
-    --vehicles 5        Numero di veicoli da spawnare
-    --pedestrians 5     Numero di pedoni da spawnare
-    --ticks 200         Numero di tick di simulazione
+  --host 127.0.0.1   Host del server CARLA
+  --port 2000         Porta TCP del server
+  --tm-port 8000      Porta del Traffic Manager
+  --map Town03        Mappa da caricare
+  --vehicles 5        Numero di veicoli da spawnare
+  --pedestrians 5     Numero di pedoni da spawnare
+  --ticks 200         Numero di tick di simulazione
 """
 
 import argparse
@@ -38,6 +39,7 @@ def main():
     parser = argparse.ArgumentParser(description="Smoke Test CARLA")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--tm-port", type=int, default=8000)
     parser.add_argument("--map", default="Town03")
     parser.add_argument("--vehicles", type=int, default=5)
     parser.add_argument("--pedestrians", type=int, default=5)
@@ -80,7 +82,7 @@ def main():
         print("  Modalita' sincrona attivata (0.05s/tick)")
 
         # ---- Traffic Manager ----
-        tm = client.get_trafficmanager(8000)
+        tm = client.get_trafficmanager(args.tm_port)
         tm.set_synchronous_mode(True)
         tm.set_global_distance_to_leading_vehicle(2.5)
 
@@ -220,7 +222,7 @@ def main():
             except Exception:
                 pass
         try:
-            tm = client.get_trafficmanager(8000)
+            tm = client.get_trafficmanager(args.tm_port)
             tm.set_synchronous_mode(False)
         except Exception:
             pass

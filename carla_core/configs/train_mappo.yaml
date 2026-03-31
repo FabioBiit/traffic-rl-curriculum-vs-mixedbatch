@@ -35,7 +35,6 @@ optimization:
 schedule:
   total_timesteps: 1000000
   checkpoint_freq: 50000
-  eval_freq: 50000
   stop_on_nan: true             # Stop training if NaN/Inf is detected in trainer metrics
 
 model:

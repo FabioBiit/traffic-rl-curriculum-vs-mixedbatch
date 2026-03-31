@@ -67,12 +67,9 @@ def rllib_env_creator(env_config):
 def policy_mapping_fn(agent_id, episode=None, worker=None, **kwargs):
     if agent_id.startswith("vehicle"):
         return "vehicle_policy"
-    return "pedestrian_policy"
-
-
-def compute_global_obs_dim(n_veh, n_ped):
-    return compute_global_obs_dim_with_mask(n_veh, n_ped)
-
+    if agent_id.startswith("pedestrian"):
+        return "pedestrian_policy"
+    raise ValueError(f"Unknown agent_id: {agent_id}")
 
 def update_spectator(world, actor, distance=10.0, height=6.0):    
     """Follow camera: spectator dietro e sopra l'attore."""
@@ -164,7 +161,7 @@ def main():
     ag_cfg = env_cfg.get("agents", {})
     n_veh = ag_cfg.get("n_vehicles_rl", 1)
     n_ped = ag_cfg.get("n_pedestrians_rl", 1)
-    global_obs_dim = compute_global_obs_dim(n_veh, n_ped)
+    global_obs_dim = compute_global_obs_dim_with_mask(n_veh, n_ped)
 
     model_cfg = train_cfg.get("model", {})
     hidden_size = model_cfg.get("hidden_size", 256)

@@ -26,6 +26,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from collections import deque
 from copy import deepcopy
@@ -115,6 +116,30 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
             episode.custom_metrics["window_success_rate"] = float(
                 np.mean(self._success_window)
             )
+
+
+class FinalEvaluationInterrupted(KeyboardInterrupt):
+    """KeyboardInterrupt carrying partial final-evaluation artifacts."""
+
+    def __init__(self, *, raw, summary, traces, metric_keys, reason):
+        super().__init__(reason)
+        self.raw = raw
+        self.summary = summary
+        self.traces = traces
+        self.metric_keys = metric_keys
+        self.reason = reason
+
+
+class FinalEvaluationFailed(RuntimeError):
+    """Exception carrying partial final-evaluation artifacts on runtime failure."""
+
+    def __init__(self, *, raw, summary, traces, metric_keys, reason):
+        super().__init__(reason)
+        self.raw = raw
+        self.summary = summary
+        self.traces = traces
+        self.metric_keys = metric_keys
+        self.reason = reason
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -350,10 +375,56 @@ def _mean_metric_dicts(rows, keys):
     return merged
 
 
-def _compute_eval_path_efficiency(ad):
-    if getattr(ad, "actual_distance_traveled", 0.0) > 0.0 and getattr(ad, "route_optimal_length", 0.0) > 0.0:
-        return float(min(ad.route_optimal_length / ad.actual_distance_traveled, 1.0))
-    return 0.0
+def _build_evaluation_summary(raw, train_map):
+    summary = {}
+    if train_map in raw:
+        for profile_name, metrics in raw[train_map].items():
+            level = _profile_name_to_level(profile_name)
+            if level and level not in summary:
+                summary[level] = {
+                    "success_rate": metrics.get("success_rate"),
+                    "collision_rate": metrics.get("collision_rate"),
+                }
+
+    test_rows = []
+    for map_name, profiles in raw.items():
+        if train_map is not None and map_name == train_map:
+            continue
+        test_rows.extend(profiles.values())
+    if not test_rows:
+        for profiles in raw.values():
+            test_rows.extend(profiles.values())
+    if test_rows:
+        test_metrics = _mean_metric_dicts(test_rows, ["success_rate", "collision_rate"])
+        summary["test"] = {
+            "success_rate": test_metrics.get("success_rate"),
+            "collision_rate": test_metrics.get("collision_rate"),
+        }
+    return summary
+
+
+def _render_progress_bar(progress, width=24):
+    progress = max(0.0, min(float(progress), 1.0))
+    filled = int(progress * width)
+    return "[" + ("\u2588" * filled) + ("\u2591" * (width - filled)) + "]"
+
+
+def _estimate_eval_progress(
+    *,
+    total_scenarios,
+    completed_scenarios,
+    current_elapsed_s,
+    completed_scenario_durations,
+):
+    if total_scenarios <= 0:
+        return 0.0, False
+    if not completed_scenario_durations:
+        return completed_scenarios / total_scenarios, False
+
+    avg_duration = max(float(np.mean(completed_scenario_durations)), 1e-6)
+    current_fraction = min(max(current_elapsed_s / avg_duration, 0.0), 0.99)
+    progress = (completed_scenarios + current_fraction) / total_scenarios
+    return min(max(progress, 0.0), 0.999), True
 
 
 def _resolve_eval_metric_keys(eval_cfg):
@@ -386,6 +457,185 @@ def _resolve_eval_metric_keys(eval_cfg):
             selected.append(metric_key)
 
     return selected, unsupported
+
+
+def _build_mappo_config(
+    *,
+    env_cfg,
+    train_cfg,
+    eval_cfg,
+    n_gpus,
+    n_workers,
+    exp_seed,
+    enable_periodic_evaluation,
+):
+    """Build the shared RLlib PPOConfig for training or final evaluation."""
+    import gymnasium as gym
+
+    roll = train_cfg.get("rollout", {})
+    opt = train_cfg.get("optimization", {})
+    model_cfg = train_cfg.get("model", {})
+    eval_section = eval_cfg.get("evaluation", {})
+
+    ag_cfg = env_cfg.get("agents", {})
+    n_veh = ag_cfg.get("n_vehicles_rl", 1)
+    n_ped = ag_cfg.get("n_pedestrians_rl", 1)
+    global_obs_dim = compute_global_obs_dim_with_mask(n_veh, n_ped)
+
+    veh_obs = gym.spaces.Box(-1, 1, (VEHICLE_OBS_DIM,), np.float32)
+    veh_act = gym.spaces.Box(
+        np.array([-1, -1], dtype=np.float32),
+        np.array([1, 1], dtype=np.float32),
+    )
+    ped_obs = gym.spaces.Box(-1, 1, (PEDESTRIAN_OBS_DIM,), np.float32)
+    ped_act = gym.spaces.Box(
+        np.array([0, -1], dtype=np.float32),
+        np.array([1, 1], dtype=np.float32),
+    )
+
+    hidden_size = model_cfg.get("hidden_size", 256)
+    n_hidden = model_cfg.get("n_hidden_layers", 2)
+    agent_order = [f"vehicle_{i}" for i in range(n_veh)] + [
+        f"pedestrian_{i}" for i in range(n_ped)
+    ]
+    cc_config = {
+        "hidden_size": hidden_size,
+        "n_hidden_layers": n_hidden,
+        "global_obs_dim": global_obs_dim,
+        "agent_order": agent_order,
+        "slot_obs_dims": {
+            "vehicle": VEHICLE_OBS_DIM,
+            "pedestrian": PEDESTRIAN_OBS_DIM,
+        },
+        "use_popart": model_cfg.get("use_popart", False),
+        "popart_beta": model_cfg.get("popart_beta", 3e-4),
+    }
+    if enable_periodic_evaluation:
+        raise NotImplementedError(
+            "Periodic RLlib evaluation is disabled in the CARLA multi-agent trainer. "
+            "Use the explicit final multi-scenario evaluation instead."
+        )
+    evaluation_interval = None
+
+    return (
+        PPOConfig()
+        .environment(env="CarlaMultiAgent-v0", env_config=env_cfg)
+        .debugging(seed=exp_seed)
+        .multi_agent(
+            policies={
+                "vehicle_policy": (
+                    None,
+                    veh_obs,
+                    veh_act,
+                    {"model": {"custom_model": "cc_model",
+                               "custom_model_config": cc_config}},
+                ),
+                "pedestrian_policy": (
+                    None,
+                    ped_obs,
+                    ped_act,
+                    {"model": {"custom_model": "cc_model",
+                               "custom_model_config": cc_config}},
+                ),
+            },
+            policy_mapping_fn=policy_mapping_fn,
+            policies_to_train=["vehicle_policy", "pedestrian_policy"],
+        )
+        .callbacks(MAPPOTrainingCallbacks)
+        .resources(num_gpus=n_gpus)
+        .rollouts(
+            num_rollout_workers=n_workers,
+            rollout_fragment_length=roll.get("rollout_fragment_length", 200),
+            batch_mode="complete_episodes",
+        )
+        .training(
+            train_batch_size=roll.get("train_batch_size", 4000),
+            sgd_minibatch_size=roll.get("sgd_minibatch_size", 256),
+            num_sgd_iter=roll.get("num_sgd_iter", 10),
+            lr=opt.get("lr", 3e-4),
+            gamma=opt.get("gamma", 0.99),
+            lambda_=opt.get("gae_lambda", 0.95),
+            clip_param=opt.get("clip_param", 0.2),
+            entropy_coeff=opt.get("entropy_coeff", 0.01),
+            vf_loss_coeff=opt.get("vf_loss_coeff", 0.5),
+            grad_clip=opt.get("grad_clip", 0.5),
+            vf_clip_param=opt.get("vf_clip_param", 10.0),
+            use_kl_loss=opt.get("use_kl_loss", True),
+            kl_target=opt.get("kl_target", 0.02),
+            kl_coeff=opt.get("kl_coeff", 0.3),
+        )
+        .evaluation(
+            evaluation_interval=evaluation_interval,
+            evaluation_duration=eval_section.get("episodes_per_map", 5),
+            evaluation_duration_unit="episodes",
+            evaluation_num_workers=0,
+            evaluation_config={"explore": not eval_section.get("deterministic_policy", True)},
+        )
+        .framework("torch")
+    )
+
+
+def _extract_eval_metrics_from_result(eval_result, metric_keys):
+    """Extract aggregated metrics from a single RLlib evaluate() result."""
+    def _metric(*names):
+        containers = [
+            eval_result.get("custom_metrics", {}),
+            _get_nested(eval_result, "sampler_results", "custom_metrics") or {},
+        ]
+        for name in names:
+            for container in containers:
+                if name in container:
+                    return _coerce_float(container[name])
+        return None
+
+    evaluation_time_ms = _coerce_float(eval_result.get("evaluation_time_ms"))
+    wall_clock_seconds = (
+        evaluation_time_ms / 1000.0
+        if evaluation_time_ms is not None
+        else _coerce_float(eval_result.get("time_this_iter_s"))
+    )
+
+    rows = {
+        "success_rate": _metric("success_rate_mean", "success_rate"),
+        "collision_rate": _metric("collision_rate_mean", "collision_rate"),
+        "timeout_rate": _metric("timeout_rate_mean", "timeout_rate"),
+        "route_completion": _metric("route_completion_mean", "route_completion"),
+        "path_efficiency": _metric("path_efficiency_mean", "path_efficiency"),
+        "reward_mean": _coerce_float(
+            eval_result.get("episode_reward_mean"),
+            _coerce_float(_get_nested(eval_result, "sampler_results", "episode_reward_mean")),
+        ),
+        "episode_length_mean": _coerce_float(
+            eval_result.get("episode_len_mean"),
+            _coerce_float(_get_nested(eval_result, "sampler_results", "episode_len_mean")),
+        ),
+        "infraction_count": None,
+        "wall_clock_timeout": None,
+        "wall_clock_seconds": wall_clock_seconds,
+    }
+    return {key: rows.get(key) for key in metric_keys}
+
+
+def _extract_eval_episode_traces(eval_result, map_name, profile_name):
+    """Build per-episode trace rows from RLlib hist_stats when available."""
+    hist_stats = (
+        _get_nested(eval_result, "sampler_results", "hist_stats")
+        or eval_result.get("hist_stats")
+        or {}
+    )
+    rewards = hist_stats.get("episode_reward", []) or []
+    lengths = hist_stats.get("episode_lengths", []) or []
+    n_rows = max(len(rewards), len(lengths))
+    traces = []
+    for idx in range(n_rows):
+        traces.append({
+            "map": map_name,
+            "profile": profile_name,
+            "episode_index": idx,
+            "episode_reward": _coerce_float(rewards[idx]) if idx < len(rewards) else None,
+            "episode_length": _coerce_float(lengths[idx]) if idx < len(lengths) else None,
+        })
+    return traces
 
 
 def _save_evaluation_plots(out_path, run_name, evaluation_raw, metric_keys):
@@ -441,69 +691,18 @@ def _save_evaluation_plots(out_path, run_name, evaluation_raw, metric_keys):
     plt.close(fig)
 
 
-def _run_eval_episode(algo, env_config, seed_base, episode_idx, explore, timeout_seconds=None):
-    env = CarlaMultiAgentEnv(config=env_config)
-    try:
-        obs, _ = env.reset(seed=seed_base + episode_idx)
-        ep_rewards = {a: 0.0 for a in env.possible_agents}
-        step_count = 0
-        t_ep = time.time()
-        wall_clock_timeout = False
-
-        while env.agents:
-            if timeout_seconds is not None and (time.time() - t_ep) >= timeout_seconds:
-                wall_clock_timeout = True
-                break
-
-            actions = {}
-            for agent_id in env.agents:
-                policy_id = policy_mapping_fn(agent_id)
-                actions[agent_id] = algo.compute_single_action(
-                    obs[agent_id], policy_id=policy_id, explore=explore
-                )
-
-            obs, rewards, _, _, _ = env.step(actions)
-            step_count += 1
-            for agent_id, reward in rewards.items():
-                ep_rewards[agent_id] += reward
-
-        outcomes = dict(getattr(env, "_terminated_agent_infos", {}))
-        if wall_clock_timeout:
-            for agent_id in list(env.agents):
-                ad = env._agent_data.get(agent_id)
-                if ad is None:
-                    continue
-                outcomes[agent_id] = {
-                    "termination_reason": "timeout",
-                    "route_completion": env._route_completion(ad),
-                    "path_efficiency": _compute_eval_path_efficiency(ad),
-                }
-
-        reasons = [info.get("termination_reason") for info in outcomes.values()]
-        n_agents = len(reasons)
-        route_vals = [info.get("route_completion", 0.0) for info in outcomes.values()]
-        path_vals = [info.get("path_efficiency", 0.0) for info in outcomes.values()]
-
-        return {
-            "success_rate": (reasons.count("route_complete") / n_agents) if n_agents else None,
-            "collision_rate": (reasons.count("collision") / n_agents) if n_agents else None,
-            "timeout_rate": (reasons.count("timeout") / n_agents) if n_agents else None,
-            "route_completion": float(np.mean(route_vals)) if route_vals else None,
-            "path_efficiency": float(np.mean(path_vals)) if path_vals else None,
-            "reward_mean": float(np.mean(list(ep_rewards.values()))) if ep_rewards else None,
-            "episode_length_mean": float(step_count),
-            "infraction_count": None,
-            "wall_clock_timeout": wall_clock_timeout,
-            "wall_clock_seconds": float(time.time() - t_ep),
-        }
-    finally:
-        env.close()
-
-
-def _run_evaluation_scenarios(algo, base_env_cfg, eval_cfg, seed_base):
+def _run_evaluation_scenarios(
+    *,
+    checkpoint_path,
+    base_env_cfg,
+    train_cfg,
+    eval_cfg,
+    seed_base,
+    n_gpus,
+):
     eval_section = eval_cfg.get("evaluation", {})
     if not eval_section.get("enabled", True):
-        return {}, {}
+        return {}, {}, [], []
 
     scenario_cfg = eval_cfg.get("scenarios", {})
     maps = scenario_cfg.get("maps", [])
@@ -511,10 +710,8 @@ def _run_evaluation_scenarios(algo, base_env_cfg, eval_cfg, seed_base):
     limits = eval_cfg.get("limits", {})
 
     if not maps or not traffic_profiles:
-        return {}, {}
+        return {}, {}, [], []
 
-    episodes_per_map = int(eval_section.get("episodes_per_map", 1))
-    explore = not eval_section.get("deterministic_policy", True)
     parallel_envs = int(eval_section.get("parallel_envs", 1))
     if parallel_envs != 1:
         raise ValueError(
@@ -522,7 +719,6 @@ def _run_evaluation_scenarios(algo, base_env_cfg, eval_cfg, seed_base):
             "with a single simulator instance. Use parallel_envs=1."
             % parallel_envs
         )
-    timeout_seconds = _coerce_float(limits.get("timeout_seconds"))
     metric_keys, unsupported_metric_keys = _resolve_eval_metric_keys(eval_cfg)
     if unsupported_metric_keys:
         logger.warning(
@@ -535,11 +731,48 @@ def _run_evaluation_scenarios(algo, base_env_cfg, eval_cfg, seed_base):
     train_map = base_env_cfg.get("world", {}).get("map")
     aggregate_keys = list(dict.fromkeys(metric_keys + unsupported_metric_keys))
     save_traces = bool(eval_cfg.get("outputs", {}).get("save_per_episode_trace", False))
+    episodes_per_map = int(eval_section.get("episodes_per_map", 1))
+    max_steps_per_episode = int(limits.get("max_steps_per_episode", 0)) if "max_steps_per_episode" in limits else None
+    total_scenarios = len(maps) * len(traffic_profiles)
+    total_episodes = total_scenarios * episodes_per_map
+    total_env_steps_budget = (
+        total_episodes * max_steps_per_episode
+        if max_steps_per_episode is not None
+        else None
+    )
+    scenario_idx = 0
+    completed_scenario_durations = []
+    eval_t0 = time.time()
+
+    print()
+    print(f"{'=' * 19}EVAL{'=' * 20}")
+    print(
+        f"  Eval scenarios: {total_scenarios} "
+        f"({len(maps)} maps x {len(traffic_profiles)} profiles)"
+    )
+    print(f"  Eval episodes: {total_episodes}")
+    if total_env_steps_budget is not None:
+        print(f"  Eval max env-steps: {total_env_steps_budget:,}")
 
     for map_name in maps:
         map_rows = {}
         for profile in traffic_profiles:
+            scenario_idx += 1
             profile_name = profile.get("name", "unnamed")
+            scenario_t0 = time.time()
+            completed_scenarios = scenario_idx - 1
+            print(
+                f"  [Eval {scenario_idx}/{total_scenarios}] "
+                f"{map_name}/{profile_name} | episodes={episodes_per_map}"
+            )
+            print(f"{'=' * 43}")
+            initial_progress = completed_scenarios / total_scenarios
+            print(
+                f"    Eval progress {_render_progress_bar(initial_progress)} "
+                f"{initial_progress * 100:5.1f}% estimated "
+                f"({completed_scenarios}/{total_scenarios} scenari completati, "
+                f"{scenario_idx}/{total_scenarios} in corso)"
+            )
             scenario_env_cfg = deepcopy(base_env_cfg)
             scenario_env_cfg.setdefault("world", {})
             scenario_env_cfg["world"]["map"] = map_name
@@ -549,55 +782,99 @@ def _run_evaluation_scenarios(algo, base_env_cfg, eval_cfg, seed_base):
             scenario_env_cfg.setdefault("episode", {})
             if "max_steps_per_episode" in limits:
                 scenario_env_cfg["episode"]["max_steps"] = int(limits["max_steps_per_episode"])
+            scenario_env_cfg.setdefault("traffic", {})
+            scenario_env_cfg["traffic"]["seed"] = int(seed_base)
+            eval_config = _build_mappo_config(
+                env_cfg=scenario_env_cfg,
+                train_cfg=train_cfg,
+                eval_cfg=eval_cfg,
+                n_gpus=n_gpus,
+                n_workers=0,
+                exp_seed=seed_base,
+                enable_periodic_evaluation=False,
+            )
+            eval_algo = eval_config.build()
+            heartbeat_stop = threading.Event()
 
-            episode_rows = []
-            for ep_idx in range(episodes_per_map):
-                episode_rows.append(
-                    _run_eval_episode(
-                        algo=algo,
-                        env_config=scenario_env_cfg,
-                        seed_base=seed_base,
-                        episode_idx=ep_idx,
-                        explore=explore,
-                        timeout_seconds=timeout_seconds,
+            def _heartbeat():
+                while not heartbeat_stop.wait(30.0):
+                    progress, has_estimate = _estimate_eval_progress(
+                        total_scenarios=total_scenarios,
+                        completed_scenarios=completed_scenarios,
+                        current_elapsed_s=time.time() - scenario_t0,
+                        completed_scenario_durations=completed_scenario_durations,
                     )
-                )
-                if save_traces:
-                    traces.append({
-                        "map": map_name,
-                        "profile": profile_name,
-                        "episode_index": ep_idx,
-                        **episode_rows[-1],
-                    })
+                    estimate_label = "estimated" if has_estimate else "estimated, baseline pending"
+                    print(
+                        f"    Eval progress {_render_progress_bar(progress)} "
+                        f"{progress * 100:5.1f}% {estimate_label} "
+                        f"({completed_scenarios}/{total_scenarios} scenari completati, "
+                        f"{scenario_idx}/{total_scenarios} in corso)"
+                    )
 
-            map_rows[profile_name] = _mean_metric_dicts(episode_rows, aggregate_keys)
+            heartbeat_thread = threading.Thread(
+                target=_heartbeat,
+                name=f"eval-heartbeat-{scenario_idx}",
+                daemon=True,
+            )
+            heartbeat_thread.start()
+            try:
+                eval_algo.restore(checkpoint_path)
+                eval_result = eval_algo.evaluate()
+                metrics = _extract_eval_metrics_from_result(eval_result, aggregate_keys)
+                map_rows[profile_name] = metrics
+                if save_traces:
+                    traces.extend(
+                        _extract_eval_episode_traces(
+                            eval_result,
+                            map_name=map_name,
+                            profile_name=profile_name,
+                        )
+                    )
+            except KeyboardInterrupt:
+                raw[map_name] = map_rows
+                print(f"    interrotto dall'utente durante {map_name}/{profile_name}")
+                raise FinalEvaluationInterrupted(
+                    raw=deepcopy(raw),
+                    summary=_build_evaluation_summary(raw, train_map),
+                    traces=list(traces),
+                    metric_keys=list(aggregate_keys),
+                    reason=f"manual interrupt during final evaluation ({map_name}/{profile_name})",
+                ) from None
+            except Exception as exc:
+                raw[map_name] = map_rows
+                raise FinalEvaluationFailed(
+                    raw=deepcopy(raw),
+                    summary=_build_evaluation_summary(raw, train_map),
+                    traces=list(traces),
+                    metric_keys=list(aggregate_keys),
+                    reason=(
+                        "final evaluation error: "
+                        f"{type(exc).__name__} ({map_name}/{profile_name})"
+                    ),
+                ) from exc
+            finally:
+                heartbeat_stop.set()
+                heartbeat_thread.join(timeout=1.0)
+                eval_algo.stop()
+            scenario_elapsed = time.time() - scenario_t0
+            completed_scenario_durations.append(scenario_elapsed)
+            total_elapsed = time.time() - eval_t0
+            remaining = total_scenarios - scenario_idx
+            eta = (total_elapsed / scenario_idx) * remaining if scenario_idx > 0 else 0.0
+            exact_progress = scenario_idx / total_scenarios
+            print(
+                f"    Eval progress {_render_progress_bar(exact_progress)} "
+                f"{exact_progress * 100:5.1f}% exact "
+                f"({scenario_idx}/{total_scenarios} scenari completati)"
+            )
+            print(
+                f"    done in {scenario_elapsed/60:.1f}m | "
+                f"elapsed {total_elapsed/60:.1f}m | ETA {eta/60:.1f}m"
+            )
         raw[map_name] = map_rows
 
-    summary = {}
-    if train_map in raw:
-        for profile_name, metrics in raw[train_map].items():
-            level = _profile_name_to_level(profile_name)
-            if level and level not in summary:
-                summary[level] = {
-                    "success_rate": metrics.get("success_rate"),
-                    "collision_rate": metrics.get("collision_rate"),
-                }
-
-    test_rows = []
-    for map_name, profiles in raw.items():
-        if train_map is not None and map_name == train_map:
-            continue
-        test_rows.extend(profiles.values())
-    if not test_rows:
-        for profiles in raw.values():
-            test_rows.extend(profiles.values())
-    if test_rows:
-        test_metrics = _mean_metric_dicts(test_rows, ["success_rate", "collision_rate"])
-        summary["test"] = {
-            "success_rate": test_metrics.get("success_rate"),
-            "collision_rate": test_metrics.get("collision_rate"),
-        }
-
+    summary = _build_evaluation_summary(raw, train_map)
     return raw, summary, traces, aggregate_keys
 
 
@@ -697,6 +974,7 @@ def _build_results_payload(
     evaluation_raw=None,
     cumulative_success_rate=None,
     cumulative_collision_rate=None,
+    final_evaluation_skip_reason=None,
 ):
     result = result or {}
     status = "COMPLETATO" if ts_done >= total_ts else "STOP_EARLY_COLLASSO"
@@ -731,6 +1009,7 @@ def _build_results_payload(
             "total_timesteps_actual": int(ts_done),
             "total_episodes": total_episodes,
             "wall_clock_seconds": float(elapsed_s),
+            "final_evaluation_completed": final_evaluation_skip_reason is None,
         },
         "timeseries": timeseries,
         "evaluation": evaluation,
@@ -744,6 +1023,8 @@ def _build_results_payload(
         },
         "curriculum_history": [],
     }
+    if final_evaluation_skip_reason is not None:
+        payload["meta"]["final_evaluation_skip_reason"] = str(final_evaluation_skip_reason)
     return payload
 
 # ---------------------------------------------------------------------------
@@ -864,85 +1145,15 @@ def main():
     register_env("CarlaMultiAgent-v0", rllib_env_creator)
     ModelCatalog.register_custom_model("cc_model", CentralizedCriticModel)
 
-    # --- Spaces (per-policy, single-agent) ---
-    import gymnasium as gym
-    veh_obs = gym.spaces.Box(-1, 1, (VEHICLE_OBS_DIM,), np.float32)
-    veh_act = gym.spaces.Box(np.array([-1, -1], dtype=np.float32),
-                              np.array([1, 1], dtype=np.float32))
-    ped_obs = gym.spaces.Box(-1, 1, (PEDESTRIAN_OBS_DIM,), np.float32)
-    ped_act = gym.spaces.Box(np.array([0, -1], dtype=np.float32),
-                              np.array([1, 1], dtype=np.float32))
-
-    hidden_size = model_cfg.get("hidden_size", 256)
-    n_hidden = model_cfg.get("n_hidden_layers", 2)
-    agent_order = [f"vehicle_{i}" for i in range(n_veh)] + [
-        f"pedestrian_{i}" for i in range(n_ped)
-    ]
-    cc_config = {
-        "hidden_size": hidden_size,
-        "n_hidden_layers": n_hidden,
-        "global_obs_dim": global_obs_dim,
-        "agent_order": agent_order,
-        "slot_obs_dims": {
-            "vehicle": VEHICLE_OBS_DIM,
-            "pedestrian": PEDESTRIAN_OBS_DIM,
-        },
-        "use_popart": model_cfg.get("use_popart", False),
-        "popart_beta": model_cfg.get("popart_beta", 3e-4),
-    }
-
     # --- PPO Config ---
-    config = (
-        PPOConfig()
-        .environment(env="CarlaMultiAgent-v0", env_config=env_cfg)
-        .debugging(seed=exp_seed)
-        .multi_agent(
-            policies={
-                "vehicle_policy": (
-                    None, veh_obs, veh_act,
-                    {"model": {"custom_model": "cc_model",
-                               "custom_model_config": cc_config}},
-                ),
-                "pedestrian_policy": (
-                    None, ped_obs, ped_act,
-                    {"model": {"custom_model": "cc_model",
-                               "custom_model_config": cc_config}},
-                ),
-            },
-            policy_mapping_fn=policy_mapping_fn,
-            policies_to_train=["vehicle_policy", "pedestrian_policy"],
-        )
-        .callbacks(MAPPOTrainingCallbacks)
-        .resources(num_gpus=n_gpus)
-        .rollouts(
-            num_rollout_workers=n_workers,
-            rollout_fragment_length=roll.get("rollout_fragment_length", 200),
-            batch_mode="complete_episodes",
-        )
-        .training(
-            train_batch_size=batch_size,
-            sgd_minibatch_size=roll.get("sgd_minibatch_size", 256),
-            num_sgd_iter=roll.get("num_sgd_iter", 10),
-            lr=opt.get("lr", 3e-4),
-            gamma=opt.get("gamma", 0.99),
-            lambda_=opt.get("gae_lambda", 0.95),
-            clip_param=opt.get("clip_param", 0.2),
-            entropy_coeff=opt.get("entropy_coeff", 0.01),
-            vf_loss_coeff=opt.get("vf_loss_coeff", 0.5),
-            grad_clip=opt.get("grad_clip", 0.5),
-            vf_clip_param=opt.get("vf_clip_param", 10.0), # Reward v8
-            use_kl_loss=opt.get("use_kl_loss", True), # Reward v8
-            kl_target=opt.get("kl_target", 0.02), # Reward v8
-            kl_coeff=opt.get("kl_coeff", 0.3), # Reward v8
-        )
-        .evaluation(
-            evaluation_interval=max(1, int(sched.get("eval_freq", 10_000) / batch_size)),
-            evaluation_duration=eval_section.get("episodes_per_map", 5),
-            evaluation_duration_unit="episodes",
-            evaluation_num_workers=0,
-            evaluation_config={"explore": not eval_section.get("deterministic_policy", True)},
-        )
-        .framework("torch")
+    config = _build_mappo_config(
+        env_cfg=env_cfg,
+        train_cfg=train_cfg,
+        eval_cfg=eval_cfg,
+        n_gpus=n_gpus,
+        n_workers=n_workers,
+        exp_seed=exp_seed,
+        enable_periodic_evaluation=False,
     )
 
     # --- Build & Train ---
@@ -963,6 +1174,7 @@ def main():
     cumulative_collision_rate = None
     should_run_final_evaluation = True
     final_evaluation_skip_reason = None
+    final_checkpoint = None
 
     try:
         while ts_done < total_ts:
@@ -1052,19 +1264,43 @@ def main():
             traceback.print_exc(file=f)
     finally:
         try:
-            final = algo.save(out_dir)
-            print(f"\nCheckpoint finale: {final}")
+            final_checkpoint = algo.save(out_dir)
+            print(f"\nCheckpoint finale: {final_checkpoint}")
         except Exception as e:
             print(f"\nCheckpoint fallito: {e}")
 
+        # Save last training result (full RLlib dict) before stopping the trainer.
         try:
-            if eval_section.get("enabled", True) and iteration > 0 and should_run_final_evaluation:
+            if iteration > 0:
+                result_path = os.path.join(out_dir, "last_result.json")
+                with open(result_path, "w") as f:
+                    json.dump(_sanitize_for_json(result), f, indent=2)
+                print(f"  Last result: {result_path}")
+        except Exception as e:
+            print(f"  [WARN] Could not save last_result.json: {e}")
+
+        try:
+            algo.stop()
+        except Exception as e:
+            print(f"  [WARN] algo.stop() failed: {e}")
+        finally:
+            algo = None
+
+        try:
+            if (
+                eval_section.get("enabled", True)
+                and iteration > 0
+                and should_run_final_evaluation
+                and final_checkpoint is not None
+            ):
                 print("\nValutazione finale multi-scenario in corso...")
                 evaluation_raw, evaluation, evaluation_traces, evaluation_metric_keys = _run_evaluation_scenarios(
-                    algo=algo,
+                    checkpoint_path=final_checkpoint,
                     base_env_cfg=env_cfg,
+                    train_cfg=train_cfg,
                     eval_cfg=eval_cfg,
                     seed_base=exp_seed,
+                    n_gpus=n_gpus,
                 )
                 if evaluation or evaluation_raw:
                     _save_evaluation_artifacts(
@@ -1077,9 +1313,53 @@ def main():
                         evaluation_metric_keys=evaluation_metric_keys,
                     )
             else:
-                reason = final_evaluation_skip_reason or "disabled or no completed iterations"
+                reason = final_evaluation_skip_reason or (
+                    "disabled, no completed iterations, or missing final checkpoint"
+                )
                 print(f"\nValutazione finale multi-scenario saltata ({reason}).")
+        except FinalEvaluationInterrupted as exc:
+            final_evaluation_skip_reason = exc.reason
+            evaluation_raw = exc.raw
+            evaluation = exc.summary
+            evaluation_traces = exc.traces
+            evaluation_metric_keys = exc.metric_keys
+            if evaluation or evaluation_raw:
+                _save_evaluation_artifacts(
+                    base_dir=base.parent,
+                    run_name=Path(out_dir).name,
+                    eval_cfg=eval_cfg,
+                    evaluation_raw=evaluation_raw,
+                    evaluation_summary=evaluation,
+                    evaluation_traces=evaluation_traces,
+                    evaluation_metric_keys=evaluation_metric_keys,
+                )
+            print("\nValutazione finale interrotta manualmente.")
+        except FinalEvaluationFailed as exc:
+            final_evaluation_skip_reason = exc.reason
+            evaluation_raw = exc.raw
+            evaluation = exc.summary
+            evaluation_traces = exc.traces
+            evaluation_metric_keys = exc.metric_keys
+            if evaluation or evaluation_raw:
+                _save_evaluation_artifacts(
+                    base_dir=base.parent,
+                    run_name=Path(out_dir).name,
+                    eval_cfg=eval_cfg,
+                    evaluation_raw=evaluation_raw,
+                    evaluation_summary=evaluation,
+                    evaluation_traces=evaluation_traces,
+                    evaluation_metric_keys=evaluation_metric_keys,
+                )
+            print(f"  [WARN] Final evaluation failed: {exc.reason}")
+        except KeyboardInterrupt:
+            final_evaluation_skip_reason = "manual interrupt during final evaluation"
+            evaluation_raw = evaluation_raw or {}
+            evaluation = evaluation or {}
+            evaluation_traces = evaluation_traces or []
+            evaluation_metric_keys = evaluation_metric_keys or []
+            print("\nValutazione finale interrotta manualmente.")
         except Exception as e:
+            final_evaluation_skip_reason = f"final evaluation error: {type(e).__name__}"
             print(f"  [WARN] Final evaluation failed: {e}")
 
         print(f"\n{'=' * 60}")
@@ -1088,18 +1368,6 @@ def main():
         print(f"  Steps: {ts_done:,} | Best reward: {best_reward:.1f}")
         print(f"  Tempo: {(time.time() - t0) / 60:.1f} min")
         print(f"  Output: {out_dir}")
-
-        algo.stop()
-
-        # Save last training result (full RLlib dict)
-        try:
-            if iteration > 0:
-                result_path = os.path.join(out_dir, "last_result.json")
-                with open(result_path, "w") as f:
-                    json.dump(_sanitize_for_json(result), f, indent=2)
-                print(f"  Last result: {result_path}")
-        except Exception as e:
-            print(f"  [WARN] Could not save last_result.json: {e}")
 
         try:
             results_payload = _build_results_payload(
@@ -1114,6 +1382,7 @@ def main():
                 evaluation_raw=evaluation_raw,
                 cumulative_success_rate=cumulative_success_rate,
                 cumulative_collision_rate=cumulative_collision_rate,
+                final_evaluation_skip_reason=final_evaluation_skip_reason,
             )
             results_path = os.path.join(out_dir, "results.json")
             with open(results_path, "w") as f:

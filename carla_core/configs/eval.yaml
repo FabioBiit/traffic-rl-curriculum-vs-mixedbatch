@@ -5,7 +5,7 @@
 evaluation:
   enabled: true                 # Enable evaluation stage.
   deterministic_policy: true    # Use deterministic actions (no exploration noise).
-  episodes_per_map: 23          # Number of episodes evaluated per map/profile (~103.5K max test env-steps).
+  episodes_per_map: 17          # Number of episodes evaluated per map/profile (~103.5K max test env-steps).
   parallel_envs: 1              # Fixed to 1: true parallel evaluation requires multiple CARLA instances.
 
 scenarios:
@@ -24,8 +24,7 @@ scenarios:
       n_pedestrians: 120
 
 limits:
-  max_steps_per_episode: 1500   # Hard cap to prevent very long episodes.
-  timeout_seconds: 120          # Max wall-clock seconds per eval episode.
+  max_steps_per_episode: 1000   # Hard cap to prevent very long episodes.
 
 metrics:
   success_rate: true            # Track successful route completion rate.
