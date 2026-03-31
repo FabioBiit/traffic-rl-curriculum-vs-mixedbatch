@@ -43,22 +43,22 @@ def _carla_preflight(env_cfg):
     client = carla.Client(sim["host"], sim["port"])
     client.set_timeout(sim["timeout_seconds"])
 
-    target_map = env_cfg["world"]["map"]
     world = client.get_world()
-    current_map = world.get_map().name.split("/")[-1]
-    if current_map != target_map:
-        world = client.load_world(target_map)
+    _ = world.get_map().name
 
-    settings = world.get_settings()
-    settings.synchronous_mode = bool(sim.get("sync_mode", True))
-    settings.fixed_delta_seconds = sim["fixed_delta_seconds"]
-    if env_cfg.get("world", {}).get("no_rendering", False):
-        settings.no_rendering_mode = True
-    world.apply_settings(settings)
+    target_map = env_cfg["world"]["map"]
+    try:
+        available_maps = [m.split("/")[-1] for m in client.get_available_maps()]
+    except Exception:
+        available_maps = []
 
-    tm = client.get_trafficmanager(int(sim.get("traffic_manager_port", 8000)))
-    tm.set_synchronous_mode(True)
-    tm.set_random_device_seed(int(env_cfg.get("traffic", {}).get("seed", 42)))
+    if available_maps and target_map not in available_maps:
+        raise ValueError(
+            f"Target map '{target_map}' not available in CARLA server. "
+            f"Available maps: {sorted(available_maps)}"
+        )
+
+    _ = client.get_trafficmanager(int(sim.get("traffic_manager_port", 8000)))
 
 
 def _maybe_save_artifacts(
