@@ -37,6 +37,11 @@ schedule:
   checkpoint_freq: 50000
   stop_on_nan: true             # Stop training if NaN/Inf is detected in trainer metrics
 
+runtime:
+  fast_exit_after_final_eval_launch: true
+  # Exit the parent process immediately after scheduling the final eval launcher.
+  # This avoids the CARLA/RLlib teardown path that can abort in libcarla after long runs.
+
 model:
   hidden_size: 256              # MLP hidden layer size for actor and critic
   n_hidden_layers: 2            # Number of hidden layers

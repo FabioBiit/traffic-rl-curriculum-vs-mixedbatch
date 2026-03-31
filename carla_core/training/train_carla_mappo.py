@@ -65,6 +65,60 @@ from carla_core.agents.centralized_critic import (
 os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
 logger = logging.getLogger(__name__)
 
+
+def _fast_exit_parent(*, code=0):
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    os._exit(int(code))
+
+
+def _load_psutil():
+    try:
+        import psutil  # type: ignore
+
+        return psutil
+    except Exception:
+        return None
+
+
+def _snapshot_runtime_processes(*, parent_pid=None, exclude_pids=None):
+    pid = int(os.getpid() if parent_pid is None else parent_pid)
+    if pid <= 0:
+        return {}
+
+    psutil = _load_psutil()
+    if psutil is None:
+        return {}
+
+    excluded = {int(p) for p in (exclude_pids or []) if int(p) > 0}
+    try:
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+    except psutil.Error:
+        return {}
+
+    tracked = {}
+    for child in children:
+        try:
+            child_pid = int(child.pid)
+            if child_pid in excluded:
+                continue
+            tracked[child_pid] = float(child.create_time())
+        except (psutil.Error, OSError, ValueError):
+            continue
+    return tracked
+
+
 def _append_episode_json(path, record):
     """Append a JSON line to the episode log file.
     With num_workers=0 (single CARLA instance), no lock is needed.
@@ -863,7 +917,13 @@ def _run_evaluation_scenarios(
             finally:
                 heartbeat_stop.set()
                 heartbeat_thread.join(timeout=1.0)
-                eval_algo.stop()
+                try:
+                    eval_algo.stop()
+                except Exception as stop_exc:
+                    print(
+                        "    [WARN] eval_algo.stop() failed during "
+                        f"{map_name}/{profile_name}: {type(stop_exc).__name__}: {stop_exc}"
+                    )
             scenario_elapsed = time.time() - scenario_t0
             completed_scenario_durations.append(scenario_elapsed)
             total_elapsed = time.time() - eval_t0
@@ -982,6 +1042,7 @@ def _write_final_eval_job(
     parent_pid,
     results_path,
     project_root,
+    tracked_runtime_processes=None,
 ):
     job_path = Path(out_dir) / "final_eval_job.json"
     payload = {
@@ -993,6 +1054,7 @@ def _write_final_eval_job(
         "parent_pid": int(parent_pid),
         "results_path": str(results_path),
         "project_root": str(project_root),
+        "tracked_runtime_processes": tracked_runtime_processes or {},
         "env_cfg": deepcopy(env_cfg),
         "train_cfg": deepcopy(train_cfg),
         "eval_cfg": deepcopy(eval_cfg),
@@ -1170,7 +1232,11 @@ def main():
     opt = train_cfg.get("optimization", {})
     roll = train_cfg.get("rollout", {})
     model_cfg = train_cfg.get("model", {})
+    runtime_cfg = train_cfg.get("runtime", {})
     stop_on_nan = sched.get("stop_on_nan", True)
+    fast_exit_after_final_eval_launch = bool(
+        runtime_cfg.get("fast_exit_after_final_eval_launch", False)
+    )
     eval_section = eval_cfg.get("evaluation", {})
 
     total_ts = args.timesteps or sched.get("total_timesteps", 50_000)
@@ -1244,6 +1310,7 @@ def main():
         "optimization": opt,
         "rollout": roll,
         "model": model_cfg,
+        "runtime": runtime_cfg,
         "env_config": env_cfg,
         "eval_config": eval_cfg,
     }
@@ -1291,6 +1358,8 @@ def main():
     final_checkpoint = None
     training_failed = False
     results_path = os.path.join(out_dir, "results.json")
+    launcher_pid = None
+    results_saved_ok = False
 
     try:
         while ts_done < total_ts:
@@ -1409,6 +1478,9 @@ def main():
                 and final_checkpoint is not None
             ):
                 print("\nPianificazione valutazione finale multi-scenario...")
+                tracked_runtime_processes = _snapshot_runtime_processes(
+                    parent_pid=os.getpid()
+                )
                 job_path = _write_final_eval_job(
                     out_dir=out_dir,
                     checkpoint_path=final_checkpoint,
@@ -1420,6 +1492,7 @@ def main():
                     parent_pid=os.getpid(),
                     results_path=results_path,
                     project_root=base.parent,
+                    tracked_runtime_processes=tracked_runtime_processes,
                 )
                 launcher_status_path = _write_final_eval_launcher_status(
                     out_dir=out_dir,
@@ -1471,9 +1544,19 @@ def main():
                 final_evaluation_skip_reason=final_evaluation_skip_reason,
             )
             _write_json_atomic(results_path, results_payload)
+            results_saved_ok = True
             print(f"  Results schema: {results_path}")
         except Exception as e:
             print(f"  [WARN] Could not save results.json: {e}")
+
+        if (
+            fast_exit_after_final_eval_launch
+            and launcher_pid is not None
+            and results_saved_ok
+            and not training_failed
+        ):
+            print("  Fast-exit parent process to avoid CARLA teardown crash.")
+            _fast_exit_parent(code=0)
 
         try:
             algo.stop()

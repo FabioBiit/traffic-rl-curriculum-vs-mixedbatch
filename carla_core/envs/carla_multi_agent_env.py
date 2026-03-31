@@ -233,6 +233,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._tm = None
         self._original_settings = None
         self._connected = False
+        self._closing = False
+        self._closed = False
         self._traffic_spawned = False
         self._spawn_points = []
         self._npc_vehicles = []
@@ -458,19 +460,42 @@ class CarlaMultiAgentEnv(ParallelEnv):
         return observations, rewards, terminations, truncations, infos
 
     def close(self):
-        self._cleanup_agents()
-        self._cleanup_traffic()
-        if self._tm:
-            try:
-                self._tm.set_synchronous_mode(False)
-            except Exception:
-                pass
-        if self._world and self._original_settings:
-            try:
-                self._world.apply_settings(self._original_settings)
-            except Exception:
-                pass
+        if self._closed or self._closing:
+            return
+
+        self._closing = True
+        tm = self._tm
+        world = self._world
+        original_settings = self._original_settings
+
+        # Drop connection handles first so repeated close/reset calls cannot
+        # reuse stale CARLA objects while cleanup is still in progress.
+        self._tm = None
+        self._world = None
+        self._map = None
+        self._client = None
+        self._original_settings = None
+        self._spawn_points = []
         self._connected = False
+
+        try:
+            self._cleanup_agents()
+            self._cleanup_traffic()
+            if tm:
+                try:
+                    tm.set_synchronous_mode(False)
+                except Exception:
+                    pass
+            if world and original_settings:
+                try:
+                    world.apply_settings(original_settings)
+                except Exception:
+                    pass
+        finally:
+            self._terminated_agent_infos = {}
+            self.agents = []
+            self._closed = True
+            self._closing = False
 
     # ------------------------------------------------------------------
     # Connection
@@ -512,6 +537,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
             self._world.set_weather(getattr(carla.WeatherParameters, weather))
 
         self._connected = True
+        self._closed = False
+        self._closing = False
 
     # ------------------------------------------------------------------
     # Agent setup
@@ -1182,36 +1209,64 @@ class CarlaMultiAgentEnv(ParallelEnv):
         try:
             if actor and actor.is_alive:
                 actor.destroy()
-        except RuntimeError:
-            pass
+            return True
+        except Exception:
+            return False
+        return True
 
     def _cleanup_agents(self):
+        agent_data = list(self._agent_data.values())
+        self._terminated_agent_infos = {}
+        failed_agents = {}
+
         # Stop sensors BEFORE destroying to prevent callback-during-destroy deadlock
-        for ad in self._agent_data.values():
+        for ad in agent_data:
             if ad.collision_sensor:
                 try:
                     ad.collision_sensor.stop()
                 except Exception:
                     pass
-        for ad in self._agent_data.values():
+        for ad in agent_data:
+            sensor_destroyed = True
             if ad.collision_sensor:
-                self._safe_destroy(ad.collision_sensor)
-            self._safe_destroy(ad.actor)
-        self._agent_data.clear()
+                sensor_destroyed = self._safe_destroy(ad.collision_sensor)
+                if sensor_destroyed:
+                    ad.collision_sensor = None
+
+            actor_destroyed = self._safe_destroy(ad.actor)
+            if actor_destroyed:
+                ad.actor = None
+
+            if not (sensor_destroyed and actor_destroyed):
+                failed_agents[ad.agent_id] = ad
+
+        self._agent_data = failed_agents
 
     def _cleanup_traffic(self):
-        for ctrl in self._npc_controllers:
+        controllers = list(self._npc_controllers)
+        walkers = list(self._npc_walkers)
+        vehicles = list(self._npc_vehicles)
+
+        failed_controllers = []
+        failed_walkers = []
+        failed_vehicles = []
+
+        for ctrl in controllers:
             try:
                 if ctrl.is_alive:
                     ctrl.stop()
             except Exception:
                 pass
-            self._safe_destroy(ctrl)
-        self._npc_controllers.clear()
-        for w in self._npc_walkers:
-            self._safe_destroy(w)
-        self._npc_walkers.clear()
-        for v in self._npc_vehicles:
-            self._safe_destroy(v)
-        self._npc_vehicles.clear()
+            if not self._safe_destroy(ctrl):
+                failed_controllers.append(ctrl)
+        for w in walkers:
+            if not self._safe_destroy(w):
+                failed_walkers.append(w)
+        for v in vehicles:
+            if not self._safe_destroy(v):
+                failed_vehicles.append(v)
+
+        self._npc_controllers = failed_controllers
+        self._npc_walkers = failed_walkers
+        self._npc_vehicles = failed_vehicles
         self._traffic_spawned = False

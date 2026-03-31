@@ -9,7 +9,9 @@ from pathlib import Path
 
 
 PARENT_POLL_INTERVAL_S = 1.0
+PARENT_EXIT_TIMEOUT_S = 120.0
 POST_PARENT_COOLDOWN_S = 5.0
+RUNTIME_QUIESCENCE_TIMEOUT_S = 30.0
 
 
 def _write_json_atomic(path, payload):
@@ -66,9 +68,97 @@ def _is_process_alive(pid):
     return True
 
 
+def _load_psutil():
+    try:
+        import psutil  # type: ignore
+
+        return psutil
+    except Exception:
+        return None
+
+
+def _snapshot_descendant_processes(parent_pid):
+    parent_pid = int(parent_pid)
+    if parent_pid <= 0:
+        return {}
+
+    psutil = _load_psutil()
+    if psutil is None:
+        return {}
+
+    try:
+        parent = psutil.Process(parent_pid)
+        children = parent.children(recursive=True)
+    except psutil.Error:
+        return {}
+
+    tracked = {}
+    for child in children:
+        try:
+            tracked[int(child.pid)] = float(child.create_time())
+        except (psutil.Error, OSError, ValueError):
+            continue
+    return tracked
+
+
+def _normalize_tracked_processes(payload):
+    if not isinstance(payload, dict):
+        return {}
+
+    tracked = {}
+    for pid, created_at in payload.items():
+        try:
+            pid_int = int(pid)
+            created_at_float = float(created_at)
+        except (TypeError, ValueError):
+            continue
+        if pid_int > 0:
+            tracked[pid_int] = created_at_float
+    return tracked
+
+
 def _wait_for_parent_exit(parent_pid):
+    tracked_processes = {}
+    deadline = time.time() + PARENT_EXIT_TIMEOUT_S
     while _is_process_alive(parent_pid):
+        tracked_processes.update(_snapshot_descendant_processes(parent_pid))
+        if time.time() >= deadline:
+            return tracked_processes, True
         time.sleep(PARENT_POLL_INTERVAL_S)
+    return tracked_processes, False
+
+
+def _is_tracked_process_alive(pid, created_at=None):
+    pid = int(pid)
+    if pid <= 0:
+        return False
+
+    psutil = _load_psutil()
+    if psutil is not None and created_at is not None:
+        try:
+            proc = psutil.Process(pid)
+            return abs(float(proc.create_time()) - float(created_at)) < 1e-3
+        except psutil.Error:
+            return False
+
+    return _is_process_alive(pid)
+
+
+def _alive_tracked_processes(tracked_processes):
+    alive = {}
+    for pid, created_at in dict(tracked_processes).items():
+        if _is_tracked_process_alive(pid, created_at):
+            alive[int(pid)] = float(created_at)
+    return alive
+
+
+def _wait_for_runtime_quiescence(tracked_processes):
+    deadline = time.time() + RUNTIME_QUIESCENCE_TIMEOUT_S
+    alive = _alive_tracked_processes(tracked_processes)
+    while alive and time.time() < deadline:
+        time.sleep(PARENT_POLL_INTERVAL_S)
+        alive = _alive_tracked_processes(tracked_processes)
+    return alive
 
 
 def _artifacts_ready(job):
@@ -318,7 +408,73 @@ def main():
             )
             return 1
 
-        _wait_for_parent_exit(parent_pid)
+        tracked_runtime_processes = _normalize_tracked_processes(
+            job.get("tracked_runtime_processes", {})
+        )
+        observed_runtime_processes, parent_exit_timed_out = _wait_for_parent_exit(
+            parent_pid
+        )
+        tracked_runtime_processes.update(observed_runtime_processes)
+        if parent_exit_timed_out:
+            reason = (
+                "parent process did not exit before launcher timeout "
+                f"({int(PARENT_EXIT_TIMEOUT_S)}s)"
+            )
+            _safe_update_results_payload(job=job, completed=False, reason=reason)
+            _update_launcher_status(
+                status_path,
+                state="evaluation_skipped",
+                reason=reason,
+                parent_pid=parent_pid,
+                launcher_pid=os.getpid(),
+                evaluation_started=False,
+                evaluation_completed=False,
+                evaluation_exit_code=None,
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                tracked_runtime_pids=sorted(
+                    int(pid) for pid in tracked_runtime_processes
+                ),
+            )
+            return 1
+
+        _update_launcher_status(
+            status_path,
+            state="waiting_for_runtime_quiescence",
+            parent_pid=parent_pid,
+            launcher_pid=os.getpid(),
+            evaluation_started=False,
+            evaluation_completed=False,
+            evaluation_exit_code=None,
+            finished_at=None,
+            tracked_runtime_pids=sorted(int(pid) for pid in tracked_runtime_processes),
+        )
+
+        time.sleep(POST_PARENT_COOLDOWN_S)
+
+        alive_runtime_processes = _wait_for_runtime_quiescence(
+            tracked_runtime_processes
+        )
+        if alive_runtime_processes:
+            alive_runtime_pids = sorted(int(pid) for pid in alive_runtime_processes)
+            reason = (
+                "training runtime still active after parent exit: "
+                + ", ".join(str(pid) for pid in alive_runtime_pids)
+            )
+            _safe_update_results_payload(job=job, completed=False, reason=reason)
+            _update_launcher_status(
+                status_path,
+                state="evaluation_skipped",
+                reason=reason,
+                parent_pid=parent_pid,
+                launcher_pid=os.getpid(),
+                evaluation_started=False,
+                evaluation_completed=False,
+                evaluation_exit_code=None,
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                alive_runtime_pids=alive_runtime_pids,
+            )
+            return 1
+
         _update_launcher_status(
             status_path,
             state="waiting_for_artifacts",
@@ -328,9 +484,9 @@ def main():
             evaluation_completed=False,
             evaluation_exit_code=None,
             finished_at=None,
+            tracked_runtime_pids=sorted(int(pid) for pid in tracked_runtime_processes),
+            alive_runtime_pids=[],
         )
-
-        time.sleep(POST_PARENT_COOLDOWN_S)
 
         eval_status = _load_evaluation_status(out_dir)
         if eval_status.get("completed", False):
