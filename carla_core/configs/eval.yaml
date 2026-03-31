@@ -5,7 +5,7 @@
 evaluation:
   enabled: true                 # Enable evaluation stage.
   deterministic_policy: true    # Use deterministic actions (no exploration noise).
-  episodes_per_map: 17          # Number of episodes evaluated per map/profile (~103.5K max test env-steps).
+  episodes_per_map: 17          # Number of episodes evaluated per map/profile (~102K max test env-steps).
   parallel_envs: 1              # Fixed to 1: true parallel evaluation requires multiple CARLA instances.
 
 scenarios:

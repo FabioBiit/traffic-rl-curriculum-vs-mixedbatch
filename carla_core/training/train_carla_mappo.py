@@ -753,7 +753,7 @@ def _run_evaluation_scenarios(
     )
     print(f"  Eval episodes: {total_episodes}")
     if total_env_steps_budget is not None:
-        print(f"  Eval max env-steps: {total_env_steps_budget:,}")
+        print(f"  Eval max env-steps: {total_env_steps_budget:,}\n")
 
     for map_name in maps:
         map_rows = {}
@@ -767,13 +767,6 @@ def _run_evaluation_scenarios(
                 f"{map_name}/{profile_name} | episodes={episodes_per_map}"
             )
             print(f"{'=' * 43}")
-            initial_progress = completed_scenarios / total_scenarios
-            print(
-                f"    Eval progress {_render_progress_bar(initial_progress)} "
-                f"{initial_progress * 100:5.1f}% estimated "
-                f"({completed_scenarios}/{total_scenarios} scenari completati, "
-                f"{scenario_idx}/{total_scenarios} in corso)"
-            )
             scenario_env_cfg = deepcopy(base_env_cfg)
             scenario_env_cfg.setdefault("world", {})
             scenario_env_cfg["world"]["map"] = map_name
@@ -809,7 +802,7 @@ def _run_evaluation_scenarios(
                     )
                     estimate_label = "estimated" if has_estimate else "estimated, baseline pending"
                     print(
-                        f"    Eval progress {_render_progress_bar(progress)} "
+                        f"Eval progress {_render_progress_bar(progress)} "
                         f"{progress * 100:5.1f}% {estimate_label} "
                         f"({completed_scenarios}/{total_scenarios} scenari completati, "
                         f"{scenario_idx}/{total_scenarios} in corso)"
@@ -819,7 +812,7 @@ def _run_evaluation_scenarios(
                         and current_elapsed_s >= scenario_stall_warning_s
                     ):
                         print(
-                            f"    [WARN] Scenario {map_name}/{profile_name} ancora in corso "
+                            f"[WARN] Scenario {map_name}/{profile_name} ancora in corso "
                             f"dopo {current_elapsed_s / 60:.1f}m senza completamento."
                         )
                         scenario_stall_warned[0] = True
@@ -876,13 +869,14 @@ def _run_evaluation_scenarios(
             eta = (total_elapsed / scenario_idx) * remaining if scenario_idx > 0 else 0.0
             exact_progress = scenario_idx / total_scenarios
             print(
-                f"    Eval progress {_render_progress_bar(exact_progress)} "
+                f"Eval progress {_render_progress_bar(exact_progress)} "
                 f"{exact_progress * 100:5.1f}% exact "
                 f"({scenario_idx}/{total_scenarios} scenari completati)"
             )
             print(
-                f"    done in {scenario_elapsed/60:.1f}m | "
-                f"elapsed {total_elapsed/60:.1f}m | ETA {eta/60:.1f}m"
+                f"Done in {int(scenario_elapsed//3600)}h{int((scenario_elapsed%3600)//60):02d}m | "
+                f"Elapsed {int(total_elapsed//3600)}h{int((total_elapsed%3600)//60):02d}m | "
+                f"ETA {int(eta//3600)}h{int((eta%3600)//60):02d}m"
             )
         raw[map_name] = map_rows
 
@@ -1187,6 +1181,7 @@ def main():
     should_run_final_evaluation = True
     final_evaluation_skip_reason = None
     final_checkpoint = None
+    training_failed = False
 
     try:
         while ts_done < total_ts:
@@ -1262,6 +1257,7 @@ def main():
         print("\nInterrotto.")
     except Exception as e:
         should_run_final_evaluation = False
+        training_failed = True
         final_evaluation_skip_reason = f"training error: {type(e).__name__}"
         print(f"\n[ERROR] Training crash at step {ts_done}: {type(e).__name__}: {e}")
         import traceback
@@ -1275,11 +1271,16 @@ def main():
             f.write(f"Error: {type(e).__name__}: {e}\n\n")
             traceback.print_exc(file=f)
     finally:
-        try:
-            final_checkpoint = algo.save(out_dir)
-            print(f"\nCheckpoint finale: {final_checkpoint}")
-        except Exception as e:
-            print(f"\nCheckpoint fallito: {e}")
+        if algo is not None and not training_failed and iteration > 0:
+            try:
+                final_checkpoint = algo.save(out_dir)
+                print(f"\nCheckpoint finale: {final_checkpoint}")
+            except Exception as e:
+                print(f"\nCheckpoint fallito: {e}")
+        elif training_failed:
+            print("\nCheckpoint finale saltato (training crash).")
+        else:
+            print("\nCheckpoint finale saltato (nessuna iterazione completata).")
 
         # Save last training result (full RLlib dict) before stopping the trainer.
         try:
