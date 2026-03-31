@@ -22,9 +22,11 @@ Uso:
 import json
 import argparse
 import csv
+import gc
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -948,6 +950,116 @@ def _save_evaluation_artifacts(
         )
 
 
+def _resolve_evaluation_output_dir(*, base_dir, eval_cfg):
+    outputs = eval_cfg.get("outputs", {})
+    output_dir = outputs.get("output_dir")
+    if output_dir:
+        out_path = Path(output_dir)
+        if not out_path.is_absolute():
+            out_path = Path(base_dir) / out_path
+    else:
+        out_path = Path(base_dir)
+    return out_path
+
+
+def _resolve_evaluation_json_path(*, base_dir, run_name, eval_cfg):
+    out_path = _resolve_evaluation_output_dir(base_dir=base_dir, eval_cfg=eval_cfg)
+    return out_path / f"{run_name}_evaluation.json"
+
+
+def _write_final_eval_job(
+    *,
+    out_dir,
+    checkpoint_path,
+    env_cfg,
+    train_cfg,
+    eval_cfg,
+    seed_base,
+    n_gpus,
+):
+    job_path = Path(out_dir) / "final_eval_job.json"
+    payload = {
+        "checkpoint_path": str(checkpoint_path),
+        "out_dir": str(out_dir),
+        "run_name": Path(out_dir).name,
+        "seed_base": int(seed_base),
+        "n_gpus": int(n_gpus),
+        "env_cfg": deepcopy(env_cfg),
+        "train_cfg": deepcopy(train_cfg),
+        "eval_cfg": deepcopy(eval_cfg),
+    }
+    with open(job_path, "w", encoding="utf-8") as f:
+        json.dump(_sanitize_for_json(payload), f, indent=2)
+    return str(job_path)
+
+
+def _load_final_eval_status(status_path):
+    path = Path(status_path)
+    if not path.exists():
+        return {
+            "completed": False,
+            "reason": "evaluation status file missing",
+            "exit_code": None,
+            "artifacts_written": False,
+        }
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _resolve_final_eval_failure_reason(*, return_code, status):
+    reason = status.get("reason")
+    exit_code = status.get("exit_code")
+    finished_at = status.get("finished_at")
+    completed = bool(status.get("completed", False))
+
+    if return_code == 0 and completed:
+        return None
+
+    if return_code != 0 and (
+        reason in {None, "", "evaluation subprocess started", "evaluation subprocess running"}
+        or exit_code is None
+        or finished_at in {None, ""}
+    ):
+        return (
+            "evaluation subprocess crashed before writing final status "
+            f"(exit code {return_code})"
+        )
+
+    if return_code == 0 and not completed:
+        return reason or "evaluation subprocess exited without completion status"
+
+    return reason or f"evaluation subprocess failed (exit code {return_code})"
+
+
+def _load_evaluation_payload_from_artifact(*, base_dir, run_name, eval_cfg):
+    eval_json_path = _resolve_evaluation_json_path(
+        base_dir=base_dir,
+        run_name=run_name,
+        eval_cfg=eval_cfg,
+    )
+    if not eval_json_path.exists():
+        return {}, {}, []
+    with open(eval_json_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    return (
+        payload.get("evaluation_raw", {}) or {},
+        payload.get("evaluation", {}) or {},
+        payload.get("evaluation_traces", []) or [],
+    )
+
+
+def _launch_final_eval_subprocess(*, job_path, workdir):
+    cmd = [
+        sys.executable,
+        "-m",
+        "carla_core.training.evaluate_carla_mappo",
+        "--job",
+        str(job_path),
+    ]
+    proc = subprocess.run(cmd, cwd=str(workdir))
+    return proc.returncode
+
+
 def _derive_mode(exp_cfg, name):
     mode = exp_cfg.get("mode")
     if mode in {"batch", "curriculum"}:
@@ -1182,6 +1294,7 @@ def main():
     final_evaluation_skip_reason = None
     final_checkpoint = None
     training_failed = False
+    results_path = os.path.join(out_dir, "results.json")
 
     try:
         while ts_done < total_ts:
@@ -1298,6 +1411,11 @@ def main():
             print(f"  [WARN] algo.stop() failed: {e}")
         finally:
             algo = None
+            gc.collect()
+            try:
+                ray.shutdown()
+            except Exception as e:
+                print(f"  [WARN] ray.shutdown() failed before final evaluation: {e}")
 
         try:
             if (
@@ -1307,70 +1425,53 @@ def main():
                 and final_checkpoint is not None
             ):
                 print("\nValutazione finale multi-scenario in corso...")
-                evaluation_raw, evaluation, evaluation_traces, evaluation_metric_keys = _run_evaluation_scenarios(
+                job_path = _write_final_eval_job(
+                    out_dir=out_dir,
                     checkpoint_path=final_checkpoint,
-                    base_env_cfg=env_cfg,
+                    env_cfg=env_cfg,
                     train_cfg=train_cfg,
                     eval_cfg=eval_cfg,
                     seed_base=exp_seed,
                     n_gpus=n_gpus,
                 )
-                if evaluation or evaluation_raw:
-                    _save_evaluation_artifacts(
-                        base_dir=base.parent,
-                        run_name=Path(out_dir).name,
-                        eval_cfg=eval_cfg,
-                        evaluation_raw=evaluation_raw,
-                        evaluation_summary=evaluation,
-                        evaluation_traces=evaluation_traces,
-                        evaluation_metric_keys=evaluation_metric_keys,
+                print("  Closing training runtime before isolated evaluation...")
+                time.sleep(5.0)
+                return_code = _launch_final_eval_subprocess(
+                    job_path=job_path,
+                    workdir=base.parent,
+                )
+                status = _load_final_eval_status(Path(out_dir) / "evaluation_status.json")
+                if return_code == 0 and status.get("completed", False):
+                    evaluation_raw, evaluation, evaluation_traces = (
+                        _load_evaluation_payload_from_artifact(
+                            base_dir=base.parent,
+                            run_name=Path(out_dir).name,
+                            eval_cfg=eval_cfg,
+                        )
+                    )
+                    evaluation_metric_keys = status.get("evaluation_metric_keys", []) or []
+                else:
+                    final_evaluation_skip_reason = _resolve_final_eval_failure_reason(
+                        return_code=return_code,
+                        status=status,
+                    )
+                    evaluation_metric_keys = status.get("evaluation_metric_keys", []) or []
+                    evaluation_raw, evaluation, evaluation_traces = (
+                        _load_evaluation_payload_from_artifact(
+                            base_dir=base.parent,
+                            run_name=Path(out_dir).name,
+                            eval_cfg=eval_cfg,
+                        )
+                    )
+                    print(
+                        "  [WARN] Final evaluation subprocess failed: "
+                        f"{final_evaluation_skip_reason}"
                     )
             else:
                 reason = final_evaluation_skip_reason or (
                     "disabled, no completed iterations, or missing final checkpoint"
                 )
                 print(f"\nValutazione finale multi-scenario saltata ({reason}).")
-        except FinalEvaluationInterrupted as exc:
-            final_evaluation_skip_reason = exc.reason
-            evaluation_raw = exc.raw
-            evaluation = exc.summary
-            evaluation_traces = exc.traces
-            evaluation_metric_keys = exc.metric_keys
-            if evaluation or evaluation_raw:
-                _save_evaluation_artifacts(
-                    base_dir=base.parent,
-                    run_name=Path(out_dir).name,
-                    eval_cfg=eval_cfg,
-                    evaluation_raw=evaluation_raw,
-                    evaluation_summary=evaluation,
-                    evaluation_traces=evaluation_traces,
-                    evaluation_metric_keys=evaluation_metric_keys,
-                )
-            print("\nValutazione finale interrotta manualmente.")
-        except FinalEvaluationFailed as exc:
-            final_evaluation_skip_reason = exc.reason
-            evaluation_raw = exc.raw
-            evaluation = exc.summary
-            evaluation_traces = exc.traces
-            evaluation_metric_keys = exc.metric_keys
-            if evaluation or evaluation_raw:
-                _save_evaluation_artifacts(
-                    base_dir=base.parent,
-                    run_name=Path(out_dir).name,
-                    eval_cfg=eval_cfg,
-                    evaluation_raw=evaluation_raw,
-                    evaluation_summary=evaluation,
-                    evaluation_traces=evaluation_traces,
-                    evaluation_metric_keys=evaluation_metric_keys,
-                )
-            print(f"  [WARN] Final evaluation failed: {exc.reason}")
-        except KeyboardInterrupt:
-            final_evaluation_skip_reason = "manual interrupt during final evaluation"
-            evaluation_raw = evaluation_raw or {}
-            evaluation = evaluation or {}
-            evaluation_traces = evaluation_traces or []
-            evaluation_metric_keys = evaluation_metric_keys or []
-            print("\nValutazione finale interrotta manualmente.")
         except Exception as e:
             final_evaluation_skip_reason = f"final evaluation error: {type(e).__name__}"
             print(f"  [WARN] Final evaluation failed: {e}")
@@ -1397,7 +1498,6 @@ def main():
                 cumulative_collision_rate=cumulative_collision_rate,
                 final_evaluation_skip_reason=final_evaluation_skip_reason,
             )
-            results_path = os.path.join(out_dir, "results.json")
             with open(results_path, "w") as f:
                 json.dump(_sanitize_for_json(results_payload), f, indent=2)
             print(f"  Results schema: {results_path}")
