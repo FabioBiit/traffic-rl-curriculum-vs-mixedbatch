@@ -44,6 +44,8 @@ carla_core/experiments/**/PPO_*/
 carla_core/experiments/**/events.out.tfevents.*
 carla_core/experiments/**/final_model.zip
 
+results/
+
 # CARLA
 *.log
 *.whl
