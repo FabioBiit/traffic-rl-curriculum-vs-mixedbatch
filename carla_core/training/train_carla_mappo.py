@@ -1,5 +1,5 @@
 """
-Train MAPPO on CarlaMultiAgentEnv — Multi-Agent via RLlib (v0.1)
+Train MAPPO on CarlaMultiAgentEnv - Multi-Agent via RLlib (v0.1)
 ================================================================
 MAPPO = PPO + centralized critic (CTDE paradigm).
 
@@ -9,7 +9,7 @@ Architecture:
   - global_obs = fixed-slot concat [v0_25D|v1|v2|p0_19D|p1|p2|alive_mask_6D] = 138D
   
 Components:
-  - CarlaMultiAgentEnv (PettingZoo ParallelEnv) → ParallelPettingZooEnv
+  - CarlaMultiAgentEnv (PettingZoo ParallelEnv) -> ParallelPettingZooEnv
   - CentralizedCriticModel (custom TorchModelV2)
   - CentralizedCriticCallbacks (injects global_obs, recomputes GAE)
 
@@ -21,14 +21,12 @@ Uso:
 
 import json
 import argparse
-import csv
 import gc
 import logging
 import os
 import signal
 import subprocess
 import sys
-import threading
 import time
 from collections import deque
 from copy import deepcopy
@@ -66,57 +64,26 @@ os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
 logger = logging.getLogger(__name__)
 
 
-def _fast_exit_parent(*, code=0):
+def _shutdown_carla_server():
+    if sys.platform != "win32":
+        return False, "CARLA shutdown skipped (non-Windows platform)."
+
     try:
-        sys.stdout.flush()
-    except Exception:
-        pass
-    try:
-        sys.stderr.flush()
-    except Exception:
-        pass
-    try:
-        logging.shutdown()
-    except Exception:
-        pass
-    os._exit(int(code))
+        proc = subprocess.run(
+            ["taskkill", "/F", "/IM", "CarlaUE4-Win64-Shipping.exe"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        return False, f"CARLA shutdown command failed: {type(exc).__name__}: {exc}"
 
-
-def _load_psutil():
-    try:
-        import psutil  # type: ignore
-
-        return psutil
-    except Exception:
-        return None
-
-
-def _snapshot_runtime_processes(*, parent_pid=None, exclude_pids=None):
-    pid = int(os.getpid() if parent_pid is None else parent_pid)
-    if pid <= 0:
-        return {}
-
-    psutil = _load_psutil()
-    if psutil is None:
-        return {}
-
-    excluded = {int(p) for p in (exclude_pids or []) if int(p) > 0}
-    try:
-        parent = psutil.Process(pid)
-        children = parent.children(recursive=True)
-    except psutil.Error:
-        return {}
-
-    tracked = {}
-    for child in children:
-        try:
-            child_pid = int(child.pid)
-            if child_pid in excluded:
-                continue
-            tracked[child_pid] = float(child.create_time())
-        except (psutil.Error, OSError, ValueError):
-            continue
-    return tracked
+    output = " ".join(
+        part.strip() for part in [proc.stdout or "", proc.stderr or ""] if part and part.strip()
+    ).strip()
+    if proc.returncode == 0:
+        return True, output or "CARLA server terminated."
+    return False, output or f"taskkill exited with code {proc.returncode}"
 
 
 def _resolve_project_path(path_value, *, project_root):
@@ -234,33 +201,6 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
             )
 
 
-class FinalEvaluationInterrupted(KeyboardInterrupt):
-    """KeyboardInterrupt carrying partial final-evaluation artifacts."""
-
-    def __init__(self, *, raw, summary, traces, metric_keys, reason):
-        super().__init__(reason)
-        self.raw = raw
-        self.summary = summary
-        self.traces = traces
-        self.metric_keys = metric_keys
-        self.reason = reason
-
-
-class FinalEvaluationFailed(RuntimeError):
-    """Exception carrying partial final-evaluation artifacts on runtime failure."""
-
-    def __init__(self, *, raw, summary, traces, metric_keys, reason):
-        super().__init__(reason)
-        self.raw = raw
-        self.summary = summary
-        self.traces = traces
-        self.metric_keys = metric_keys
-        self.reason = reason
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def load_yaml(path):
     p = Path(path)
     return yaml.safe_load(open(p)) if p.exists() else {}
@@ -273,7 +213,7 @@ def rllib_env_creator(env_config):
 
 
 def policy_mapping_fn(agent_id, episode=None, worker=None, **kwargs):
-    """vehicle_* → vehicle_policy, pedestrian_* → pedestrian_policy."""
+    """vehicle_* -> vehicle_policy, pedestrian_* -> pedestrian_policy."""
     if agent_id.startswith("vehicle"):
         return "vehicle_policy"
     elif agent_id.startswith("pedestrian"):
@@ -469,124 +409,6 @@ def _build_evaluation_payload(result):
         }
     }
 
-
-def _profile_name_to_level(profile_name):
-    name = str(profile_name).strip().lower()
-    if name in {"low", "easy"}:
-        return "easy"
-    if name == "medium":
-        return "medium"
-    if name in {"high", "hard"}:
-        return "hard"
-    return None
-
-
-def _mean_metric_dicts(rows, keys):
-    if not rows:
-        return {}
-    merged = {}
-    for key in keys:
-        vals = [row[key] for row in rows if row.get(key) is not None]
-        merged[key] = float(np.mean(vals)) if vals else None
-    return merged
-
-
-def _build_evaluation_summary(raw, train_map):
-    summary = {}
-    if train_map in raw:
-        for profile_name, metrics in raw[train_map].items():
-            level = _profile_name_to_level(profile_name)
-            if level and level not in summary:
-                summary[level] = {
-                    "success_rate": metrics.get("success_rate"),
-                    "collision_rate": metrics.get("collision_rate"),
-                }
-
-    test_rows = []
-    for map_name, profiles in raw.items():
-        if train_map is not None and map_name == train_map:
-            continue
-        test_rows.extend(profiles.values())
-    if not test_rows:
-        for profiles in raw.values():
-            test_rows.extend(profiles.values())
-    if test_rows:
-        test_metrics = _mean_metric_dicts(test_rows, ["success_rate", "collision_rate"])
-        summary["test"] = {
-            "success_rate": test_metrics.get("success_rate"),
-            "collision_rate": test_metrics.get("collision_rate"),
-        }
-    return summary
-
-
-def _render_progress_bar(progress, width=24):
-    progress = max(0.0, min(float(progress), 1.0))
-    filled = int(progress * width)
-    return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
-
-
-def _aggregate_eval_metric_rows(rows, keys):
-    if not rows:
-        return {key: None for key in keys}
-
-    sum_keys = {"wall_clock_seconds", "infraction_count"}
-    any_true_keys = {"wall_clock_timeout"}
-    merged = {}
-    for key in keys:
-        vals = [row.get(key) for row in rows if row.get(key) is not None]
-        if not vals:
-            merged[key] = None
-        elif key in sum_keys:
-            merged[key] = float(np.sum(vals))
-        elif key in any_true_keys:
-            merged[key] = any(bool(v) for v in vals)
-        else:
-            merged[key] = float(np.mean(vals))
-    return merged
-
-
-def _offset_eval_episode_traces(traces, *, start_episode_index):
-    offset = int(start_episode_index)
-    rows = []
-    for row in traces:
-        updated = dict(row)
-        updated["episode_index"] = offset + int(updated.get("episode_index", 0) or 0)
-        rows.append(updated)
-    return rows
-
-
-def _resolve_eval_metric_keys(eval_cfg):
-    metric_cfg = eval_cfg.get("metrics", {}) or {}
-    metric_aliases = [
-        ("success_rate", "success_rate", True),
-        ("collision_rate", "collision_rate", True),
-        ("route_completion", "route_completion", True),
-        ("avg_episode_length", "episode_length_mean", True),
-        ("avg_reward", "reward_mean", True),
-        ("timeout_rate", "timeout_rate", True),
-        ("path_efficiency", "path_efficiency", True),
-        ("infraction_count", "infraction_count", False),
-    ]
-
-    selected = []
-    unsupported = []
-    for cfg_key, metric_key, supported in metric_aliases:
-        enabled = bool(metric_cfg.get(cfg_key, cfg_key == "path_efficiency"))
-        if not enabled:
-            continue
-        if supported:
-            selected.append(metric_key)
-        else:
-            unsupported.append(metric_key)
-
-    # Keep compatibility metrics even if they are toggled off in config.
-    for metric_key in ("success_rate", "collision_rate"):
-        if metric_key not in selected:
-            selected.append(metric_key)
-
-    return selected, unsupported
-
-
 def _build_mappo_config(
     *,
     env_cfg,
@@ -655,15 +477,13 @@ def _build_mappo_config(
                     None,
                     veh_obs,
                     veh_act,
-                    {"model": {"custom_model": "cc_model",
-                               "custom_model_config": cc_config}},
+                    {"model": {"custom_model": "cc_model", "custom_model_config": cc_config}},
                 ),
                 "pedestrian_policy": (
                     None,
                     ped_obs,
                     ped_act,
-                    {"model": {"custom_model": "cc_model",
-                               "custom_model_config": cc_config}},
+                    {"model": {"custom_model": "cc_model", "custom_model_config": cc_config}},
                 ),
             },
             policy_mapping_fn=policy_mapping_fn,
@@ -703,576 +523,6 @@ def _build_mappo_config(
     )
 
 
-def _extract_eval_metrics_from_result(eval_result, metric_keys):
-    """Extract aggregated metrics from a single RLlib evaluate() result."""
-    def _metric(*names):
-        containers = [
-            eval_result.get("custom_metrics", {}),
-            _get_nested(eval_result, "sampler_results", "custom_metrics") or {},
-        ]
-        for name in names:
-            for container in containers:
-                if name in container:
-                    return _coerce_float(container[name])
-        return None
-
-    evaluation_time_ms = _coerce_float(eval_result.get("evaluation_time_ms"))
-    wall_clock_seconds = (
-        evaluation_time_ms / 1000.0
-        if evaluation_time_ms is not None
-        else _coerce_float(eval_result.get("time_this_iter_s"))
-    )
-
-    rows = {
-        "success_rate": _metric("success_rate_mean", "success_rate"),
-        "collision_rate": _metric("collision_rate_mean", "collision_rate"),
-        "timeout_rate": _metric("timeout_rate_mean", "timeout_rate"),
-        "route_completion": _metric("route_completion_mean", "route_completion"),
-        "path_efficiency": _metric("path_efficiency_mean", "path_efficiency"),
-        "reward_mean": _coerce_float(
-            eval_result.get("episode_reward_mean"),
-            _coerce_float(_get_nested(eval_result, "sampler_results", "episode_reward_mean")),
-        ),
-        "episode_length_mean": _coerce_float(
-            eval_result.get("episode_len_mean"),
-            _coerce_float(_get_nested(eval_result, "sampler_results", "episode_len_mean")),
-        ),
-        "infraction_count": None,
-        "wall_clock_timeout": None,
-        "wall_clock_seconds": wall_clock_seconds,
-    }
-    return {key: rows.get(key) for key in metric_keys}
-
-
-def _extract_eval_episode_traces(eval_result, map_name, profile_name):
-    """Build per-episode trace rows from RLlib hist_stats when available."""
-    hist_stats = (
-        _get_nested(eval_result, "sampler_results", "hist_stats")
-        or eval_result.get("hist_stats")
-        or {}
-    )
-    rewards = hist_stats.get("episode_reward", []) or []
-    lengths = hist_stats.get("episode_lengths", []) or []
-    n_rows = max(len(rewards), len(lengths))
-    traces = []
-    for idx in range(n_rows):
-        traces.append({
-            "map": map_name,
-            "profile": profile_name,
-            "episode_index": idx,
-            "episode_reward": _coerce_float(rewards[idx]) if idx < len(rewards) else None,
-            "episode_length": _coerce_float(lengths[idx]) if idx < len(lengths) else None,
-        })
-    return traces
-
-
-def _save_evaluation_plots(out_path, run_name, evaluation_raw, metric_keys):
-    flat_rows = []
-    for map_name, profiles in evaluation_raw.items():
-        for profile_name, metrics in profiles.items():
-            flat_rows.append((f"{map_name}/{profile_name}", metrics))
-
-    if not flat_rows or not metric_keys:
-        return
-
-    available_keys = []
-    for key in metric_keys:
-        if any(row.get(key) is not None for _, row in flat_rows):
-            available_keys.append(key)
-
-    if not available_keys:
-        return
-
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except Exception as exc:
-        logger.warning("Evaluation plots skipped: matplotlib unavailable (%s)", exc)
-        return
-
-    labels = [label for label, _ in flat_rows]
-    cols = 2 if len(available_keys) > 1 else 1
-    rows = (len(available_keys) + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols, figsize=(7 * cols, 3.8 * rows))
-    axes = np.atleast_1d(axes).ravel()
-
-    for ax, key in zip(axes, available_keys):
-        values = [metrics.get(key) for _, metrics in flat_rows]
-        plot_values = [np.nan if value is None else value for value in values]
-        x = np.arange(len(labels))
-        ax.bar(x, plot_values, color="#1f77b4")
-        ax.set_title(key.replace("_", " ").title())
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=45, ha="right")
-        finite_vals = [v for v in values if v is not None and np.isfinite(v)]
-        if finite_vals and all(0.0 <= v <= 1.0 for v in finite_vals):
-            ax.set_ylim(0.0, 1.0)
-        ax.grid(True, axis="y", alpha=0.3, linestyle="--")
-
-    for ax in axes[len(available_keys):]:
-        ax.remove()
-
-    fig.tight_layout()
-    plot_path = out_path / f"{run_name}_evaluation_plots.png"
-    fig.savefig(plot_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _run_evaluation_scenarios(
-    *,
-    checkpoint_path,
-    base_env_cfg,
-    train_cfg,
-    eval_cfg,
-    seed_base,
-    n_gpus,
-    status_callback=None,
-    scenario_setup_callback=None,
-):
-    def _publish_status(**fields):
-        if status_callback is None:
-            return
-        try:
-            status_callback(**fields)
-        except Exception:
-            pass
-
-    eval_section = eval_cfg.get("evaluation", {})
-    if not eval_section.get("enabled", True):
-        return {}, {}, [], []
-
-    scenario_cfg = eval_cfg.get("scenarios", {})
-    maps = scenario_cfg.get("maps", [])
-    traffic_profiles = scenario_cfg.get("traffic_profiles", [])
-    limits = eval_cfg.get("limits", {})
-
-    if not maps or not traffic_profiles:
-        return {}, {}, [], []
-
-    parallel_envs = int(eval_section.get("parallel_envs", 1))
-    if parallel_envs != 1:
-        raise ValueError(
-            "eval.parallel_envs=%s is not supported in CARLA multi-agent evaluation "
-            "with a single simulator instance. Use parallel_envs=1."
-            % parallel_envs
-        )
-    metric_keys, unsupported_metric_keys = _resolve_eval_metric_keys(eval_cfg)
-    if unsupported_metric_keys:
-        logger.warning(
-            "Evaluation metrics requested but not available in current pipeline: %s",
-            ", ".join(sorted(unsupported_metric_keys)),
-        )
-
-    raw = {}
-    traces = []
-    train_map = base_env_cfg.get("world", {}).get("map")
-    aggregate_keys = list(dict.fromkeys(metric_keys + unsupported_metric_keys))
-    save_traces = bool(eval_cfg.get("outputs", {}).get("save_per_episode_trace", False))
-    episodes_per_map = int(eval_section.get("episodes_per_map", 1))
-    max_steps_per_episode = int(limits.get("max_steps_per_episode", 0)) if "max_steps_per_episode" in limits else None
-    total_scenarios = len(maps) * len(traffic_profiles)
-    total_episodes = total_scenarios * episodes_per_map
-    total_env_steps_budget = (
-        total_episodes * max_steps_per_episode
-        if max_steps_per_episode is not None
-        else None
-    )
-    scenario_idx = 0
-    completed_episodes_total = 0
-    eval_t0 = time.time()
-    episode_stall_warning_s = 600.0
-    try:
-        heartbeat_interval_s = max(
-            5.0,
-            float(((eval_cfg.get("runtime") or {}).get("heartbeat_interval_seconds", 30.0))),
-        )
-    except (TypeError, ValueError):
-        heartbeat_interval_s = 30.0
-
-    print()
-    print(f"{'=' * 19}EVAL{'=' * 20}")
-    print(
-        f"  Eval scenarios: {total_scenarios} "
-        f"({len(maps)} maps x {len(traffic_profiles)} profiles)"
-    )
-    print(f"  Eval episodes: {total_episodes}")
-    if total_env_steps_budget is not None:
-        print(f"  Eval max env-steps: {total_env_steps_budget:,}\n")
-
-    _publish_status(
-        reason="evaluation subprocess running",
-        progress=0.0,
-        completed_scenarios=0,
-        total_scenarios=total_scenarios,
-        total_episodes=total_episodes,
-        current_phase="starting",
-        current_scenario_idx=0,
-        current_map=None,
-        current_profile=None,
-        progress_mode="exact",
-    )
-
-    for map_name in maps:
-        map_rows = {}
-        for profile in traffic_profiles:
-            scenario_idx += 1
-            profile_name = profile.get("name", "unnamed")
-            scenario_t0 = time.time()
-            completed_scenarios = scenario_idx - 1
-            scenario_episode_rows = []
-            _publish_status(
-                reason="evaluation subprocess running",
-                progress=(
-                    completed_episodes_total / total_episodes
-                    if total_episodes
-                    else 0.0
-                ),
-                completed_scenarios=completed_scenarios,
-                total_scenarios=total_scenarios,
-                total_episodes=total_episodes,
-                current_phase="scenario_pending",
-                current_scenario_idx=scenario_idx,
-                current_map=map_name,
-                current_profile=profile_name,
-                progress_mode="exact",
-            )
-            print(
-                f"  [Eval {scenario_idx}/{total_scenarios}] "
-                f"{map_name}/{profile_name} | episodes={episodes_per_map}"
-            )
-            print(f"{'=' * 43}")
-            for episode_idx in range(episodes_per_map):
-                scenario_env_cfg = deepcopy(base_env_cfg)
-                scenario_env_cfg.setdefault("world", {})
-                scenario_env_cfg["world"]["map"] = map_name
-                scenario_env_cfg.setdefault("traffic", {})
-                scenario_env_cfg["traffic"]["n_vehicles_npc"] = int(profile.get("n_vehicles", 0))
-                scenario_env_cfg["traffic"]["n_pedestrians_npc"] = int(profile.get("n_pedestrians", 0))
-                scenario_env_cfg.setdefault("episode", {})
-                if "max_steps_per_episode" in limits:
-                    scenario_env_cfg["episode"]["max_steps"] = int(limits["max_steps_per_episode"])
-                scenario_env_cfg.setdefault("traffic", {})
-                scenario_env_cfg["traffic"]["seed"] = int(seed_base)
-
-                current_episode_number = episode_idx + 1
-                exact_progress = (
-                    completed_episodes_total / total_episodes if total_episodes else 0.0
-                )
-                if scenario_setup_callback is not None:
-                    _publish_status(
-                        reason="evaluation subprocess running",
-                        progress=exact_progress,
-                        completed_scenarios=completed_scenarios,
-                        total_scenarios=total_scenarios,
-                        total_episodes=total_episodes,
-                        completed_episodes=completed_episodes_total,
-                        episodes_per_scenario=episodes_per_map,
-                        current_episode_idx=current_episode_number,
-                        current_phase="episode_setup",
-                        current_scenario_idx=scenario_idx,
-                        current_map=map_name,
-                        current_profile=profile_name,
-                        progress_mode="exact",
-                    )
-                    try:
-                        scenario_setup_callback(
-                            map_name=map_name,
-                            profile_name=profile_name,
-                            scenario_idx=scenario_idx,
-                            total_scenarios=total_scenarios,
-                            env_cfg=deepcopy(scenario_env_cfg),
-                            episode_idx=current_episode_number,
-                            episodes_per_scenario=episodes_per_map,
-                            completed_episodes=completed_episodes_total,
-                            total_episodes=total_episodes,
-                        )
-                    except Exception as exc:
-                        if scenario_episode_rows:
-                            map_rows[profile_name] = _aggregate_eval_metric_rows(
-                                scenario_episode_rows, aggregate_keys
-                            )
-                        raw[map_name] = map_rows
-                        raise FinalEvaluationFailed(
-                            raw=deepcopy(raw),
-                            summary=_build_evaluation_summary(raw, train_map),
-                            traces=list(traces),
-                            metric_keys=list(aggregate_keys),
-                            reason=(
-                                "final evaluation episode setup error: "
-                                f"{type(exc).__name__} ({map_name}/{profile_name}, "
-                                f"episode {current_episode_number}/{episodes_per_map})"
-                            ),
-                        ) from exc
-
-                single_episode_eval_cfg = deepcopy(eval_cfg)
-                single_episode_eval_cfg.setdefault("evaluation", {})
-                single_episode_eval_cfg["evaluation"]["episodes_per_map"] = 1
-                eval_config = _build_mappo_config(
-                    env_cfg=scenario_env_cfg,
-                    train_cfg=train_cfg,
-                    eval_cfg=single_episode_eval_cfg,
-                    n_gpus=n_gpus,
-                    n_workers=0,
-                    exp_seed=seed_base,
-                    enable_periodic_evaluation=False,
-                )
-                eval_algo = None
-                heartbeat_stop = threading.Event()
-                episode_t0 = time.time()
-                episode_stall_warned = [False]
-
-                def _heartbeat():
-                    while not heartbeat_stop.wait(heartbeat_interval_s):
-                        progress = (
-                            completed_episodes_total / total_episodes
-                            if total_episodes
-                            else 0.0
-                        )
-                        print(
-                            f"Eval progress {_render_progress_bar(progress)} "
-                            f"{progress * 100:5.1f}% exact "
-                            f"({completed_episodes_total}/{total_episodes} episodi completati, "
-                            f"scenario {scenario_idx}/{total_scenarios}, "
-                            f"episodio {current_episode_number}/{episodes_per_map})"
-                        )
-                        _publish_status(
-                            reason="evaluation subprocess running",
-                            progress=progress,
-                            completed_scenarios=completed_scenarios,
-                            total_scenarios=total_scenarios,
-                            total_episodes=total_episodes,
-                            completed_episodes=completed_episodes_total,
-                            episodes_per_scenario=episodes_per_map,
-                            current_episode_idx=current_episode_number,
-                            current_phase="episode_running",
-                            current_scenario_idx=scenario_idx,
-                            current_map=map_name,
-                            current_profile=profile_name,
-                            progress_mode="exact",
-                        )
-                        current_elapsed_s = time.time() - episode_t0
-                        if (
-                            not episode_stall_warned[0]
-                            and current_elapsed_s >= episode_stall_warning_s
-                        ):
-                            print(
-                                f"[WARN] Episodio {current_episode_number}/{episodes_per_map} "
-                                f"di {map_name}/{profile_name} ancora in corso dopo "
-                                f"{current_elapsed_s / 60:.1f}m."
-                            )
-                            episode_stall_warned[0] = True
-
-                heartbeat_thread = threading.Thread(
-                    target=_heartbeat,
-                    name=f"eval-heartbeat-{scenario_idx}-{current_episode_number}",
-                    daemon=True,
-                )
-                heartbeat_thread.start()
-                try:
-                    eval_algo = eval_config.build()
-                    eval_algo.restore(checkpoint_path)
-                    eval_result = eval_algo.evaluate()
-                    episode_metrics = _extract_eval_metrics_from_result(
-                        eval_result, aggregate_keys
-                    )
-                    scenario_episode_rows.append(episode_metrics)
-                    if save_traces:
-                        traces.extend(
-                            _offset_eval_episode_traces(
-                                _extract_eval_episode_traces(
-                                    eval_result,
-                                    map_name=map_name,
-                                    profile_name=profile_name,
-                                ),
-                                start_episode_index=episode_idx,
-                            )
-                        )
-                except KeyboardInterrupt:
-                    if scenario_episode_rows:
-                        map_rows[profile_name] = _aggregate_eval_metric_rows(
-                            scenario_episode_rows, aggregate_keys
-                        )
-                    raw[map_name] = map_rows
-                    print(
-                        f"    interrotto dall'utente durante {map_name}/{profile_name} "
-                        f"episodio {current_episode_number}/{episodes_per_map}"
-                    )
-                    raise FinalEvaluationInterrupted(
-                        raw=deepcopy(raw),
-                        summary=_build_evaluation_summary(raw, train_map),
-                        traces=list(traces),
-                        metric_keys=list(aggregate_keys),
-                        reason=(
-                            "manual interrupt during final evaluation "
-                            f"({map_name}/{profile_name}, "
-                            f"episode {current_episode_number}/{episodes_per_map})"
-                        ),
-                    ) from None
-                except Exception as exc:
-                    if scenario_episode_rows:
-                        map_rows[profile_name] = _aggregate_eval_metric_rows(
-                            scenario_episode_rows, aggregate_keys
-                        )
-                    raw[map_name] = map_rows
-                    raise FinalEvaluationFailed(
-                        raw=deepcopy(raw),
-                        summary=_build_evaluation_summary(raw, train_map),
-                        traces=list(traces),
-                        metric_keys=list(aggregate_keys),
-                        reason=(
-                            "final evaluation error: "
-                            f"{type(exc).__name__} ({map_name}/{profile_name}, "
-                            f"episode {current_episode_number}/{episodes_per_map})"
-                        ),
-                    ) from exc
-                finally:
-                    heartbeat_stop.set()
-                    heartbeat_thread.join(timeout=1.0)
-                    if eval_algo is not None:
-                        try:
-                            eval_algo.stop()
-                        except Exception as stop_exc:
-                            print(
-                                "    [WARN] eval_algo.stop() failed during "
-                                f"{map_name}/{profile_name} episodio "
-                                f"{current_episode_number}/{episodes_per_map}: "
-                                f"{type(stop_exc).__name__}: {stop_exc}"
-                            )
-                        finally:
-                            del eval_algo
-                            gc.collect()
-
-                completed_episodes_total += 1
-                exact_progress = (
-                    completed_episodes_total / total_episodes if total_episodes else 0.0
-                )
-                _publish_status(
-                    reason="evaluation subprocess running",
-                    progress=exact_progress,
-                    completed_scenarios=completed_scenarios,
-                    total_scenarios=total_scenarios,
-                    total_episodes=total_episodes,
-                    completed_episodes=completed_episodes_total,
-                    episodes_per_scenario=episodes_per_map,
-                    current_episode_idx=current_episode_number,
-                    current_phase="episode_completed",
-                    current_scenario_idx=scenario_idx,
-                    current_map=map_name,
-                    current_profile=profile_name,
-                    progress_mode="exact",
-                )
-                print(
-                    f"    episodio {current_episode_number}/{episodes_per_map} "
-                    f"completato | progress {_render_progress_bar(exact_progress)} "
-                    f"{exact_progress * 100:5.1f}%"
-                )
-
-            map_rows[profile_name] = _aggregate_eval_metric_rows(
-                scenario_episode_rows, aggregate_keys
-            )
-            scenario_elapsed = time.time() - scenario_t0
-            total_elapsed = time.time() - eval_t0
-            remaining = total_scenarios - scenario_idx
-            eta = (total_elapsed / scenario_idx) * remaining if scenario_idx > 0 else 0.0
-            exact_progress = (
-                completed_episodes_total / total_episodes if total_episodes else 0.0
-            )
-            _publish_status(
-                reason="evaluation subprocess running",
-                progress=exact_progress,
-                completed_scenarios=scenario_idx,
-                total_scenarios=total_scenarios,
-                total_episodes=total_episodes,
-                completed_episodes=completed_episodes_total,
-                episodes_per_scenario=episodes_per_map,
-                current_episode_idx=episodes_per_map,
-                current_phase="scenario_completed",
-                current_scenario_idx=scenario_idx,
-                current_map=map_name,
-                current_profile=profile_name,
-                progress_mode="exact",
-            )
-            print(
-                f"Eval progress {_render_progress_bar(exact_progress)} "
-                f"{exact_progress * 100:5.1f}% exact "
-                f"({completed_episodes_total}/{total_episodes} episodi, "
-                f"{scenario_idx}/{total_scenarios} scenari completati)"
-            )
-            print(
-                f"Done in {int(scenario_elapsed//3600)}h{int((scenario_elapsed%3600)//60):02d}m | "
-                f"Elapsed {int(total_elapsed//3600)}h{int((total_elapsed%3600)//60):02d}m | "
-                f"ETA {int(eta//3600)}h{int((eta%3600)//60):02d}m"
-            )
-        raw[map_name] = map_rows
-
-    summary = _build_evaluation_summary(raw, train_map)
-    return raw, summary, traces, aggregate_keys
-
-
-def _save_evaluation_artifacts(
-    base_dir,
-    run_name,
-    eval_cfg,
-    evaluation_raw,
-    evaluation_summary,
-    evaluation_traces=None,
-    evaluation_metric_keys=None,
-):
-    outputs = eval_cfg.get("outputs", {})
-    if not outputs:
-        return
-
-    output_dir = outputs.get("output_dir")
-    if output_dir:
-        out_path = Path(output_dir)
-        if not out_path.is_absolute():
-            out_path = Path(base_dir) / out_path
-    else:
-        out_path = Path(base_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-
-    payload = {
-        "evaluation": evaluation_summary,
-        "evaluation_raw": evaluation_raw,
-    }
-    if outputs.get("save_per_episode_trace", False):
-        payload["evaluation_traces"] = evaluation_traces or []
-
-    if outputs.get("save_json", False):
-        json_path = out_path / f"{run_name}_evaluation.json"
-        with open(json_path, "w") as f:
-            json.dump(_sanitize_for_json(payload), f, indent=2)
-
-    if outputs.get("save_csv", False):
-        csv_path = out_path / f"{run_name}_evaluation.csv"
-        csv_metric_keys = evaluation_metric_keys or []
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=["map", "profile", *csv_metric_keys],
-            )
-            writer.writeheader()
-            for map_name, profiles in evaluation_raw.items():
-                for profile_name, metrics in profiles.items():
-                    row = {"map": map_name, "profile": profile_name}
-                    for key in csv_metric_keys:
-                        row[key] = metrics.get(key)
-                    writer.writerow(row)
-
-    if outputs.get("save_per_episode_trace", False):
-        trace_path = out_path / f"{run_name}_evaluation_traces.json"
-        with open(trace_path, "w") as f:
-            json.dump(_sanitize_for_json(evaluation_traces or []), f, indent=2)
-
-    if outputs.get("save_plots", False):
-        _save_evaluation_plots(
-            out_path=out_path,
-            run_name=run_name,
-            evaluation_raw=evaluation_raw,
-            metric_keys=evaluation_metric_keys or [],
-        )
-
 def _write_json_atomic(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1291,10 +541,7 @@ def _write_final_eval_job(
     eval_cfg,
     seed_base,
     n_gpus,
-    parent_pid,
     results_path,
-    project_root,
-    tracked_runtime_processes=None,
 ):
     job_path = Path(out_dir) / "final_eval_job.json"
     session_id = Path(out_dir).name
@@ -1305,10 +552,7 @@ def _write_final_eval_job(
         "run_name": session_id,
         "seed_base": int(seed_base),
         "n_gpus": int(n_gpus),
-        "parent_pid": int(parent_pid),
         "results_path": str(results_path),
-        "project_root": str(project_root),
-        "tracked_runtime_processes": tracked_runtime_processes or {},
         "env_cfg": deepcopy(env_cfg),
         "train_cfg": deepcopy(train_cfg),
         "eval_cfg": deepcopy(eval_cfg),
@@ -1316,73 +560,6 @@ def _write_final_eval_job(
     _write_json_atomic(job_path, payload)
     return str(job_path)
 
-
-def _write_final_eval_launcher_status(
-    *,
-    out_dir,
-    state,
-    parent_pid,
-    session_id=None,
-    launcher_pid=None,
-    reason=None,
-    evaluation_started=False,
-    evaluation_completed=False,
-    evaluation_exit_code=None,
-    finished_at=None,
-):
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    status_path = Path(out_dir) / "final_eval_launcher_status.json"
-    payload = {
-        "session_id": None if session_id is None else str(session_id),
-        "state": str(state),
-        "reason": None if reason is None else str(reason),
-        "parent_pid": int(parent_pid),
-        "launcher_pid": None if launcher_pid is None else int(launcher_pid),
-        "evaluation_started": bool(evaluation_started),
-        "evaluation_completed": bool(evaluation_completed),
-        "evaluation_exit_code": (
-            None if evaluation_exit_code is None else int(evaluation_exit_code)
-        ),
-        "started_at": timestamp,
-        "updated_at": timestamp,
-        "finished_at": finished_at,
-    }
-    _write_json_atomic(status_path, payload)
-    return str(status_path)
-
-
-def _launch_final_eval_launcher_subprocess(*, job_path, workdir):
-    launcher_executable = sys.executable
-    if sys.platform == "win32":
-        pythonw = Path(sys.executable).with_name("pythonw.exe")
-        if pythonw.exists():
-            launcher_executable = str(pythonw)
-    cmd = [
-        launcher_executable,
-        "-m",
-        "carla_core.training.final_eval_launcher",
-        "--job",
-        str(job_path),
-    ]
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-        creationflags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
-        creationflags |= getattr(subprocess, "CREATE_DEFAULT_ERROR_MODE", 0)
-
-    log_path = Path(job_path).with_name("final_eval_launcher.log")
-    with open(log_path, "a", encoding="utf-8") as log_file:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(workdir),
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            creationflags=creationflags,
-            close_fds=True,
-        )
-    return proc.pid
 
 
 def _derive_mode(exp_cfg, name):
@@ -1483,12 +660,6 @@ def main():
     parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--train-config", type=str, default=None)
     parser.add_argument("--env-config", type=str, default=None)
-    parser.add_argument(
-        "--launch-final-eval",
-        action="store_true",
-        help="Launch final evaluation automatically after training. "
-        "Default behavior is to only write final_eval_job.json and stop.",
-    )
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -1505,9 +676,6 @@ def main():
     model_cfg = train_cfg.get("model", {})
     runtime_cfg = train_cfg.get("runtime", {})
     stop_on_nan = sched.get("stop_on_nan", True)
-    fast_exit_after_final_eval_launch = bool(
-        runtime_cfg.get("fast_exit_after_final_eval_launch", False)
-    )
     eval_section = eval_cfg.get("evaluation", {})
 
     total_ts = args.timesteps or sched.get("total_timesteps", 50_000)
@@ -1568,7 +736,7 @@ def main():
     cumulative_agent_outcomes = {"total": 0, "success": 0, "collision": 0}
 
     print(f"{'=' * 60}")
-    print(f"CARLA MAPPO Training — Centralized Critic (CTDE)")
+    print(f"CARLA MAPPO Training - Centralized Critic (CTDE)")
     print(f"{'=' * 60}")
     print(f"  Agents: {n_veh}V + {n_ped}P | global_obs: {global_obs_dim}D")
     print(f"  Budget: {total_ts:,} steps | Workers: {n_workers} | GPU: {n_gpus}")
@@ -1636,8 +804,7 @@ def main():
     final_checkpoint = None
     training_failed = False
     results_path = str((Path(out_dir) / "results.json").resolve(strict=False))
-    launcher_pid = None
-    results_saved_ok = False
+    finalization_issues = []
 
     try:
         while ts_done < total_ts:
@@ -1742,6 +909,9 @@ def main():
                 print(f"\nCheckpoint finale: {final_checkpoint}")
             except Exception as e:
                 print(f"\nCheckpoint fallito: {e}")
+                finalization_issues.append(
+                    f"final checkpoint save failed: {type(e).__name__}: {e}"
+                )
         elif training_failed:
             print("\nCheckpoint finale saltato (training crash).")
         else:
@@ -1756,6 +926,9 @@ def main():
                 print(f"  Last result: {result_path}")
         except Exception as e:
             print(f"  [WARN] Could not save last_result.json: {e}")
+            finalization_issues.append(
+                f"last_result.json save failed: {type(e).__name__}: {e}"
+            )
 
         try:
             if (
@@ -1770,9 +943,6 @@ def main():
                 )
                 if artifact_issues:
                     raise RuntimeError("; ".join(artifact_issues))
-                tracked_runtime_processes = _snapshot_runtime_processes(
-                    parent_pid=os.getpid()
-                )
                 job_path = _write_final_eval_job(
                     out_dir=out_dir,
                     checkpoint_path=final_checkpoint,
@@ -1781,42 +951,18 @@ def main():
                     eval_cfg=eval_cfg,
                     seed_base=exp_seed,
                     n_gpus=n_gpus,
-                    parent_pid=os.getpid(),
                     results_path=results_path,
-                    project_root=base.parent,
-                    tracked_runtime_processes=tracked_runtime_processes,
                 )
-                if args.launch_final_eval:
-                    print("\nPianificazione valutazione finale multi-scenario...")
-                    launcher_status_path = _write_final_eval_launcher_status(
-                        out_dir=out_dir,
-                        state="pending_parent_shutdown",
-                        parent_pid=os.getpid(),
-                        session_id=Path(out_dir).name,
-                    )
-                    launcher_pid = _launch_final_eval_launcher_subprocess(
-                        job_path=job_path,
-                        workdir=base.parent,
-                    )
-                    final_evaluation_skip_reason = (
-                        "final evaluation delegated to launcher"
-                    )
-                    print(
-                        "  Final evaluation launcher scheduled "
-                        f"(pid={launcher_pid})."
-                    )
-                    print(f"  Launcher status: {launcher_status_path}")
-                else:
-                    eval_command = (
-                        "python carla_core/training/evaluate_carla_mappo.py "
-                        f"--job \"{job_path}\""
-                    )
-                    final_evaluation_skip_reason = (
-                        "final evaluation decoupled from training; launch manually"
-                    )
-                    print("\nValutazione finale multi-scenario non avviata automaticamente.")
-                    print(f"  Job eval: {job_path}")
-                    print(f"  Per lanciarla: {eval_command}")
+                eval_command = (
+                    "python -m carla_core.training.evaluate_carla_mappo "
+                    f"--job \"{job_path}\""
+                )
+                final_evaluation_skip_reason = (
+                    "final evaluation decoupled from training; launch manually"
+                )
+                print("\nValutazione finale multi-scenario non avviata automaticamente.")
+                print(f"  Job eval: {job_path}")
+                print(f"  Per lanciarla: {eval_command}")
             else:
                 reason = final_evaluation_skip_reason or (
                     "disabled, no completed iterations, or missing final checkpoint"
@@ -1824,10 +970,11 @@ def main():
                 final_evaluation_skip_reason = reason
                 print(f"\nValutazione finale multi-scenario saltata ({reason}).")
         except Exception as e:
-            final_evaluation_skip_reason = (
-                f"failed to launch final eval launcher: {type(e).__name__}"
+            final_evaluation_skip_reason = f"failed to prepare final eval job: {type(e).__name__}"
+            print(f"  [WARN] Final evaluation job creation failed: {e}")
+            finalization_issues.append(
+                f"final eval job creation failed: {type(e).__name__}: {e}"
             )
-            print(f"  [WARN] Final evaluation launcher failed: {e}")
 
         print(f"\n{'=' * 60}")
         print(f"MAPPO Training Completato")
@@ -1852,24 +999,18 @@ def main():
                 final_evaluation_skip_reason=final_evaluation_skip_reason,
             )
             _write_json_atomic(results_path, results_payload)
-            results_saved_ok = True
             print(f"  Results schema: {results_path}")
         except Exception as e:
             print(f"  [WARN] Could not save results.json: {e}")
-
-        if (
-            fast_exit_after_final_eval_launch
-            and launcher_pid is not None
-            and results_saved_ok
-            and not training_failed
-        ):
-            print("  Fast-exit parent process to avoid CARLA teardown crash.")
-            _fast_exit_parent(code=0)
+            finalization_issues.append(
+                f"results.json save failed: {type(e).__name__}: {e}"
+            )
 
         try:
             algo.stop()
         except Exception as e:
             print(f"  [WARN] algo.stop() failed: {e}")
+            finalization_issues.append(f"algo.stop() failed: {type(e).__name__}: {e}")
         finally:
             algo = None
             gc.collect()
@@ -1877,6 +1018,21 @@ def main():
                 ray.shutdown()
             except Exception as e:
                 print(f"  [WARN] ray.shutdown() failed after training teardown: {e}")
+                finalization_issues.append(
+                    f"ray.shutdown() failed after training teardown: {type(e).__name__}: {e}"
+                )
+            carla_shutdown_ok, carla_shutdown_msg = _shutdown_carla_server()
+            if carla_shutdown_ok:
+                print(f"  CARLA shutdown: {carla_shutdown_msg}")
+            else:
+                print(f"  [WARN] CARLA shutdown: {carla_shutdown_msg}")
+                finalization_issues.append(f"CARLA shutdown warning: {carla_shutdown_msg}")
+            if not training_failed and not finalization_issues:
+                print("  Train chiuso correttamente senza errori.")
+            elif not training_failed:
+                print("  Train completato, ma la chiusura non e' stata pulita.")
+                for issue in finalization_issues:
+                    print(f"    - {issue}")
 
 
 if __name__ == "__main__":

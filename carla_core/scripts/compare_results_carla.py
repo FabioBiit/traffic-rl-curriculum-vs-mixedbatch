@@ -1,4 +1,4 @@
-﻿"""
+"""
 Confronto Risultati CARLA: Curriculum vs Batch Training
 ==================================================
 Legge i file results.json prodotti dagli esperimenti CARLA
@@ -42,9 +42,9 @@ DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "results", "plots")
 # ============================================================
 
 # Colori consistenti per tutta la tesi
-COLOR_BATCH = "#2196F3"       # Blu â€” Batch
-COLOR_CURRICULUM = "#FF9800"  # Arancione â€” Curriculum
-COLOR_PROMOTION = "#E91E63"   # Rosa â€” Linee di promozione
+COLOR_BATCH = "#2196F3"       # Blu - Batch
+COLOR_CURRICULUM = "#FF9800"  # Arancione - Curriculum
+COLOR_PROMOTION = "#E91E63"   # Rosa - Linee di promozione
 
 # Stile globale
 FIGURE_DPI = 150
@@ -131,7 +131,7 @@ def extract_timeseries(data, field):
         field: nome del campo da estrarre (es. "success_rate")
     
     Returns:
-        tuple (timesteps, values) â€” numpy array
+        tuple (timesteps, values) - numpy array
         I valori None vengono convertiti in NaN
     """
     ts = data["timeseries"]
@@ -152,7 +152,7 @@ def fmt_pct_or_na(value):
 
 
 # ============================================================
-# GRAFICI â€” Funzioni individuali
+# GRAFICI - Funzioni individuali
 # ============================================================
 
 def setup_plot(title, xlabel, ylabel):
@@ -183,7 +183,7 @@ def add_promotion_lines(ax, curriculum_data, ymin=None, ymax=None):
     """
     for promo in curriculum_data.get("curriculum_history", []):
         timestep = promo["timestep_at_promotion"]
-        label_text = f"{promo['from']}â†’{promo['to']}"
+        label_text = f"{promo['from']}->{promo['to']}"
         ax.axvline(x=timestep, color=COLOR_PROMOTION, linestyle="--",
                    alpha=0.7, linewidth=1.5)
         # Posiziona etichetta in alto
@@ -246,7 +246,7 @@ def plot_reward_over_time(batch_data, curriculum_data, output_path):
     Reward medio per blocco con banda di deviazione standard.
     """
     fig, ax = setup_plot(
-        "Mean Reward per Block â€” Batch vs Curriculum",
+        "Mean Reward per Block - Batch vs Curriculum",
         "Timesteps", "Mean Reward"
     )
 
@@ -575,7 +575,7 @@ Esempio:
         batch_data, curriculum_data,
         field="success_rate",
         ylabel="Cumulative Success Rate",
-        title="Cumulative Success Rate â€” Batch vs Curriculum",
+        title="Cumulative Success Rate - Batch vs Curriculum",
         output_path=plot_paths["success_rate"],
         ylim=(0, 1.0),
         percentage=True,
@@ -586,18 +586,18 @@ Esempio:
         batch_data, curriculum_data,
         field="collision_rate",
         ylabel="Cumulative Collision Rate",
-        title="Cumulative Collision Rate â€” Batch vs Curriculum",
+        title="Cumulative Collision Rate - Batch vs Curriculum",
         output_path=plot_paths["collision_rate"],
         ylim=(0, 1.0),
         percentage=True,
     )
 
-    # 3. Window Success Rate nel tempo (finestra mobile â€” piu reattiva)
+    # 3. Window Success Rate nel tempo (finestra mobile - piu reattiva)
     plot_metric_over_time(
         batch_data, curriculum_data,
         field="window_success_rate",
         ylabel="Window Success Rate (50 episodes)",
-        title="Window Success Rate â€” Batch vs Curriculum",
+        title="Window Success Rate - Batch vs Curriculum",
         output_path=plot_paths["window_success_rate"],
         ylim=(0, 1.0),
         percentage=True,
@@ -614,7 +614,7 @@ Esempio:
         batch_data, curriculum_data,
         field="episode_length_mean",
         ylabel="Mean Episode Length (steps)",
-        title="Mean Episode Length â€” Batch vs Curriculum",
+        title="Mean Episode Length - Batch vs Curriculum",
         output_path=plot_paths["episode_length"],
     )
 
@@ -637,7 +637,7 @@ Esempio:
     )
 
     print(f"\n{'=' * 60}")
-    print(f"COMPLETATO â€” {len(plot_paths)} grafici + 1 report salvati in: {args.output}")
+    print(f"COMPLETATO - {len(plot_paths)} grafici + 1 report salvati in: {args.output}")
     print(f"{'=' * 60}")
 
 

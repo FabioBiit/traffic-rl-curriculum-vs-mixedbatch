@@ -108,8 +108,7 @@ previously inconclusive changes.
     Outcome: fixes the training-start regression where `ctrl.start()` raised
     "Actor could not be found in the registry" during RLlib env checks.
 
-21. Decouple training from final evaluation by default. Training now always
-    writes `final_eval_job.json`, but only auto-launches the final-eval
-    subprocess when `--launch-final-eval` is passed explicitly.
-    Outcome: removes the fragile train->eval handoff from the default path while
-    preserving the existing job-based eval entrypoint for manual runs.
+21. Decouple training from final evaluation completely. Training now always
+    writes `final_eval_job.json`, prints the standalone eval command, and stops.
+    Outcome: removes the fragile train->eval handoff entirely and keeps the
+    job-based eval entrypoint as the only supported path.
