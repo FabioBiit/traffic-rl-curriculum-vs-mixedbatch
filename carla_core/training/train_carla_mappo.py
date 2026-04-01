@@ -738,10 +738,10 @@ def main():
     print(f"{'=' * 60}")
     print(f"CARLA MAPPO Training - Centralized Critic (CTDE)")
     print(f"{'=' * 60}")
-    print(f"  Agents: {n_veh}V + {n_ped}P | global_obs: {global_obs_dim}D")
-    print(f"  Budget: {total_ts:,} steps | Workers: {n_workers} | GPU: {n_gpus}")
-    print(f"  Policies: vehicle({VEHICLE_OBS_DIM}D), pedestrian({PEDESTRIAN_OBS_DIM}D)")
-    print(f"  Output: {out_dir}")
+    print(f"Agents: {n_veh}V + {n_ped}P | global_obs: {global_obs_dim}D")
+    print(f"Budget: {total_ts:,} steps | Workers: {n_workers} | GPU: {n_gpus}")
+    print(f"Policies: vehicle({VEHICLE_OBS_DIM}D), pedestrian({PEDESTRIAN_OBS_DIM}D)")
+    print(f"Output: {out_dir}")
     print(f"{'=' * 60}\n")
 
     run_meta = {
@@ -787,7 +787,7 @@ def main():
 
     # --- Build & Train ---
     algo = config.build()
-    print("MAPPO training avviato.\n")
+    print("\nMAPPO training avviato.\n")
 
     ts_done = 0
     iteration = 0
@@ -958,11 +958,10 @@ def main():
                     f"--job \"{job_path}\""
                 )
                 final_evaluation_skip_reason = (
-                    "final evaluation decoupled from training; launch manually"
+                    "final evaluation pending: launch manually"
                 )
-                print("\nValutazione finale multi-scenario non avviata automaticamente.")
-                print(f"  Job eval: {job_path}")
-                print(f"  Per lanciarla: {eval_command}")
+                print(f"\nJob evaluation: {job_path}")
+                print(f"Per lanciarla: {eval_command}")
             else:
                 reason = final_evaluation_skip_reason or (
                     "disabled, no completed iterations, or missing final checkpoint"
@@ -977,11 +976,11 @@ def main():
             )
 
         print(f"\n{'=' * 60}")
-        print(f"MAPPO Training Completato")
+        print(f"        MAPPO Training Completato")
         print(f"{'=' * 60}")
-        print(f"  Steps: {ts_done:,} | Best reward: {best_reward:.1f}")
-        print(f"  Tempo: {(time.time() - t0) / 60:.1f} min")
-        print(f"  Output: {out_dir}")
+        print(f"Steps: {ts_done:,} | Best reward: {best_reward:.1f}")
+        print(f"Tempo: {(time.time() - t0) / 60:.1f} min")
+        print(f"Output: {out_dir}")
 
         try:
             results_payload = _build_results_payload(
@@ -999,9 +998,9 @@ def main():
                 final_evaluation_skip_reason=final_evaluation_skip_reason,
             )
             _write_json_atomic(results_path, results_payload)
-            print(f"  Results schema: {results_path}")
+            print(f"\nResults schema: {results_path}")
         except Exception as e:
-            print(f"  [WARN] Could not save results.json: {e}")
+            print(f"[WARN] Could not save results.json: {e}")
             finalization_issues.append(
                 f"results.json save failed: {type(e).__name__}: {e}"
             )
@@ -1009,7 +1008,7 @@ def main():
         try:
             algo.stop()
         except Exception as e:
-            print(f"  [WARN] algo.stop() failed: {e}")
+            print(f"[WARN] algo.stop() failed: {e}")
             finalization_issues.append(f"algo.stop() failed: {type(e).__name__}: {e}")
         finally:
             algo = None
@@ -1017,24 +1016,23 @@ def main():
             try:
                 ray.shutdown()
             except Exception as e:
-                print(f"  [WARN] ray.shutdown() failed after training teardown: {e}")
+                print(f"[WARN] ray.shutdown() failed after training teardown: {e}")
                 finalization_issues.append(
                     f"ray.shutdown() failed after training teardown: {type(e).__name__}: {e}"
                 )
             carla_shutdown_ok, carla_shutdown_msg = _shutdown_carla_server()
             if carla_shutdown_ok:
-                print(f"  CARLA shutdown: {carla_shutdown_msg}")
+                print(f"\nCARLA shutdown: {carla_shutdown_msg}")
             else:
-                print(f"  [WARN] CARLA shutdown: {carla_shutdown_msg}")
+                print(f"[WARN] CARLA shutdown: {carla_shutdown_msg}")
                 finalization_issues.append(f"CARLA shutdown warning: {carla_shutdown_msg}")
             if not training_failed and not finalization_issues:
-                print("  Train chiuso correttamente senza errori.")
+                print("Train chiuso correttamente senza errori.\n")
             elif not training_failed:
-                print("  Train completato, ma la chiusura non e' stata pulita.")
+                print("Train completato, ma la chiusura non e' stata pulita.\n")
                 for issue in finalization_issues:
                     print(f"    - {issue}")
 
 
 if __name__ == "__main__":
     main()
-    
