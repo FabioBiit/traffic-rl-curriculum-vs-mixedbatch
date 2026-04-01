@@ -85,3 +85,25 @@ previously inconclusive changes.
     garbage collection after each scenario-local `Algorithm.stop()`.
     Outcome: added to harden scenario-to-scenario simulator reset safety after
     `libcarla` aborts during the second scenario.
+
+18. Move final eval from "N episodes inside one RLlib evaluate() per scenario"
+    to "1 episode per RLlib evaluate() with external aggregation", reloading the
+    CARLA world before each episode.
+    Outcome: targets the new failure point discovered inside Town03/low, where
+    `libcarla` aborts during between-episode resets before the second scenario.
+
+19. Replace env actor cleanup from per-actor `destroy()` calls to CARLA batch
+    destruction via `client.apply_batch_sync([carla.command.DestroyActor(...)])`,
+    and keep `client/world` alive until `close()` cleanup finishes. Also align
+    eval world preparation with CARLA's documented `reload_world(False)` pattern
+    for new repetitions.
+    Outcome: targets the remaining `libcarla` abort inside the first eval
+    episode, where the orchestration layer is already stable and the failure is
+    localized to CARLA actor lifecycle/reset handling.
+
+20. Harden pedestrian traffic startup so invalid walker/controller pairs do not
+    break `reset()`: keep spawn state local until controller startup succeeds,
+    destroy failed startup actors immediately, and only publish live pairs into
+    `_npc_walkers` / `_npc_controllers`.
+    Outcome: fixes the training-start regression where `ctrl.start()` raised
+    "Actor could not be found in the registry" during RLlib env checks.

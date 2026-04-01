@@ -72,15 +72,32 @@ def _carla_prepare_world(env_cfg, *, force_reload):
     except Exception:
         current_map = None
 
-    # CARLA recommends reloading the world between repetitions to guarantee a
-    # clean simulator state. The final eval runs in its own subprocess, so we
-    # can safely re-take ownership of the target map before each scenario.
-    if force_reload or current_map != target_map:
+    if current_map != target_map:
         world = client.load_world(target_map)
     else:
         world = client.get_world()
+
+    settings = world.get_settings()
+    settings.synchronous_mode = bool(sim.get("sync_mode", True))
+    settings.fixed_delta_seconds = sim["fixed_delta_seconds"]
+    if env_cfg["world"].get("no_rendering", False):
+        settings.no_rendering_mode = True
+    world.apply_settings(settings)
+
+    # CARLA determinism guidance recommends reloading the world for each new
+    # repetition while keeping the synchronous settings already applied.
+    if force_reload:
+        world = client.reload_world(False)
+        if world is None:
+            world = client.get_world()
+        weather = env_cfg["world"].get("weather_preset", "ClearNoon")
+        if hasattr(carla.WeatherParameters, weather):
+            world.set_weather(getattr(carla.WeatherParameters, weather))
+
+    tm = client.get_trafficmanager(int(sim.get("traffic_manager_port", 8000)))
+    tm.set_synchronous_mode(bool(sim.get("sync_mode", True)))
+    tm.set_random_device_seed(int(env_cfg["traffic"].get("seed", 42)))
     _ = world.get_map().name
-    _ = client.get_trafficmanager(int(sim.get("traffic_manager_port", 8000)))
 
 
 def _register_eval_runtime():
@@ -147,6 +164,9 @@ def main():
         "completed_scenarios": 0,
         "total_scenarios": 0,
         "total_episodes": 0,
+        "completed_episodes": 0,
+        "episodes_per_scenario": 0,
+        "current_episode_idx": 0,
         "current_phase": "starting",
         "current_scenario_idx": 0,
         "current_map": None,
@@ -158,8 +178,11 @@ def main():
 
     try:
         runtime_cfg = job.get("eval_cfg", {}).get("runtime", {})
-        reload_world_between_scenarios = bool(
-            runtime_cfg.get("reload_world_between_scenarios", True)
+        reload_world_between_episodes = bool(
+            runtime_cfg.get(
+                "reload_world_between_episodes",
+                runtime_cfg.get("reload_world_between_scenarios", True),
+            )
         )
 
         _carla_prepare_world(job["env_cfg"], force_reload=False)
@@ -169,7 +192,7 @@ def main():
             _update_running_status(status_path, status_state, **fields)
 
         def _scenario_setup_callback(**fields):
-            if not reload_world_between_scenarios:
+            if not reload_world_between_episodes:
                 return
             gc.collect()
             _carla_prepare_world(fields["env_cfg"], force_reload=True)
@@ -212,6 +235,9 @@ def main():
                 "completed_scenarios": status_state.get("total_scenarios", 0),
                 "total_scenarios": status_state.get("total_scenarios", 0),
                 "total_episodes": status_state.get("total_episodes", 0),
+                "completed_episodes": status_state.get("total_episodes", 0),
+                "episodes_per_scenario": status_state.get("episodes_per_scenario", 0),
+                "current_episode_idx": status_state.get("episodes_per_scenario", 0),
                 "current_scenario_idx": status_state.get("total_scenarios", 0),
                 "current_map": status_state.get("current_map"),
                 "current_profile": status_state.get("current_profile"),
@@ -247,6 +273,9 @@ def main():
                 "completed_scenarios": status_state.get("completed_scenarios", 0),
                 "total_scenarios": status_state.get("total_scenarios", 0),
                 "total_episodes": status_state.get("total_episodes", 0),
+                "completed_episodes": status_state.get("completed_episodes", 0),
+                "episodes_per_scenario": status_state.get("episodes_per_scenario", 0),
+                "current_episode_idx": status_state.get("current_episode_idx", 0),
                 "current_scenario_idx": status_state.get("current_scenario_idx", 0),
                 "current_map": status_state.get("current_map"),
                 "current_profile": status_state.get("current_profile"),
@@ -282,6 +311,9 @@ def main():
                 "completed_scenarios": status_state.get("completed_scenarios", 0),
                 "total_scenarios": status_state.get("total_scenarios", 0),
                 "total_episodes": status_state.get("total_episodes", 0),
+                "completed_episodes": status_state.get("completed_episodes", 0),
+                "episodes_per_scenario": status_state.get("episodes_per_scenario", 0),
+                "current_episode_idx": status_state.get("current_episode_idx", 0),
                 "current_scenario_idx": status_state.get("current_scenario_idx", 0),
                 "current_map": status_state.get("current_map"),
                 "current_profile": status_state.get("current_profile"),
@@ -310,6 +342,9 @@ def main():
                 "completed_scenarios": status_state.get("completed_scenarios", 0),
                 "total_scenarios": status_state.get("total_scenarios", 0),
                 "total_episodes": status_state.get("total_episodes", 0),
+                "completed_episodes": status_state.get("completed_episodes", 0),
+                "episodes_per_scenario": status_state.get("episodes_per_scenario", 0),
+                "current_episode_idx": status_state.get("current_episode_idx", 0),
                 "current_scenario_idx": status_state.get("current_scenario_idx", 0),
                 "current_map": status_state.get("current_map"),
                 "current_profile": status_state.get("current_profile"),
@@ -338,6 +373,9 @@ def main():
                 "completed_scenarios": status_state.get("completed_scenarios", 0),
                 "total_scenarios": status_state.get("total_scenarios", 0),
                 "total_episodes": status_state.get("total_episodes", 0),
+                "completed_episodes": status_state.get("completed_episodes", 0),
+                "episodes_per_scenario": status_state.get("episodes_per_scenario", 0),
+                "current_episode_idx": status_state.get("current_episode_idx", 0),
                 "current_scenario_idx": status_state.get("current_scenario_idx", 0),
                 "current_map": status_state.get("current_map"),
                 "current_profile": status_state.get("current_profile"),

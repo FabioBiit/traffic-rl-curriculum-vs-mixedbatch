@@ -44,9 +44,6 @@ import signal
 import sys
 from copy import deepcopy
 from pathlib import Path
-from time import time
-from typing import Optional
-
 import gymnasium as gym
 import numpy as np
 import yaml
@@ -468,14 +465,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
         world = self._world
         original_settings = self._original_settings
 
-        # Drop connection handles first so repeated close/reset calls cannot
-        # reuse stale CARLA objects while cleanup is still in progress.
-        self._tm = None
-        self._world = None
-        self._map = None
-        self._client = None
-        self._original_settings = None
-        self._spawn_points = []
         self._connected = False
 
         try:
@@ -492,6 +481,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 except Exception:
                     pass
         finally:
+            self._tm = None
+            self._world = None
+            self._map = None
+            self._client = None
+            self._original_settings = None
+            self._spawn_points = []
             self._terminated_agent_infos = {}
             self.agents = []
             self._closed = True
@@ -732,6 +727,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
     # ------------------------------------------------------------------
 
     def _spawn_traffic(self):
+        self._npc_vehicles = []
+        self._npc_walkers = []
+        self._npc_controllers = []
+
         bp_lib = self._world.get_blueprint_library()
         t = self.cfg["traffic"]
         rng = np.random.default_rng(t.get("seed", 42))
@@ -758,6 +757,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         walker_bps = list(bp_lib.filter("walker.pedestrian.*"))
         ctrl_bp = bp_lib.find("controller.ai.walker")
 
+        spawned_walkers = []
         for _ in range(t["n_pedestrians_npc"]):
             loc = self._world.get_random_location_from_navigation()
             if not loc:
@@ -767,23 +767,58 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 bp.set_attribute("is_invincible", "false")
             w = self._world.try_spawn_actor(bp, carla.Transform(loc))
             if w:
-                self._npc_walkers.append(w)
+                spawned_walkers.append(w)
 
         self._world.tick(10.0)  # 10 second timeout
 
-        for w in self._npc_walkers:
+        spawned_pairs = []
+        for w in spawned_walkers:
             ctrl = self._world.try_spawn_actor(ctrl_bp, carla.Transform(), w)
             if ctrl:
-                self._npc_controllers.append(ctrl)
+                spawned_pairs.append((w, ctrl))
 
         self._world.tick(10.0)  # 10 second timeout
 
-        for ctrl in self._npc_controllers:
+        paired_walker_ids = {
+            int(w.id) for w, _ in spawned_pairs if getattr(w, "id", None) is not None
+        }
+        startup_failures = [
+            walker for walker in spawned_walkers
+            if getattr(walker, "id", None) is not None and int(walker.id) not in paired_walker_ids
+        ]
+        tracked_actor_ids = []
+        for walker, ctrl in spawned_pairs:
+            for actor in (walker, ctrl):
+                actor_id = getattr(actor, "id", None)
+                if actor_id is not None:
+                    tracked_actor_ids.append(int(actor_id))
+        alive_actor_ids = self._alive_actor_ids(tracked_actor_ids)
+
+        for walker, ctrl in spawned_pairs:
             target = self._world.get_random_location_from_navigation()
-            if target:
-                ctrl.start()
-                ctrl.go_to_location(target)
-                ctrl.set_max_speed(1.4)
+            walker_id = getattr(walker, "id", None)
+            ctrl_id = getattr(ctrl, "id", None)
+            if (
+                target
+                and walker_id is not None
+                and ctrl_id is not None
+                and int(walker_id) in alive_actor_ids
+                and int(ctrl_id) in alive_actor_ids
+            ):
+                try:
+                    ctrl.start()
+                    ctrl.go_to_location(target)
+                    ctrl.set_max_speed(1.4)
+                    self._npc_walkers.append(walker)
+                    self._npc_controllers.append(ctrl)
+                    continue
+                except Exception:
+                    pass
+
+            startup_failures.extend([ctrl, walker])
+
+        if startup_failures:
+            self._batch_destroy_actors(startup_failures, label="failed traffic startup actors")
 
         logger.info(f"NPC: {len(self._npc_vehicles)}V + {len(self._npc_walkers)}P")
 
@@ -1214,6 +1249,63 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return False
         return True
 
+    def _collect_batch_actor_refs(self, actors):
+        actor_refs = {}
+        for actor in actors:
+            if actor is None:
+                continue
+            try:
+                actor_id = int(actor.id)
+            except Exception:
+                continue
+            if actor_id <= 0 or actor_id in actor_refs:
+                continue
+            actor_refs[actor_id] = actor
+        return actor_refs
+
+    def _alive_actor_ids(self, actor_ids):
+        actor_ids = [int(actor_id) for actor_id in actor_ids if int(actor_id) > 0]
+        if not actor_ids or self._world is None:
+            return set()
+        try:
+            return {int(actor.id) for actor in self._world.get_actors(actor_ids)}
+        except Exception:
+            alive = set()
+            for actor_id in actor_ids:
+                try:
+                    actor = self._world.get_actor(actor_id)
+                except Exception:
+                    actor = None
+                if actor is not None:
+                    alive.add(int(actor_id))
+            return alive
+
+    def _batch_destroy_actors(self, actors, *, label):
+        actor_refs = self._collect_batch_actor_refs(actors)
+        if not actor_refs:
+            return set()
+
+        if self._client is None or self._world is None:
+            for actor in actor_refs.values():
+                self._safe_destroy(actor)
+            return self._alive_actor_ids(actor_refs.keys())
+
+        commands = [carla.command.DestroyActor(actor_id) for actor_id in actor_refs]
+        try:
+            self._client.apply_batch_sync(
+                commands,
+                bool(self.cfg["simulator"].get("sync_mode", True)),
+            )
+        except Exception:
+            logger.exception(
+                "CARLA batch destroy failed for %s; falling back to per-actor destroy",
+                label,
+            )
+            for actor in actor_refs.values():
+                self._safe_destroy(actor)
+
+        return set(actor_refs.keys())
+
     def _cleanup_agents(self):
         agent_data = list(self._agent_data.values())
         self._terminated_agent_infos = {}
@@ -1226,18 +1318,35 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ad.collision_sensor.stop()
                 except Exception:
                     pass
-        for ad in agent_data:
-            sensor_destroyed = True
-            if ad.collision_sensor:
-                sensor_destroyed = self._safe_destroy(ad.collision_sensor)
-                if sensor_destroyed:
-                    ad.collision_sensor = None
 
-            actor_destroyed = self._safe_destroy(ad.actor)
-            if actor_destroyed:
+        sensor_actor_ids = self._batch_destroy_actors(
+            [ad.collision_sensor for ad in agent_data],
+            label="collision sensors",
+        )
+        agent_actor_ids = self._batch_destroy_actors(
+            [ad.actor for ad in agent_data],
+            label="rl agents",
+        )
+        remaining_actor_ids = self._alive_actor_ids(
+            list(sensor_actor_ids) + list(agent_actor_ids)
+        )
+
+        for ad in agent_data:
+            sensor_id = getattr(ad.collision_sensor, "id", None)
+            actor_id = getattr(ad.actor, "id", None)
+            sensor_alive = (
+                sensor_id is not None and int(sensor_id) in remaining_actor_ids
+            )
+            actor_alive = (
+                actor_id is not None and int(actor_id) in remaining_actor_ids
+            )
+
+            if not sensor_alive:
+                ad.collision_sensor = None
+            if not actor_alive:
                 ad.actor = None
 
-            if not (sensor_destroyed and actor_destroyed):
+            if sensor_alive or actor_alive:
                 failed_agents[ad.agent_id] = ad
 
         self._agent_data = failed_agents
@@ -1257,14 +1366,35 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     ctrl.stop()
             except Exception:
                 pass
-            if not self._safe_destroy(ctrl):
+
+        controller_actor_ids = self._batch_destroy_actors(
+            controllers,
+            label="traffic controllers",
+        )
+        walker_actor_ids = self._batch_destroy_actors(
+            walkers,
+            label="traffic walkers",
+        )
+        vehicle_actor_ids = self._batch_destroy_actors(
+            vehicles,
+            label="traffic vehicles",
+        )
+        remaining_actor_ids = self._alive_actor_ids(
+            list(controller_actor_ids) + list(walker_actor_ids) + list(vehicle_actor_ids)
+        )
+
+        for ctrl in controllers:
+            actor_id = getattr(ctrl, "id", None)
+            if actor_id is not None and int(actor_id) in remaining_actor_ids:
                 failed_controllers.append(ctrl)
-        for w in walkers:
-            if not self._safe_destroy(w):
-                failed_walkers.append(w)
-        for v in vehicles:
-            if not self._safe_destroy(v):
-                failed_vehicles.append(v)
+        for walker in walkers:
+            actor_id = getattr(walker, "id", None)
+            if actor_id is not None and int(actor_id) in remaining_actor_ids:
+                failed_walkers.append(walker)
+        for vehicle in vehicles:
+            actor_id = getattr(vehicle, "id", None)
+            if actor_id is not None and int(actor_id) in remaining_actor_ids:
+                failed_vehicles.append(vehicle)
 
         self._npc_controllers = failed_controllers
         self._npc_walkers = failed_walkers

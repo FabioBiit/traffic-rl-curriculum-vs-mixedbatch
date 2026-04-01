@@ -31,7 +31,7 @@ runtime:
   heartbeat_timeout_seconds: 180    # Launcher aborts stale eval if heartbeat stops updating.
   status_poll_interval_seconds: 5   # Launcher poll cadence for progress/heartbeat monitoring.
   subprocess_timeout_seconds: 14400 # Hard wall-clock cap for the eval subprocess.
-  reload_world_between_scenarios: true # Reload CARLA world before each eval scenario for clean state.
+  reload_world_between_episodes: true  # Reload CARLA world before each eval episode for clean state.
 
 metrics:
   success_rate: true            # Track successful route completion rate.

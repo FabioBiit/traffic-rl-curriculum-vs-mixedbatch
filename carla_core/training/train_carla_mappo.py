@@ -525,22 +525,34 @@ def _render_progress_bar(progress, width=24):
     return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
 
 
-def _estimate_eval_progress(
-    *,
-    total_scenarios,
-    completed_scenarios,
-    current_elapsed_s,
-    completed_scenario_durations,
-):
-    if total_scenarios <= 0:
-        return 0.0, False
-    if not completed_scenario_durations:
-        return completed_scenarios / total_scenarios, False
+def _aggregate_eval_metric_rows(rows, keys):
+    if not rows:
+        return {key: None for key in keys}
 
-    avg_duration = max(float(np.mean(completed_scenario_durations)), 1e-6)
-    current_fraction = min(max(current_elapsed_s / avg_duration, 0.0), 0.99)
-    progress = (completed_scenarios + current_fraction) / total_scenarios
-    return min(max(progress, 0.0), 0.999), True
+    sum_keys = {"wall_clock_seconds", "infraction_count"}
+    any_true_keys = {"wall_clock_timeout"}
+    merged = {}
+    for key in keys:
+        vals = [row.get(key) for row in rows if row.get(key) is not None]
+        if not vals:
+            merged[key] = None
+        elif key in sum_keys:
+            merged[key] = float(np.sum(vals))
+        elif key in any_true_keys:
+            merged[key] = any(bool(v) for v in vals)
+        else:
+            merged[key] = float(np.mean(vals))
+    return merged
+
+
+def _offset_eval_episode_traces(traces, *, start_episode_index):
+    offset = int(start_episode_index)
+    rows = []
+    for row in traces:
+        updated = dict(row)
+        updated["episode_index"] = offset + int(updated.get("episode_index", 0) or 0)
+        rows.append(updated)
+    return rows
 
 
 def _resolve_eval_metric_keys(eval_cfg):
@@ -867,9 +879,9 @@ def _run_evaluation_scenarios(
         else None
     )
     scenario_idx = 0
-    completed_scenario_durations = []
+    completed_episodes_total = 0
     eval_t0 = time.time()
-    scenario_stall_warning_s = 600.0
+    episode_stall_warning_s = 600.0
     try:
         heartbeat_interval_s = max(
             5.0,
@@ -908,13 +920,18 @@ def _run_evaluation_scenarios(
             profile_name = profile.get("name", "unnamed")
             scenario_t0 = time.time()
             completed_scenarios = scenario_idx - 1
+            scenario_episode_rows = []
             _publish_status(
                 reason="evaluation subprocess running",
-                progress=(completed_scenarios / total_scenarios) if total_scenarios else 0.0,
+                progress=(
+                    completed_episodes_total / total_episodes
+                    if total_episodes
+                    else 0.0
+                ),
                 completed_scenarios=completed_scenarios,
                 total_scenarios=total_scenarios,
                 total_episodes=total_episodes,
-                current_phase="scenario_running",
+                current_phase="scenario_pending",
                 current_scenario_idx=scenario_idx,
                 current_map=map_name,
                 current_profile=profile_name,
@@ -925,39 +942,178 @@ def _run_evaluation_scenarios(
                 f"{map_name}/{profile_name} | episodes={episodes_per_map}"
             )
             print(f"{'=' * 43}")
-            scenario_env_cfg = deepcopy(base_env_cfg)
-            scenario_env_cfg.setdefault("world", {})
-            scenario_env_cfg["world"]["map"] = map_name
-            scenario_env_cfg.setdefault("traffic", {})
-            scenario_env_cfg["traffic"]["n_vehicles_npc"] = int(profile.get("n_vehicles", 0))
-            scenario_env_cfg["traffic"]["n_pedestrians_npc"] = int(profile.get("n_pedestrians", 0))
-            scenario_env_cfg.setdefault("episode", {})
-            if "max_steps_per_episode" in limits:
-                scenario_env_cfg["episode"]["max_steps"] = int(limits["max_steps_per_episode"])
-            scenario_env_cfg.setdefault("traffic", {})
-            scenario_env_cfg["traffic"]["seed"] = int(seed_base)
-            if scenario_setup_callback is not None:
-                _publish_status(
-                    reason="evaluation subprocess running",
-                    progress=(completed_scenarios / total_scenarios) if total_scenarios else 0.0,
-                    completed_scenarios=completed_scenarios,
-                    total_scenarios=total_scenarios,
-                    total_episodes=total_episodes,
-                    current_phase="scenario_setup",
-                    current_scenario_idx=scenario_idx,
-                    current_map=map_name,
-                    current_profile=profile_name,
-                    progress_mode="exact",
+            for episode_idx in range(episodes_per_map):
+                scenario_env_cfg = deepcopy(base_env_cfg)
+                scenario_env_cfg.setdefault("world", {})
+                scenario_env_cfg["world"]["map"] = map_name
+                scenario_env_cfg.setdefault("traffic", {})
+                scenario_env_cfg["traffic"]["n_vehicles_npc"] = int(profile.get("n_vehicles", 0))
+                scenario_env_cfg["traffic"]["n_pedestrians_npc"] = int(profile.get("n_pedestrians", 0))
+                scenario_env_cfg.setdefault("episode", {})
+                if "max_steps_per_episode" in limits:
+                    scenario_env_cfg["episode"]["max_steps"] = int(limits["max_steps_per_episode"])
+                scenario_env_cfg.setdefault("traffic", {})
+                scenario_env_cfg["traffic"]["seed"] = int(seed_base)
+
+                current_episode_number = episode_idx + 1
+                exact_progress = (
+                    completed_episodes_total / total_episodes if total_episodes else 0.0
                 )
-                try:
-                    scenario_setup_callback(
-                        map_name=map_name,
-                        profile_name=profile_name,
-                        scenario_idx=scenario_idx,
+                if scenario_setup_callback is not None:
+                    _publish_status(
+                        reason="evaluation subprocess running",
+                        progress=exact_progress,
+                        completed_scenarios=completed_scenarios,
                         total_scenarios=total_scenarios,
-                        env_cfg=deepcopy(scenario_env_cfg),
+                        total_episodes=total_episodes,
+                        completed_episodes=completed_episodes_total,
+                        episodes_per_scenario=episodes_per_map,
+                        current_episode_idx=current_episode_number,
+                        current_phase="episode_setup",
+                        current_scenario_idx=scenario_idx,
+                        current_map=map_name,
+                        current_profile=profile_name,
+                        progress_mode="exact",
                     )
+                    try:
+                        scenario_setup_callback(
+                            map_name=map_name,
+                            profile_name=profile_name,
+                            scenario_idx=scenario_idx,
+                            total_scenarios=total_scenarios,
+                            env_cfg=deepcopy(scenario_env_cfg),
+                            episode_idx=current_episode_number,
+                            episodes_per_scenario=episodes_per_map,
+                            completed_episodes=completed_episodes_total,
+                            total_episodes=total_episodes,
+                        )
+                    except Exception as exc:
+                        if scenario_episode_rows:
+                            map_rows[profile_name] = _aggregate_eval_metric_rows(
+                                scenario_episode_rows, aggregate_keys
+                            )
+                        raw[map_name] = map_rows
+                        raise FinalEvaluationFailed(
+                            raw=deepcopy(raw),
+                            summary=_build_evaluation_summary(raw, train_map),
+                            traces=list(traces),
+                            metric_keys=list(aggregate_keys),
+                            reason=(
+                                "final evaluation episode setup error: "
+                                f"{type(exc).__name__} ({map_name}/{profile_name}, "
+                                f"episode {current_episode_number}/{episodes_per_map})"
+                            ),
+                        ) from exc
+
+                single_episode_eval_cfg = deepcopy(eval_cfg)
+                single_episode_eval_cfg.setdefault("evaluation", {})
+                single_episode_eval_cfg["evaluation"]["episodes_per_map"] = 1
+                eval_config = _build_mappo_config(
+                    env_cfg=scenario_env_cfg,
+                    train_cfg=train_cfg,
+                    eval_cfg=single_episode_eval_cfg,
+                    n_gpus=n_gpus,
+                    n_workers=0,
+                    exp_seed=seed_base,
+                    enable_periodic_evaluation=False,
+                )
+                eval_algo = None
+                heartbeat_stop = threading.Event()
+                episode_t0 = time.time()
+                episode_stall_warned = [False]
+
+                def _heartbeat():
+                    while not heartbeat_stop.wait(heartbeat_interval_s):
+                        progress = (
+                            completed_episodes_total / total_episodes
+                            if total_episodes
+                            else 0.0
+                        )
+                        print(
+                            f"Eval progress {_render_progress_bar(progress)} "
+                            f"{progress * 100:5.1f}% exact "
+                            f"({completed_episodes_total}/{total_episodes} episodi completati, "
+                            f"scenario {scenario_idx}/{total_scenarios}, "
+                            f"episodio {current_episode_number}/{episodes_per_map})"
+                        )
+                        _publish_status(
+                            reason="evaluation subprocess running",
+                            progress=progress,
+                            completed_scenarios=completed_scenarios,
+                            total_scenarios=total_scenarios,
+                            total_episodes=total_episodes,
+                            completed_episodes=completed_episodes_total,
+                            episodes_per_scenario=episodes_per_map,
+                            current_episode_idx=current_episode_number,
+                            current_phase="episode_running",
+                            current_scenario_idx=scenario_idx,
+                            current_map=map_name,
+                            current_profile=profile_name,
+                            progress_mode="exact",
+                        )
+                        current_elapsed_s = time.time() - episode_t0
+                        if (
+                            not episode_stall_warned[0]
+                            and current_elapsed_s >= episode_stall_warning_s
+                        ):
+                            print(
+                                f"[WARN] Episodio {current_episode_number}/{episodes_per_map} "
+                                f"di {map_name}/{profile_name} ancora in corso dopo "
+                                f"{current_elapsed_s / 60:.1f}m."
+                            )
+                            episode_stall_warned[0] = True
+
+                heartbeat_thread = threading.Thread(
+                    target=_heartbeat,
+                    name=f"eval-heartbeat-{scenario_idx}-{current_episode_number}",
+                    daemon=True,
+                )
+                heartbeat_thread.start()
+                try:
+                    eval_algo = eval_config.build()
+                    eval_algo.restore(checkpoint_path)
+                    eval_result = eval_algo.evaluate()
+                    episode_metrics = _extract_eval_metrics_from_result(
+                        eval_result, aggregate_keys
+                    )
+                    scenario_episode_rows.append(episode_metrics)
+                    if save_traces:
+                        traces.extend(
+                            _offset_eval_episode_traces(
+                                _extract_eval_episode_traces(
+                                    eval_result,
+                                    map_name=map_name,
+                                    profile_name=profile_name,
+                                ),
+                                start_episode_index=episode_idx,
+                            )
+                        )
+                except KeyboardInterrupt:
+                    if scenario_episode_rows:
+                        map_rows[profile_name] = _aggregate_eval_metric_rows(
+                            scenario_episode_rows, aggregate_keys
+                        )
+                    raw[map_name] = map_rows
+                    print(
+                        f"    interrotto dall'utente durante {map_name}/{profile_name} "
+                        f"episodio {current_episode_number}/{episodes_per_map}"
+                    )
+                    raise FinalEvaluationInterrupted(
+                        raw=deepcopy(raw),
+                        summary=_build_evaluation_summary(raw, train_map),
+                        traces=list(traces),
+                        metric_keys=list(aggregate_keys),
+                        reason=(
+                            "manual interrupt during final evaluation "
+                            f"({map_name}/{profile_name}, "
+                            f"episode {current_episode_number}/{episodes_per_map})"
+                        ),
+                    ) from None
                 except Exception as exc:
+                    if scenario_episode_rows:
+                        map_rows[profile_name] = _aggregate_eval_metric_rows(
+                            scenario_episode_rows, aggregate_keys
+                        )
                     raw[map_name] = map_rows
                     raise FinalEvaluationFailed(
                         raw=deepcopy(raw),
@@ -965,129 +1121,72 @@ def _run_evaluation_scenarios(
                         traces=list(traces),
                         metric_keys=list(aggregate_keys),
                         reason=(
-                            "final evaluation scenario setup error: "
-                            f"{type(exc).__name__} ({map_name}/{profile_name})"
+                            "final evaluation error: "
+                            f"{type(exc).__name__} ({map_name}/{profile_name}, "
+                            f"episode {current_episode_number}/{episodes_per_map})"
                         ),
                     ) from exc
-            eval_config = _build_mappo_config(
-                env_cfg=scenario_env_cfg,
-                train_cfg=train_cfg,
-                eval_cfg=eval_cfg,
-                n_gpus=n_gpus,
-                n_workers=0,
-                exp_seed=seed_base,
-                enable_periodic_evaluation=False,
-            )
-            eval_algo = None
-            heartbeat_stop = threading.Event()
-            scenario_stall_warned = [False]
+                finally:
+                    heartbeat_stop.set()
+                    heartbeat_thread.join(timeout=1.0)
+                    if eval_algo is not None:
+                        try:
+                            eval_algo.stop()
+                        except Exception as stop_exc:
+                            print(
+                                "    [WARN] eval_algo.stop() failed during "
+                                f"{map_name}/{profile_name} episodio "
+                                f"{current_episode_number}/{episodes_per_map}: "
+                                f"{type(stop_exc).__name__}: {stop_exc}"
+                            )
+                        finally:
+                            del eval_algo
+                            gc.collect()
 
-            def _heartbeat():
-                while not heartbeat_stop.wait(heartbeat_interval_s):
-                    current_elapsed_s = time.time() - scenario_t0
-                    progress, has_estimate = _estimate_eval_progress(
-                        total_scenarios=total_scenarios,
-                        completed_scenarios=completed_scenarios,
-                        current_elapsed_s=current_elapsed_s,
-                        completed_scenario_durations=completed_scenario_durations,
-                    )
-                    estimate_label = "estimated" if has_estimate else "estimated, baseline pending"
-                    print(
-                        f"Eval progress {_render_progress_bar(progress)} "
-                        f"{progress * 100:5.1f}% {estimate_label} "
-                        f"({completed_scenarios}/{total_scenarios} scenari completati, "
-                        f"{scenario_idx}/{total_scenarios} in corso)"
-                    )
-                    _publish_status(
-                        reason="evaluation subprocess running",
-                        progress=progress,
-                        completed_scenarios=completed_scenarios,
-                        total_scenarios=total_scenarios,
-                        total_episodes=total_episodes,
-                        current_phase="scenario_running",
-                        current_scenario_idx=scenario_idx,
-                        current_map=map_name,
-                        current_profile=profile_name,
-                        progress_mode="estimated" if has_estimate else "baseline_pending",
-                    )
-                    if (
-                        not scenario_stall_warned[0]
-                        and current_elapsed_s >= scenario_stall_warning_s
-                    ):
-                        print(
-                            f"[WARN] Scenario {map_name}/{profile_name} ancora in corso "
-                            f"dopo {current_elapsed_s / 60:.1f}m senza completamento."
-                        )
-                        scenario_stall_warned[0] = True
+                completed_episodes_total += 1
+                exact_progress = (
+                    completed_episodes_total / total_episodes if total_episodes else 0.0
+                )
+                _publish_status(
+                    reason="evaluation subprocess running",
+                    progress=exact_progress,
+                    completed_scenarios=completed_scenarios,
+                    total_scenarios=total_scenarios,
+                    total_episodes=total_episodes,
+                    completed_episodes=completed_episodes_total,
+                    episodes_per_scenario=episodes_per_map,
+                    current_episode_idx=current_episode_number,
+                    current_phase="episode_completed",
+                    current_scenario_idx=scenario_idx,
+                    current_map=map_name,
+                    current_profile=profile_name,
+                    progress_mode="exact",
+                )
+                print(
+                    f"    episodio {current_episode_number}/{episodes_per_map} "
+                    f"completato | progress {_render_progress_bar(exact_progress)} "
+                    f"{exact_progress * 100:5.1f}%"
+                )
 
-            heartbeat_thread = threading.Thread(
-                target=_heartbeat,
-                name=f"eval-heartbeat-{scenario_idx}",
-                daemon=True,
+            map_rows[profile_name] = _aggregate_eval_metric_rows(
+                scenario_episode_rows, aggregate_keys
             )
-            heartbeat_thread.start()
-            try:
-                eval_algo = eval_config.build()
-                eval_algo.restore(checkpoint_path)
-                eval_result = eval_algo.evaluate()
-                metrics = _extract_eval_metrics_from_result(eval_result, aggregate_keys)
-                map_rows[profile_name] = metrics
-                if save_traces:
-                    traces.extend(
-                        _extract_eval_episode_traces(
-                            eval_result,
-                            map_name=map_name,
-                            profile_name=profile_name,
-                        )
-                    )
-            except KeyboardInterrupt:
-                raw[map_name] = map_rows
-                print(f"    interrotto dall'utente durante {map_name}/{profile_name}")
-                raise FinalEvaluationInterrupted(
-                    raw=deepcopy(raw),
-                    summary=_build_evaluation_summary(raw, train_map),
-                    traces=list(traces),
-                    metric_keys=list(aggregate_keys),
-                    reason=f"manual interrupt during final evaluation ({map_name}/{profile_name})",
-                ) from None
-            except Exception as exc:
-                raw[map_name] = map_rows
-                raise FinalEvaluationFailed(
-                    raw=deepcopy(raw),
-                    summary=_build_evaluation_summary(raw, train_map),
-                    traces=list(traces),
-                    metric_keys=list(aggregate_keys),
-                    reason=(
-                        "final evaluation error: "
-                        f"{type(exc).__name__} ({map_name}/{profile_name})"
-                    ),
-                ) from exc
-            finally:
-                heartbeat_stop.set()
-                heartbeat_thread.join(timeout=1.0)
-                if eval_algo is not None:
-                    try:
-                        eval_algo.stop()
-                    except Exception as stop_exc:
-                        print(
-                            "    [WARN] eval_algo.stop() failed during "
-                            f"{map_name}/{profile_name}: {type(stop_exc).__name__}: {stop_exc}"
-                        )
-                    finally:
-                        del eval_algo
-                        gc.collect()
             scenario_elapsed = time.time() - scenario_t0
-            completed_scenario_durations.append(scenario_elapsed)
             total_elapsed = time.time() - eval_t0
             remaining = total_scenarios - scenario_idx
             eta = (total_elapsed / scenario_idx) * remaining if scenario_idx > 0 else 0.0
-            exact_progress = scenario_idx / total_scenarios
+            exact_progress = (
+                completed_episodes_total / total_episodes if total_episodes else 0.0
+            )
             _publish_status(
                 reason="evaluation subprocess running",
                 progress=exact_progress,
                 completed_scenarios=scenario_idx,
                 total_scenarios=total_scenarios,
                 total_episodes=total_episodes,
+                completed_episodes=completed_episodes_total,
+                episodes_per_scenario=episodes_per_map,
+                current_episode_idx=episodes_per_map,
                 current_phase="scenario_completed",
                 current_scenario_idx=scenario_idx,
                 current_map=map_name,
@@ -1097,7 +1196,8 @@ def _run_evaluation_scenarios(
             print(
                 f"Eval progress {_render_progress_bar(exact_progress)} "
                 f"{exact_progress * 100:5.1f}% exact "
-                f"({scenario_idx}/{total_scenarios} scenari completati)"
+                f"({completed_episodes_total}/{total_episodes} episodi, "
+                f"{scenario_idx}/{total_scenarios} scenari completati)"
             )
             print(
                 f"Done in {int(scenario_elapsed//3600)}h{int((scenario_elapsed%3600)//60):02d}m | "
