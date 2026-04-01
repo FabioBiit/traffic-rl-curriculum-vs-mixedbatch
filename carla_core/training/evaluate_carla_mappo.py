@@ -21,7 +21,11 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from carla_core.agents.centralized_critic import CentralizedCriticModel
-from carla_core.training.mappo_runtime import _build_mappo_config, rllib_env_creator
+from carla_core.training.mappo_runtime import (
+    _build_mappo_config,
+    rllib_env_creator,
+    shutdown_carla_processes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1252,6 +1256,14 @@ def main():
         except Exception:
             pass
         gc.collect()
+        shutdown_result = shutdown_carla_processes()
+        if shutdown_result["killed_any"]:
+            print("\nServer CARLA arrestato al termine della valutazione finale.")
+        elif shutdown_result["issues"]:
+            joined_issues = "; ".join(shutdown_result["issues"])
+            print(f"\n[WARN] Chiusura CARLA a fine eval non pulita: {joined_issues}")
+        else:
+            print("\nNessun processo CARLA trovato da arrestare al termine della valutazione finale.")
 
 
 if __name__ == "__main__":

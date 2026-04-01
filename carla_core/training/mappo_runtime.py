@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 from collections import deque
 
 import numpy as np
@@ -22,6 +23,70 @@ def _append_episode_json(path, record):
     line = json.dumps(record, default=str) + "\n"
     with open(path, "a") as f:
         f.write(line)
+
+
+def shutdown_carla_processes():
+    """Best-effort shutdown of local CARLA server processes on Windows."""
+    if os.name != "nt":
+        return {
+            "attempted": False,
+            "killed_any": False,
+            "not_found_only": True,
+            "issues": [],
+            "targets": [],
+        }
+
+    targets = []
+    issues = []
+    killed_any = False
+    not_found_only = True
+
+    for image_name in ("CarlaUE4-Win64-Shipping.exe", "CarlaUE4.exe"):
+        try:
+            proc = subprocess.run(
+                ["taskkill", "/F", "/IM", image_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except Exception as exc:
+            issues.append(f"{image_name}: {type(exc).__name__}: {exc}")
+            not_found_only = False
+            continue
+
+        output = "\n".join(part for part in (proc.stdout.strip(), proc.stderr.strip()) if part)
+        normalized = output.lower()
+        targets.append({"image_name": image_name, "returncode": proc.returncode, "output": output})
+
+        if proc.returncode == 0:
+            killed_any = True
+            continue
+
+        if any(
+            token in normalized
+            for token in (
+                "not found",
+                "no running instance",
+                "not running",
+                "nessuna istanza",
+                "non trovato",
+                "non e' in esecuzione",
+                "non è in esecuzione",
+            )
+        ):
+            continue
+
+        not_found_only = False
+        issues.append(f"{image_name}: taskkill exited with code {proc.returncode}")
+
+    return {
+        "attempted": True,
+        "killed_any": killed_any,
+        "not_found_only": not_found_only,
+        "issues": issues,
+        "targets": targets,
+    }
 
 
 class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
