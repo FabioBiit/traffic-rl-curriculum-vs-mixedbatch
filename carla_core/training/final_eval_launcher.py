@@ -12,6 +12,7 @@ PARENT_POLL_INTERVAL_S = 1.0
 PARENT_EXIT_TIMEOUT_S = 120.0
 POST_PARENT_COOLDOWN_S = 5.0
 RUNTIME_QUIESCENCE_TIMEOUT_S = 30.0
+EVALUATION_SUBPROCESS_TIMEOUT_S = 14400.0
 
 
 def _write_json_atomic(path, payload):
@@ -66,6 +67,25 @@ def _is_process_alive(pid):
     except OSError:
         return False
     return True
+
+
+def _windows_subprocess_creationflags():
+    flags = 0
+    if sys.platform == "win32":
+        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        flags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+        flags |= getattr(subprocess, "CREATE_DEFAULT_ERROR_MODE", 0)
+    return flags
+
+
+def _resolve_subprocess_executable():
+    executable = sys.executable
+    if sys.platform == "win32":
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        if pythonw.exists():
+            executable = str(pythonw)
+    return executable
 
 
 def _load_psutil():
@@ -162,10 +182,20 @@ def _wait_for_runtime_quiescence(tracked_processes):
 
 
 def _artifacts_ready(job):
+    return not _missing_artifacts(job)
+
+
+def _missing_artifacts(job):
     checkpoint_path = Path(job["checkpoint_path"])
     out_dir = Path(job["out_dir"])
     last_result_path = out_dir / "last_result.json"
-    return checkpoint_path.exists() and last_result_path.exists()
+
+    missing = []
+    if not checkpoint_path.exists():
+        missing.append(f"checkpoint missing: {checkpoint_path}")
+    if not last_result_path.exists():
+        missing.append(f"last_result.json missing: {last_result_path}")
+    return missing
 
 
 def _acquire_lock(lock_path):
@@ -313,21 +343,41 @@ def _safe_update_results_payload(*, job, completed, reason=None):
         return False
 
 
+def _resolve_evaluation_timeout_seconds(job):
+    runtime_cfg = ((job.get("eval_cfg") or {}).get("runtime") or {})
+    raw_timeout = runtime_cfg.get("subprocess_timeout_seconds")
+    try:
+        if raw_timeout is not None:
+            return max(1.0, float(raw_timeout))
+    except (TypeError, ValueError):
+        pass
+    return EVALUATION_SUBPROCESS_TIMEOUT_S
+
+
 def _launch_evaluation(job):
     cmd = [
-        sys.executable,
+        _resolve_subprocess_executable(),
         "-m",
         "carla_core.training.evaluate_carla_mappo",
         "--job",
         str(Path(job["out_dir"]) / "final_eval_job.json"),
     ]
     log_path = Path(job["out_dir"]) / "final_evaluation.log"
+    child_env = os.environ.copy()
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
+    child_env.setdefault("PYTHONUTF8", "1")
+    creationflags = _windows_subprocess_creationflags()
     with open(log_path, "a", encoding="utf-8") as log_file:
         proc = subprocess.run(
             cmd,
             cwd=str(job["project_root"]),
+            stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=subprocess.STDOUT,
+            env=child_env,
+            timeout=_resolve_evaluation_timeout_seconds(job),
+            creationflags=creationflags,
+            close_fds=True,
         )
     return proc.returncode
 
@@ -505,7 +555,10 @@ def main():
             return 0
 
         if not _artifacts_ready(job):
-            reason = "final evaluation artifacts missing after parent shutdown"
+            reason = (
+                "final evaluation artifacts missing after parent shutdown: "
+                + "; ".join(_missing_artifacts(job))
+            )
             _safe_update_results_payload(job=job, completed=False, reason=reason)
             _update_launcher_status(
                 status_path,
@@ -566,7 +619,39 @@ def main():
             evaluation_exit_code=None,
             finished_at=None,
         )
-        return_code = _launch_evaluation(job)
+        _write_json_atomic(
+            out_dir / "evaluation_status.json",
+            {
+                "completed": False,
+                "reason": "evaluation subprocess starting",
+                "exit_code": None,
+                "artifacts_written": False,
+                "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "finished_at": None,
+                "evaluation_metric_keys": [],
+            },
+        )
+        try:
+            return_code = _launch_evaluation(job)
+        except subprocess.TimeoutExpired:
+            timeout_s = _resolve_evaluation_timeout_seconds(job)
+            reason = (
+                "evaluation subprocess timeout "
+                f"after {int(timeout_s)}s"
+            )
+            _safe_update_results_payload(job=job, completed=False, reason=reason)
+            _update_launcher_status(
+                status_path,
+                state="evaluation_failed",
+                reason=reason,
+                parent_pid=parent_pid,
+                launcher_pid=os.getpid(),
+                evaluation_started=True,
+                evaluation_completed=False,
+                evaluation_exit_code=None,
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            return 1
         eval_status = _load_evaluation_status(out_dir)
 
         if return_code == 0 and eval_status.get("completed", False):

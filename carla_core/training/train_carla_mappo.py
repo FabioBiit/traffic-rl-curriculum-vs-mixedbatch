@@ -119,6 +119,66 @@ def _snapshot_runtime_processes(*, parent_pid=None, exclude_pids=None):
     return tracked
 
 
+def _resolve_project_path(path_value, *, project_root):
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = Path(project_root) / path
+    return path.resolve(strict=False)
+
+
+def _coerce_path_candidate(value):
+    if value is None:
+        return None
+    if isinstance(value, (str, os.PathLike)):
+        try:
+            candidate = Path(value)
+        except (TypeError, ValueError, OSError):
+            return None
+        return candidate if str(candidate).strip() else None
+    return None
+
+
+def _resolve_checkpoint_path(checkpoint_result, *, project_root):
+    pending = [checkpoint_result]
+    seen = set()
+
+    while pending:
+        current = pending.pop(0)
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+
+        candidate = _coerce_path_candidate(current)
+        if candidate is not None:
+            return _resolve_project_path(candidate, project_root=project_root)
+
+        for attr_name in ("path", "checkpoint", "checkpoint_dir"):
+            try:
+                nested = getattr(current, attr_name)
+            except Exception:
+                continue
+            if nested is None or nested is current:
+                continue
+            pending.append(nested)
+
+    return None
+
+
+def _validate_final_eval_artifacts(*, checkpoint_path, out_dir):
+    issues = []
+    if checkpoint_path is None:
+        issues.append("checkpoint path could not be resolved from algo.save() result")
+    elif not Path(checkpoint_path).exists():
+        issues.append(f"checkpoint missing: {checkpoint_path}")
+
+    last_result_path = Path(out_dir) / "last_result.json"
+    if not last_result_path.exists():
+        issues.append(f"last_result.json missing: {last_result_path}")
+
+    return issues
+
+
 def _append_episode_json(path, record):
     """Append a JSON line to the episode log file.
     With num_workers=0 (single CARLA instance), no lock is needed.
@@ -462,7 +522,7 @@ def _build_evaluation_summary(raw, train_map):
 def _render_progress_bar(progress, width=24):
     progress = max(0.0, min(float(progress), 1.0))
     filled = int(progress * width)
-    return "[" + ("\u2588" * filled) + ("\u2591" * (width - filled)) + "]"
+    return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
 
 
 def _estimate_eval_progress(
@@ -1009,18 +1069,6 @@ def _save_evaluation_artifacts(
             metric_keys=evaluation_metric_keys or [],
         )
 
-
-def _resolve_evaluation_output_dir(*, base_dir, eval_cfg):
-    outputs = eval_cfg.get("outputs", {})
-    output_dir = outputs.get("output_dir")
-    if output_dir:
-        out_path = Path(output_dir)
-        if not out_path.is_absolute():
-            out_path = Path(base_dir) / out_path
-    else:
-        out_path = Path(base_dir)
-    return out_path
-
 def _write_json_atomic(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1096,8 +1144,13 @@ def _write_final_eval_launcher_status(
 
 
 def _launch_final_eval_launcher_subprocess(*, job_path, workdir):
+    launcher_executable = sys.executable
+    if sys.platform == "win32":
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        if pythonw.exists():
+            launcher_executable = str(pythonw)
     cmd = [
-        sys.executable,
+        launcher_executable,
         "-m",
         "carla_core.training.final_eval_launcher",
         "--job",
@@ -1107,15 +1160,19 @@ def _launch_final_eval_launcher_subprocess(*, job_path, workdir):
     if sys.platform == "win32":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        creationflags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+        creationflags |= getattr(subprocess, "CREATE_DEFAULT_ERROR_MODE", 0)
 
     log_path = Path(job_path).with_name("final_eval_launcher.log")
     with open(log_path, "a", encoding="utf-8") as log_file:
         proc = subprocess.Popen(
             cmd,
             cwd=str(workdir),
+            stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             creationflags=creationflags,
+            close_fds=True,
         )
     return proc.pid
 
@@ -1265,14 +1322,21 @@ def main():
     exp_cfg = train_cfg.get("experiment", {})
     if args.mode:
         exp_cfg["mode"] = args.mode
+    project_root = base.parent
     out_base = exp_cfg.get("output_dir", str(base / "experiments"))
+    out_base_path = _resolve_project_path(out_base, project_root=project_root)
 
     # Output dir
     ts_str = time.strftime("%Y%m%d_%H%M%S")
     name = exp_cfg.get("name", "carla_mappo")
-    out_dir = args.checkpoint_dir or str(Path(out_base) / f"{name}_{ts_str}")
+    if args.checkpoint_dir:
+        out_dir = str(
+            _resolve_project_path(args.checkpoint_dir, project_root=project_root)
+        )
+    else:
+        out_dir = str((out_base_path / f"{name}_{ts_str}").resolve(strict=False))
     resolved_mode = _derive_mode(
-        {**exp_cfg, "output_dir": out_base},
+        {**exp_cfg, "output_dir": str(out_base_path)},
         out_dir,
     )
     if resolved_mode == "unknown":
@@ -1357,7 +1421,7 @@ def main():
     final_evaluation_skip_reason = None
     final_checkpoint = None
     training_failed = False
-    results_path = os.path.join(out_dir, "results.json")
+    results_path = str((Path(out_dir) / "results.json").resolve(strict=False))
     launcher_pid = None
     results_saved_ok = False
 
@@ -1427,7 +1491,8 @@ def main():
 
             if ts_done % ckpt_freq < batch_size:
                 ckpt = algo.save(out_dir)
-                print(f"    -> Checkpoint: {ckpt}")
+                ckpt_path = _resolve_checkpoint_path(ckpt, project_root=project_root)
+                print(f"    -> Checkpoint: {ckpt_path or ckpt}")
 
     except KeyboardInterrupt:
         should_run_final_evaluation = False
@@ -1451,7 +1516,15 @@ def main():
     finally:
         if algo is not None and not training_failed and iteration > 0:
             try:
-                final_checkpoint = algo.save(out_dir)
+                final_checkpoint_result = algo.save(out_dir)
+                final_checkpoint = _resolve_checkpoint_path(
+                    final_checkpoint_result,
+                    project_root=project_root,
+                )
+                if final_checkpoint is None:
+                    raise ValueError(
+                        "Could not resolve checkpoint filesystem path from algo.save() result"
+                    )
                 print(f"\nCheckpoint finale: {final_checkpoint}")
             except Exception as e:
                 print(f"\nCheckpoint fallito: {e}")
@@ -1477,6 +1550,12 @@ def main():
                 and should_run_final_evaluation
                 and final_checkpoint is not None
             ):
+                artifact_issues = _validate_final_eval_artifacts(
+                    checkpoint_path=final_checkpoint,
+                    out_dir=out_dir,
+                )
+                if artifact_issues:
+                    raise RuntimeError("; ".join(artifact_issues))
                 print("\nPianificazione valutazione finale multi-scenario...")
                 tracked_runtime_processes = _snapshot_runtime_processes(
                     parent_pid=os.getpid()

@@ -2,7 +2,6 @@ import argparse
 import gc
 import json
 import os
-import sys
 import time
 import traceback
 from copy import deepcopy
@@ -10,13 +9,17 @@ from pathlib import Path
 
 import carla
 import ray
+from ray.rllib.models import ModelCatalog
+from ray.tune.registry import register_env
 
 from carla_core.training.train_carla_mappo import (
     FinalEvaluationFailed,
     FinalEvaluationInterrupted,
+    CentralizedCriticModel,
     _run_evaluation_scenarios,
     _sanitize_for_json,
     _save_evaluation_artifacts,
+    rllib_env_creator,
 )
 
 
@@ -43,9 +46,6 @@ def _carla_preflight(env_cfg):
     client = carla.Client(sim["host"], sim["port"])
     client.set_timeout(sim["timeout_seconds"])
 
-    world = client.get_world()
-    _ = world.get_map().name
-
     target_map = env_cfg["world"]["map"]
     try:
         available_maps = [m.split("/")[-1] for m in client.get_available_maps()]
@@ -58,7 +58,18 @@ def _carla_preflight(env_cfg):
             f"Available maps: {sorted(available_maps)}"
         )
 
+    # CARLA recommends reloading the world between repetitions to guarantee a
+    # clean simulator state. The final eval runs in its own subprocess, so we
+    # can safely re-take ownership of the target map before building RLlib.
+    world = client.load_world(target_map)
+    _ = world.get_map().name
     _ = client.get_trafficmanager(int(sim.get("traffic_manager_port", 8000)))
+
+
+def _register_eval_runtime():
+    # RLlib requires explicit registration in each subprocess that builds an Algorithm.
+    register_env("CarlaMultiAgent-v0", rllib_env_creator)
+    ModelCatalog.register_custom_model("cc_model", CentralizedCriticModel)
 
 
 def _maybe_save_artifacts(
@@ -109,6 +120,7 @@ def main():
 
     try:
         _carla_preflight(job["env_cfg"])
+        _register_eval_runtime()
         evaluation_raw, evaluation_summary, evaluation_traces, evaluation_metric_keys = (
             _run_evaluation_scenarios(
                 checkpoint_path=job["checkpoint_path"],
