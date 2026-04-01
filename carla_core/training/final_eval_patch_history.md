@@ -107,3 +107,9 @@ previously inconclusive changes.
     `_npc_walkers` / `_npc_controllers`.
     Outcome: fixes the training-start regression where `ctrl.start()` raised
     "Actor could not be found in the registry" during RLlib env checks.
+
+21. Decouple training from final evaluation by default. Training now always
+    writes `final_eval_job.json`, but only auto-launches the final-eval
+    subprocess when `--launch-final-eval` is passed explicitly.
+    Outcome: removes the fragile train->eval handoff from the default path while
+    preserving the existing job-based eval entrypoint for manual runs.

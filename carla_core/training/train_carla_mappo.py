@@ -1483,6 +1483,12 @@ def main():
     parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--train-config", type=str, default=None)
     parser.add_argument("--env-config", type=str, default=None)
+    parser.add_argument(
+        "--launch-final-eval",
+        action="store_true",
+        help="Launch final evaluation automatically after training. "
+        "Default behavior is to only write final_eval_job.json and stop.",
+    )
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -1764,7 +1770,6 @@ def main():
                 )
                 if artifact_issues:
                     raise RuntimeError("; ".join(artifact_issues))
-                print("\nPianificazione valutazione finale multi-scenario...")
                 tracked_runtime_processes = _snapshot_runtime_processes(
                     parent_pid=os.getpid()
                 )
@@ -1781,22 +1786,37 @@ def main():
                     project_root=base.parent,
                     tracked_runtime_processes=tracked_runtime_processes,
                 )
-                launcher_status_path = _write_final_eval_launcher_status(
-                    out_dir=out_dir,
-                    state="pending_parent_shutdown",
-                    parent_pid=os.getpid(),
-                    session_id=Path(out_dir).name,
-                )
-                launcher_pid = _launch_final_eval_launcher_subprocess(
-                    job_path=job_path,
-                    workdir=base.parent,
-                )
-                final_evaluation_skip_reason = "final evaluation delegated to launcher"
-                print(
-                    "  Final evaluation launcher scheduled "
-                    f"(pid={launcher_pid})."
-                )
-                print(f"  Launcher status: {launcher_status_path}")
+                if args.launch_final_eval:
+                    print("\nPianificazione valutazione finale multi-scenario...")
+                    launcher_status_path = _write_final_eval_launcher_status(
+                        out_dir=out_dir,
+                        state="pending_parent_shutdown",
+                        parent_pid=os.getpid(),
+                        session_id=Path(out_dir).name,
+                    )
+                    launcher_pid = _launch_final_eval_launcher_subprocess(
+                        job_path=job_path,
+                        workdir=base.parent,
+                    )
+                    final_evaluation_skip_reason = (
+                        "final evaluation delegated to launcher"
+                    )
+                    print(
+                        "  Final evaluation launcher scheduled "
+                        f"(pid={launcher_pid})."
+                    )
+                    print(f"  Launcher status: {launcher_status_path}")
+                else:
+                    eval_command = (
+                        "python carla_core/training/evaluate_carla_mappo.py "
+                        f"--job \"{job_path}\""
+                    )
+                    final_evaluation_skip_reason = (
+                        "final evaluation decoupled from training; launch manually"
+                    )
+                    print("\nValutazione finale multi-scenario non avviata automaticamente.")
+                    print(f"  Job eval: {job_path}")
+                    print(f"  Per lanciarla: {eval_command}")
             else:
                 reason = final_evaluation_skip_reason or (
                     "disabled, no completed iterations, or missing final checkpoint"
