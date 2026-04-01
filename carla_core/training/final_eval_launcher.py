@@ -13,6 +13,8 @@ PARENT_EXIT_TIMEOUT_S = 120.0
 POST_PARENT_COOLDOWN_S = 5.0
 RUNTIME_QUIESCENCE_TIMEOUT_S = 30.0
 EVALUATION_SUBPROCESS_TIMEOUT_S = 14400.0
+EVALUATION_STATUS_POLL_INTERVAL_S = 5.0
+EVALUATION_HEARTBEAT_TIMEOUT_S = 180.0
 
 
 def _write_json_atomic(path, payload):
@@ -41,6 +43,12 @@ def _update_launcher_status(status_path, **fields):
     payload["updated_at"] = now
     _write_json_atomic(status_path, payload)
     return payload
+
+
+def _render_progress_bar(progress, width=24):
+    progress = max(0.0, min(float(progress), 1.0))
+    filled = int(progress * width)
+    return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
 
 
 def _is_process_alive(pid):
@@ -79,12 +87,18 @@ def _windows_subprocess_creationflags():
     return flags
 
 
-def _resolve_subprocess_executable():
+def _resolve_subprocess_executable(*, windowed=False):
     executable = sys.executable
     if sys.platform == "win32":
-        pythonw = Path(sys.executable).with_name("pythonw.exe")
-        if pythonw.exists():
-            executable = str(pythonw)
+        current = Path(sys.executable)
+        if windowed:
+            pythonw = current.with_name("pythonw.exe")
+            if pythonw.exists():
+                executable = str(pythonw)
+        else:
+            python = current.with_name("python.exe")
+            if python.exists():
+                executable = str(python)
     return executable
 
 
@@ -97,7 +111,19 @@ def _load_psutil():
         return None
 
 
-def _snapshot_descendant_processes(parent_pid):
+def _normalize_pid_exclusions(exclude_pids=None):
+    excluded = set()
+    for pid in exclude_pids or ():
+        try:
+            pid_int = int(pid)
+        except (TypeError, ValueError):
+            continue
+        if pid_int > 0:
+            excluded.add(pid_int)
+    return excluded
+
+
+def _snapshot_descendant_processes(parent_pid, exclude_pids=None):
     parent_pid = int(parent_pid)
     if parent_pid <= 0:
         return {}
@@ -112,19 +138,24 @@ def _snapshot_descendant_processes(parent_pid):
     except psutil.Error:
         return {}
 
+    excluded = _normalize_pid_exclusions(exclude_pids)
     tracked = {}
     for child in children:
         try:
-            tracked[int(child.pid)] = float(child.create_time())
+            child_pid = int(child.pid)
+            if child_pid in excluded:
+                continue
+            tracked[child_pid] = float(child.create_time())
         except (psutil.Error, OSError, ValueError):
             continue
     return tracked
 
 
-def _normalize_tracked_processes(payload):
+def _normalize_tracked_processes(payload, exclude_pids=None):
     if not isinstance(payload, dict):
         return {}
 
+    excluded = _normalize_pid_exclusions(exclude_pids)
     tracked = {}
     for pid, created_at in payload.items():
         try:
@@ -132,16 +163,18 @@ def _normalize_tracked_processes(payload):
             created_at_float = float(created_at)
         except (TypeError, ValueError):
             continue
-        if pid_int > 0:
+        if pid_int > 0 and pid_int not in excluded:
             tracked[pid_int] = created_at_float
     return tracked
 
 
-def _wait_for_parent_exit(parent_pid):
+def _wait_for_parent_exit(parent_pid, exclude_pids=None):
     tracked_processes = {}
     deadline = time.time() + PARENT_EXIT_TIMEOUT_S
     while _is_process_alive(parent_pid):
-        tracked_processes.update(_snapshot_descendant_processes(parent_pid))
+        tracked_processes.update(
+            _snapshot_descendant_processes(parent_pid, exclude_pids=exclude_pids)
+        )
         if time.time() >= deadline:
             return tracked_processes, True
         time.sleep(PARENT_POLL_INTERVAL_S)
@@ -164,20 +197,25 @@ def _is_tracked_process_alive(pid, created_at=None):
     return _is_process_alive(pid)
 
 
-def _alive_tracked_processes(tracked_processes):
+def _alive_tracked_processes(tracked_processes, exclude_pids=None):
+    excluded = _normalize_pid_exclusions(exclude_pids)
     alive = {}
     for pid, created_at in dict(tracked_processes).items():
+        if int(pid) in excluded:
+            continue
         if _is_tracked_process_alive(pid, created_at):
             alive[int(pid)] = float(created_at)
     return alive
 
 
-def _wait_for_runtime_quiescence(tracked_processes):
+def _wait_for_runtime_quiescence(tracked_processes, exclude_pids=None):
     deadline = time.time() + RUNTIME_QUIESCENCE_TIMEOUT_S
-    alive = _alive_tracked_processes(tracked_processes)
+    alive = _alive_tracked_processes(tracked_processes, exclude_pids=exclude_pids)
     while alive and time.time() < deadline:
         time.sleep(PARENT_POLL_INTERVAL_S)
-        alive = _alive_tracked_processes(tracked_processes)
+        alive = _alive_tracked_processes(
+            tracked_processes, exclude_pids=exclude_pids
+        )
     return alive
 
 
@@ -281,6 +319,80 @@ def _load_evaluation_status(out_dir):
     )
 
 
+def _load_launcher_status(status_path):
+    return _load_json(status_path, {})
+
+
+def _evaluation_status_matches_session(status, session_id):
+    return bool(session_id) and str(status.get("session_id") or "") == str(session_id)
+
+
+def _preexisting_stale_session_reason(*, job, launcher_status, evaluation_status):
+    session_id = str(job.get("session_id") or "")
+    if not session_id:
+        return None
+
+    eval_started = bool(evaluation_status.get("started_at"))
+    eval_finished = bool(evaluation_status.get("finished_at"))
+    eval_completed = bool(evaluation_status.get("completed", False))
+    if _evaluation_status_matches_session(evaluation_status, session_id) and eval_started:
+        if eval_completed:
+            return "evaluation already completed for this session"
+        if eval_finished:
+            return "stale evaluation record already exists for this session"
+        reason = str(evaluation_status.get("reason") or "")
+        if reason in {"evaluation subprocess starting", "evaluation subprocess running"}:
+            return "stale in-progress evaluation record already exists for this session"
+
+    if str(launcher_status.get("session_id") or "") == session_id:
+        launcher_state = str(launcher_status.get("state") or "")
+        launcher_finished = bool(launcher_status.get("finished_at"))
+        if launcher_state == "evaluation_completed":
+            return "evaluation already completed for this session"
+        if launcher_finished and launcher_state in {"evaluation_failed", "evaluation_skipped"}:
+            return "stale launcher record already exists for this session"
+
+    return None
+
+
+def _mark_evaluation_status_terminal(out_dir, *, reason, exit_code):
+    status_path = Path(out_dir) / "evaluation_status.json"
+    payload = _load_evaluation_status(out_dir)
+    payload["completed"] = False
+    payload["reason"] = str(reason)
+    payload["exit_code"] = int(exit_code)
+    payload["artifacts_written"] = bool(payload.get("artifacts_written", False))
+    payload["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    payload["heartbeat_at"] = payload["finished_at"]
+    payload["heartbeat_epoch_s"] = time.time()
+    progress = float(payload.get("progress", 0.0) or 0.0)
+    payload["progress"] = max(0.0, min(progress, 1.0))
+    payload["progress_bar"] = _render_progress_bar(payload["progress"])
+    _write_json_atomic(status_path, payload)
+    return payload
+
+
+def _resolve_heartbeat_epoch(status):
+    try:
+        heartbeat_epoch_s = status.get("heartbeat_epoch_s")
+        if heartbeat_epoch_s is not None:
+            return float(heartbeat_epoch_s)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _resolve_eval_runtime_float(job, key, default_value):
+    runtime_cfg = ((job.get("eval_cfg") or {}).get("runtime") or {})
+    raw_value = runtime_cfg.get(key)
+    try:
+        if raw_value is not None:
+            return max(1.0, float(raw_value))
+    except (TypeError, ValueError):
+        pass
+    return float(default_value)
+
+
 def _resolve_evaluation_failure_reason(*, return_code, status):
     reason = status.get("reason")
     exit_code = status.get("exit_code")
@@ -344,19 +456,26 @@ def _safe_update_results_payload(*, job, completed, reason=None):
 
 
 def _resolve_evaluation_timeout_seconds(job):
-    runtime_cfg = ((job.get("eval_cfg") or {}).get("runtime") or {})
-    raw_timeout = runtime_cfg.get("subprocess_timeout_seconds")
-    try:
-        if raw_timeout is not None:
-            return max(1.0, float(raw_timeout))
-    except (TypeError, ValueError):
-        pass
-    return EVALUATION_SUBPROCESS_TIMEOUT_S
+    return _resolve_eval_runtime_float(
+        job, "subprocess_timeout_seconds", EVALUATION_SUBPROCESS_TIMEOUT_S
+    )
+
+
+def _resolve_evaluation_heartbeat_timeout_seconds(job):
+    return _resolve_eval_runtime_float(
+        job, "heartbeat_timeout_seconds", EVALUATION_HEARTBEAT_TIMEOUT_S
+    )
+
+
+def _resolve_evaluation_status_poll_seconds(job):
+    return _resolve_eval_runtime_float(
+        job, "status_poll_interval_seconds", EVALUATION_STATUS_POLL_INTERVAL_S
+    )
 
 
 def _launch_evaluation(job):
     cmd = [
-        _resolve_subprocess_executable(),
+        _resolve_subprocess_executable(windowed=False),
         "-m",
         "carla_core.training.evaluate_carla_mappo",
         "--job",
@@ -367,19 +486,125 @@ def _launch_evaluation(job):
     child_env.setdefault("PYTHONIOENCODING", "utf-8")
     child_env.setdefault("PYTHONUTF8", "1")
     creationflags = _windows_subprocess_creationflags()
+    launcher_status_path = Path(job["out_dir"]) / "final_eval_launcher_status.json"
+    deadline = time.time() + _resolve_evaluation_timeout_seconds(job)
+    heartbeat_timeout_s = _resolve_evaluation_heartbeat_timeout_seconds(job)
+    poll_interval_s = _resolve_evaluation_status_poll_seconds(job)
+    last_logged_signature = None
+    last_heartbeat_epoch = time.time()
+    last_status = _load_evaluation_status(job["out_dir"])
+
     with open(log_path, "a", encoding="utf-8") as log_file:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(job["project_root"]),
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             env=child_env,
-            timeout=_resolve_evaluation_timeout_seconds(job),
             creationflags=creationflags,
             close_fds=True,
         )
-    return proc.returncode
+        while True:
+            return_code = proc.poll()
+            current_status = _load_evaluation_status(job["out_dir"])
+            if current_status:
+                last_status = current_status
+
+            heartbeat_epoch = _resolve_heartbeat_epoch(last_status)
+            if heartbeat_epoch is not None:
+                last_heartbeat_epoch = heartbeat_epoch
+
+            progress = float(last_status.get("progress", 0.0) or 0.0)
+            progress = max(0.0, min(progress, 1.0))
+            progress_bar = _render_progress_bar(progress)
+            current_signature = (
+                last_status.get("heartbeat_at"),
+                last_status.get("current_scenario_idx"),
+                last_status.get("progress"),
+                last_status.get("current_map"),
+                last_status.get("current_profile"),
+            )
+            if current_signature != last_logged_signature:
+                scenario_idx = int(last_status.get("current_scenario_idx", 0) or 0)
+                total_scenarios = int(last_status.get("total_scenarios", 0) or 0)
+                current_map = last_status.get("current_map") or "-"
+                current_profile = last_status.get("current_profile") or "-"
+                print(
+                    "Eval heartbeat "
+                    f"{progress_bar} {progress * 100:5.1f}% "
+                    f"({scenario_idx}/{total_scenarios}) "
+                    f"{current_map}/{current_profile}",
+                    file=log_file,
+                    flush=True,
+                )
+                last_logged_signature = current_signature
+
+            _update_launcher_status(
+                launcher_status_path,
+                state="launching_evaluation",
+                reason=None,
+                parent_pid=int(job["parent_pid"]),
+                launcher_pid=os.getpid(),
+                evaluation_started=True,
+                evaluation_completed=False,
+                evaluation_exit_code=None,
+                finished_at=None,
+                evaluation_pid=proc.pid,
+                evaluation_progress=progress,
+                evaluation_progress_bar=progress_bar,
+                evaluation_heartbeat_at=last_status.get("heartbeat_at"),
+                current_scenario_idx=int(last_status.get("current_scenario_idx", 0) or 0),
+                total_scenarios=int(last_status.get("total_scenarios", 0) or 0),
+                current_map=last_status.get("current_map"),
+                current_profile=last_status.get("current_profile"),
+                session_id=job.get("session_id"),
+            )
+
+            if return_code is not None:
+                return return_code
+
+            now = time.time()
+            if now >= deadline:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    return_code = proc.wait(timeout=5.0)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return_code = proc.wait(timeout=5.0)
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=_resolve_evaluation_timeout_seconds(job))
+
+            if (now - last_heartbeat_epoch) >= heartbeat_timeout_s:
+                reason = (
+                    "evaluation heartbeat timeout after "
+                    f"{int(heartbeat_timeout_s)}s without status update"
+                )
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=5.0)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    proc.wait(timeout=5.0)
+                _mark_evaluation_status_terminal(
+                    job["out_dir"],
+                    reason=reason,
+                    exit_code=1,
+                )
+                return 1
+
+            time.sleep(poll_interval_s)
 
 
 def main():
@@ -416,15 +641,58 @@ def main():
     status_path = out_dir / "final_eval_launcher_status.json"
     lock_path = out_dir / "final_eval.lock"
     parent_pid = int(job.get("parent_pid", 0) or 0)
+    session_id = str(job.get("session_id") or Path(out_dir).name)
+    launcher_pid = os.getpid()
+    launcher_parent_pid = os.getppid()
+    excluded_runtime_pids = {launcher_pid, launcher_parent_pid}
 
     lock_acquired = False
     try:
+        preexisting_launcher_status = _load_launcher_status(status_path)
+        preexisting_eval_status = _load_evaluation_status(out_dir)
+        stale_session_reason = _preexisting_stale_session_reason(
+            job=job,
+            launcher_status=preexisting_launcher_status,
+            evaluation_status=preexisting_eval_status,
+        )
+        if stale_session_reason == "evaluation already completed for this session":
+            _safe_update_results_payload(job=job, completed=True, reason=None)
+            _update_launcher_status(
+                status_path,
+                session_id=session_id,
+                state="evaluation_completed",
+                reason=None,
+                parent_pid=parent_pid,
+                launcher_pid=launcher_pid,
+                evaluation_started=True,
+                evaluation_completed=True,
+                evaluation_exit_code=0,
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            return 0
+        if stale_session_reason:
+            _safe_update_results_payload(job=job, completed=False, reason=stale_session_reason)
+            _update_launcher_status(
+                status_path,
+                session_id=session_id,
+                state="evaluation_skipped",
+                reason=stale_session_reason,
+                parent_pid=parent_pid,
+                launcher_pid=launcher_pid,
+                evaluation_started=False,
+                evaluation_completed=False,
+                evaluation_exit_code=None,
+                finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            return 1
+
         _update_launcher_status(
             status_path,
+            session_id=session_id,
             state="pending_parent_shutdown",
             reason=None,
             parent_pid=parent_pid,
-            launcher_pid=os.getpid(),
+            launcher_pid=launcher_pid,
             evaluation_started=False,
             evaluation_completed=False,
             evaluation_exit_code=None,
@@ -447,10 +715,11 @@ def main():
             )
             _update_launcher_status(
                 status_path,
+                session_id=session_id,
                 state="evaluation_failed",
                 reason=reason,
                 parent_pid=parent_pid,
-                launcher_pid=os.getpid(),
+                launcher_pid=launcher_pid,
                 evaluation_started=False,
                 evaluation_completed=False,
                 evaluation_exit_code=1,
@@ -459,12 +728,18 @@ def main():
             return 1
 
         tracked_runtime_processes = _normalize_tracked_processes(
-            job.get("tracked_runtime_processes", {})
+            job.get("tracked_runtime_processes", {}),
+            exclude_pids=excluded_runtime_pids,
         )
         observed_runtime_processes, parent_exit_timed_out = _wait_for_parent_exit(
-            parent_pid
+            parent_pid,
+            exclude_pids=excluded_runtime_pids,
         )
         tracked_runtime_processes.update(observed_runtime_processes)
+        tracked_runtime_processes = _normalize_tracked_processes(
+            tracked_runtime_processes,
+            exclude_pids=excluded_runtime_pids,
+        )
         if parent_exit_timed_out:
             reason = (
                 "parent process did not exit before launcher timeout "
@@ -473,10 +748,11 @@ def main():
             _safe_update_results_payload(job=job, completed=False, reason=reason)
             _update_launcher_status(
                 status_path,
+                session_id=session_id,
                 state="evaluation_skipped",
                 reason=reason,
                 parent_pid=parent_pid,
-                launcher_pid=os.getpid(),
+                launcher_pid=launcher_pid,
                 evaluation_started=False,
                 evaluation_completed=False,
                 evaluation_exit_code=None,
@@ -489,9 +765,10 @@ def main():
 
         _update_launcher_status(
             status_path,
+            session_id=session_id,
             state="waiting_for_runtime_quiescence",
             parent_pid=parent_pid,
-            launcher_pid=os.getpid(),
+            launcher_pid=launcher_pid,
             evaluation_started=False,
             evaluation_completed=False,
             evaluation_exit_code=None,
@@ -502,7 +779,8 @@ def main():
         time.sleep(POST_PARENT_COOLDOWN_S)
 
         alive_runtime_processes = _wait_for_runtime_quiescence(
-            tracked_runtime_processes
+            tracked_runtime_processes,
+            exclude_pids=excluded_runtime_pids,
         )
         if alive_runtime_processes:
             alive_runtime_pids = sorted(int(pid) for pid in alive_runtime_processes)
@@ -513,10 +791,11 @@ def main():
             _safe_update_results_payload(job=job, completed=False, reason=reason)
             _update_launcher_status(
                 status_path,
+                session_id=session_id,
                 state="evaluation_skipped",
                 reason=reason,
                 parent_pid=parent_pid,
-                launcher_pid=os.getpid(),
+                launcher_pid=launcher_pid,
                 evaluation_started=False,
                 evaluation_completed=False,
                 evaluation_exit_code=None,
@@ -527,9 +806,10 @@ def main():
 
         _update_launcher_status(
             status_path,
+            session_id=session_id,
             state="waiting_for_artifacts",
             parent_pid=parent_pid,
-            launcher_pid=os.getpid(),
+            launcher_pid=launcher_pid,
             evaluation_started=False,
             evaluation_completed=False,
             evaluation_exit_code=None,
@@ -543,10 +823,11 @@ def main():
             _safe_update_results_payload(job=job, completed=True, reason=None)
             _update_launcher_status(
                 status_path,
+                session_id=session_id,
                 state="evaluation_completed",
                 reason=None,
                 parent_pid=parent_pid,
-                launcher_pid=os.getpid(),
+                launcher_pid=launcher_pid,
                 evaluation_started=True,
                 evaluation_completed=True,
                 evaluation_exit_code=0,
@@ -562,10 +843,11 @@ def main():
             _safe_update_results_payload(job=job, completed=False, reason=reason)
             _update_launcher_status(
                 status_path,
+                session_id=session_id,
                 state="evaluation_skipped",
                 reason=reason,
                 parent_pid=parent_pid,
-                launcher_pid=os.getpid(),
+                launcher_pid=launcher_pid,
                 evaluation_started=False,
                 evaluation_completed=False,
                 evaluation_exit_code=None,
@@ -583,10 +865,11 @@ def main():
                 _safe_update_results_payload(job=job, completed=True, reason=None)
                 _update_launcher_status(
                     status_path,
+                    session_id=session_id,
                     state="evaluation_completed",
                     reason=None,
                     parent_pid=parent_pid,
-                    launcher_pid=os.getpid(),
+                    launcher_pid=launcher_pid,
                     evaluation_started=True,
                     evaluation_completed=True,
                     evaluation_exit_code=0,
@@ -597,10 +880,11 @@ def main():
             reason = "evaluation already in progress or completed"
             _update_launcher_status(
                 status_path,
+                session_id=session_id,
                 state="evaluation_skipped",
                 reason=reason,
                 parent_pid=parent_pid,
-                launcher_pid=os.getpid(),
+                launcher_pid=launcher_pid,
                 evaluation_started=False,
                 evaluation_completed=False,
                 evaluation_exit_code=None,
@@ -610,10 +894,11 @@ def main():
 
         _update_launcher_status(
             status_path,
+            session_id=session_id,
             state="launching_evaluation",
             reason=None,
             parent_pid=parent_pid,
-            launcher_pid=os.getpid(),
+            launcher_pid=launcher_pid,
             evaluation_started=True,
             evaluation_completed=False,
             evaluation_exit_code=None,
@@ -622,6 +907,8 @@ def main():
         _write_json_atomic(
             out_dir / "evaluation_status.json",
             {
+                "session_id": session_id,
+                "pid": None,
                 "completed": False,
                 "reason": "evaluation subprocess starting",
                 "exit_code": None,
@@ -629,6 +916,18 @@ def main():
                 "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "finished_at": None,
                 "evaluation_metric_keys": [],
+                "progress": 0.0,
+                "progress_bar": _render_progress_bar(0.0),
+                "completed_scenarios": 0,
+                "total_scenarios": 0,
+                "total_episodes": 0,
+                "current_phase": "starting",
+                "current_scenario_idx": 0,
+                "current_map": None,
+                "current_profile": None,
+                "progress_mode": "exact",
+                "heartbeat_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "heartbeat_epoch_s": time.time(),
             },
         )
         try:
@@ -639,13 +938,19 @@ def main():
                 "evaluation subprocess timeout "
                 f"after {int(timeout_s)}s"
             )
+            _mark_evaluation_status_terminal(
+                out_dir,
+                reason=reason,
+                exit_code=1,
+            )
             _safe_update_results_payload(job=job, completed=False, reason=reason)
             _update_launcher_status(
                 status_path,
+                session_id=session_id,
                 state="evaluation_failed",
                 reason=reason,
                 parent_pid=parent_pid,
-                launcher_pid=os.getpid(),
+                launcher_pid=launcher_pid,
                 evaluation_started=True,
                 evaluation_completed=False,
                 evaluation_exit_code=None,
@@ -658,10 +963,11 @@ def main():
             _safe_update_results_payload(job=job, completed=True, reason=None)
             _update_launcher_status(
                 status_path,
+                session_id=session_id,
                 state="evaluation_completed",
                 reason=None,
                 parent_pid=parent_pid,
-                launcher_pid=os.getpid(),
+                launcher_pid=launcher_pid,
                 evaluation_started=True,
                 evaluation_completed=True,
                 evaluation_exit_code=0,
@@ -676,10 +982,11 @@ def main():
         _safe_update_results_payload(job=job, completed=False, reason=reason)
         _update_launcher_status(
             status_path,
+            session_id=session_id,
             state="evaluation_failed",
             reason=reason,
             parent_pid=parent_pid,
-            launcher_pid=os.getpid(),
+            launcher_pid=launcher_pid,
             evaluation_started=True,
             evaluation_completed=False,
             evaluation_exit_code=return_code,
@@ -692,10 +999,11 @@ def main():
         _safe_update_results_payload(job=job, completed=False, reason=reason)
         _update_launcher_status(
             status_path,
+            session_id=session_id,
             state="evaluation_failed",
             reason=reason,
             parent_pid=parent_pid,
-            launcher_pid=os.getpid(),
+            launcher_pid=launcher_pid,
             evaluation_started=False,
             evaluation_completed=False,
             evaluation_exit_code=130,
@@ -707,10 +1015,11 @@ def main():
         _safe_update_results_payload(job=job, completed=False, reason=reason)
         _update_launcher_status(
             status_path,
+            session_id=session_id,
             state="evaluation_failed",
             reason=reason,
             parent_pid=parent_pid,
-            launcher_pid=os.getpid(),
+            launcher_pid=launcher_pid,
             evaluation_started=False,
             evaluation_completed=False,
             evaluation_exit_code=1,

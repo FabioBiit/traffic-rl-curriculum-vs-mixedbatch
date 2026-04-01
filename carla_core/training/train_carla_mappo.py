@@ -815,7 +815,16 @@ def _run_evaluation_scenarios(
     eval_cfg,
     seed_base,
     n_gpus,
+    status_callback=None,
 ):
+    def _publish_status(**fields):
+        if status_callback is None:
+            return
+        try:
+            status_callback(**fields)
+        except Exception:
+            pass
+
     eval_section = eval_cfg.get("evaluation", {})
     if not eval_section.get("enabled", True):
         return {}, {}, [], []
@@ -860,6 +869,13 @@ def _run_evaluation_scenarios(
     completed_scenario_durations = []
     eval_t0 = time.time()
     scenario_stall_warning_s = 600.0
+    try:
+        heartbeat_interval_s = max(
+            5.0,
+            float(((eval_cfg.get("runtime") or {}).get("heartbeat_interval_seconds", 30.0))),
+        )
+    except (TypeError, ValueError):
+        heartbeat_interval_s = 30.0
 
     print()
     print(f"{'=' * 19}EVAL{'=' * 20}")
@@ -871,6 +887,19 @@ def _run_evaluation_scenarios(
     if total_env_steps_budget is not None:
         print(f"  Eval max env-steps: {total_env_steps_budget:,}\n")
 
+    _publish_status(
+        reason="evaluation subprocess running",
+        progress=0.0,
+        completed_scenarios=0,
+        total_scenarios=total_scenarios,
+        total_episodes=total_episodes,
+        current_phase="starting",
+        current_scenario_idx=0,
+        current_map=None,
+        current_profile=None,
+        progress_mode="exact",
+    )
+
     for map_name in maps:
         map_rows = {}
         for profile in traffic_profiles:
@@ -878,6 +907,18 @@ def _run_evaluation_scenarios(
             profile_name = profile.get("name", "unnamed")
             scenario_t0 = time.time()
             completed_scenarios = scenario_idx - 1
+            _publish_status(
+                reason="evaluation subprocess running",
+                progress=(completed_scenarios / total_scenarios) if total_scenarios else 0.0,
+                completed_scenarios=completed_scenarios,
+                total_scenarios=total_scenarios,
+                total_episodes=total_episodes,
+                current_phase="scenario_running",
+                current_scenario_idx=scenario_idx,
+                current_map=map_name,
+                current_profile=profile_name,
+                progress_mode="exact",
+            )
             print(
                 f"  [Eval {scenario_idx}/{total_scenarios}] "
                 f"{map_name}/{profile_name} | episodes={episodes_per_map}"
@@ -908,7 +949,7 @@ def _run_evaluation_scenarios(
             scenario_stall_warned = [False]
 
             def _heartbeat():
-                while not heartbeat_stop.wait(60.0):
+                while not heartbeat_stop.wait(heartbeat_interval_s):
                     current_elapsed_s = time.time() - scenario_t0
                     progress, has_estimate = _estimate_eval_progress(
                         total_scenarios=total_scenarios,
@@ -922,6 +963,18 @@ def _run_evaluation_scenarios(
                         f"{progress * 100:5.1f}% {estimate_label} "
                         f"({completed_scenarios}/{total_scenarios} scenari completati, "
                         f"{scenario_idx}/{total_scenarios} in corso)"
+                    )
+                    _publish_status(
+                        reason="evaluation subprocess running",
+                        progress=progress,
+                        completed_scenarios=completed_scenarios,
+                        total_scenarios=total_scenarios,
+                        total_episodes=total_episodes,
+                        current_phase="scenario_running",
+                        current_scenario_idx=scenario_idx,
+                        current_map=map_name,
+                        current_profile=profile_name,
+                        progress_mode="estimated" if has_estimate else "baseline_pending",
                     )
                     if (
                         not scenario_stall_warned[0]
@@ -990,6 +1043,18 @@ def _run_evaluation_scenarios(
             remaining = total_scenarios - scenario_idx
             eta = (total_elapsed / scenario_idx) * remaining if scenario_idx > 0 else 0.0
             exact_progress = scenario_idx / total_scenarios
+            _publish_status(
+                reason="evaluation subprocess running",
+                progress=exact_progress,
+                completed_scenarios=scenario_idx,
+                total_scenarios=total_scenarios,
+                total_episodes=total_episodes,
+                current_phase="scenario_completed",
+                current_scenario_idx=scenario_idx,
+                current_map=map_name,
+                current_profile=profile_name,
+                progress_mode="exact",
+            )
             print(
                 f"Eval progress {_render_progress_bar(exact_progress)} "
                 f"{exact_progress * 100:5.1f}% exact "
@@ -1093,10 +1158,12 @@ def _write_final_eval_job(
     tracked_runtime_processes=None,
 ):
     job_path = Path(out_dir) / "final_eval_job.json"
+    session_id = Path(out_dir).name
     payload = {
+        "session_id": session_id,
         "checkpoint_path": str(checkpoint_path),
         "out_dir": str(out_dir),
-        "run_name": Path(out_dir).name,
+        "run_name": session_id,
         "seed_base": int(seed_base),
         "n_gpus": int(n_gpus),
         "parent_pid": int(parent_pid),
@@ -1116,6 +1183,7 @@ def _write_final_eval_launcher_status(
     out_dir,
     state,
     parent_pid,
+    session_id=None,
     launcher_pid=None,
     reason=None,
     evaluation_started=False,
@@ -1126,6 +1194,7 @@ def _write_final_eval_launcher_status(
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     status_path = Path(out_dir) / "final_eval_launcher_status.json"
     payload = {
+        "session_id": None if session_id is None else str(session_id),
         "state": str(state),
         "reason": None if reason is None else str(reason),
         "parent_pid": int(parent_pid),
@@ -1577,6 +1646,7 @@ def main():
                     out_dir=out_dir,
                     state="pending_parent_shutdown",
                     parent_pid=os.getpid(),
+                    session_id=Path(out_dir).name,
                 )
                 launcher_pid = _launch_final_eval_launcher_subprocess(
                     job_path=job_path,

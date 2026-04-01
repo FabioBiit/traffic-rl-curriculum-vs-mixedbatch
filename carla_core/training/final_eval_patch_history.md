@@ -55,3 +55,28 @@ previously inconclusive changes.
     eval child, so immediate child startup failures do not erase the failure
     point from disk.
     Outcome: current active patch under validation.
+
+12. Add file-based eval heartbeat/progress reporting through
+    `evaluation_status.json`, emitted by the eval child during scenario
+    execution and monitored by the launcher.
+    Outcome: current active patch under validation.
+
+13. Add same-session stale-eval guard keyed by `session_id` to prevent
+    relaunching a second final eval for the same run directory when an
+    incomplete record already exists.
+    Outcome: current active patch under validation.
+
+14. Exclude the launcher PID from the tracked runtime-process quiescence gate.
+    Outcome: required after the launcher started skipping eval because it was
+    counting itself as an active training-runtime child.
+
+15. Exclude the launcher's immediate parent PID as well, to handle Windows
+    venv `pythonw.exe` bootstrap/redirector processes that can remain visible
+    in the tracked descendant set after the real launcher process starts.
+    Outcome: current active patch under validation.
+
+16. Stop using `pythonw.exe` for the eval child that initializes Ray.
+    Keep the eval child on `python.exe` so Ray dashboard/agent processes have
+    valid stdio handles; `pythonw.exe` caused `sys.stdout is None` in
+    `dashboard_agent`.
+    Outcome: current active patch under validation.

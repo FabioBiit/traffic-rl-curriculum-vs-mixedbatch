@@ -16,6 +16,7 @@ from carla_core.training.train_carla_mappo import (
     FinalEvaluationFailed,
     FinalEvaluationInterrupted,
     CentralizedCriticModel,
+    _render_progress_bar,
     _run_evaluation_scenarios,
     _sanitize_for_json,
     _save_evaluation_artifacts,
@@ -39,6 +40,13 @@ def _load_job(job_path):
 
 def _project_root():
     return Path(__file__).resolve().parent.parent.parent
+
+
+def _now_status_fields():
+    return {
+        "heartbeat_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "heartbeat_epoch_s": time.time(),
+    }
 
 
 def _carla_preflight(env_cfg):
@@ -95,6 +103,17 @@ def _maybe_save_artifacts(
     return True
 
 
+def _update_running_status(status_path, state, **fields):
+    state.update(fields)
+    state.update(_now_status_fields())
+    payload = dict(state)
+    progress = float(payload.get("progress", 0.0) or 0.0)
+    progress = min(max(progress, 0.0), 1.0)
+    payload["progress"] = progress
+    payload["progress_bar"] = _render_progress_bar(progress)
+    _write_status(status_path, payload)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Isolated CARLA MAPPO final evaluation")
     parser.add_argument("--job", required=True)
@@ -104,23 +123,37 @@ def main():
     out_dir = job["out_dir"]
     status_path = Path(out_dir) / "evaluation_status.json"
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    session_id = str(job.get("session_id") or Path(out_dir).name)
+    status_state = {
+        "session_id": session_id,
+        "pid": os.getpid(),
+        "completed": False,
+        "reason": "evaluation subprocess running",
+        "exit_code": None,
+        "artifacts_written": False,
+        "started_at": started_at,
+        "finished_at": None,
+        "evaluation_metric_keys": [],
+        "progress": 0.0,
+        "completed_scenarios": 0,
+        "total_scenarios": 0,
+        "total_episodes": 0,
+        "current_phase": "starting",
+        "current_scenario_idx": 0,
+        "current_map": None,
+        "current_profile": None,
+        "progress_mode": "exact",
+    }
 
-    _write_status(
-        status_path,
-        {
-            "completed": False,
-            "reason": "evaluation subprocess running",
-            "exit_code": None,
-            "artifacts_written": False,
-            "started_at": started_at,
-            "finished_at": None,
-            "evaluation_metric_keys": [],
-        },
-    )
+    _update_running_status(status_path, status_state)
 
     try:
         _carla_preflight(job["env_cfg"])
         _register_eval_runtime()
+
+        def _status_callback(**fields):
+            _update_running_status(status_path, status_state, **fields)
+
         evaluation_raw, evaluation_summary, evaluation_traces, evaluation_metric_keys = (
             _run_evaluation_scenarios(
                 checkpoint_path=job["checkpoint_path"],
@@ -129,6 +162,7 @@ def main():
                 eval_cfg=deepcopy(job["eval_cfg"]),
                 seed_base=int(job["seed_base"]),
                 n_gpus=int(job["n_gpus"]),
+                status_callback=_status_callback,
             )
         )
         artifacts_written = _maybe_save_artifacts(
@@ -142,6 +176,8 @@ def main():
         _write_status(
             status_path,
             {
+                "session_id": session_id,
+                "pid": os.getpid(),
                 "completed": True,
                 "reason": None,
                 "exit_code": 0,
@@ -149,6 +185,17 @@ def main():
                 "started_at": started_at,
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": evaluation_metric_keys,
+                "progress": 1.0,
+                "progress_bar": _render_progress_bar(1.0),
+                "current_phase": "completed",
+                "completed_scenarios": status_state.get("total_scenarios", 0),
+                "total_scenarios": status_state.get("total_scenarios", 0),
+                "total_episodes": status_state.get("total_episodes", 0),
+                "current_scenario_idx": status_state.get("total_scenarios", 0),
+                "current_map": status_state.get("current_map"),
+                "current_profile": status_state.get("current_profile"),
+                "progress_mode": "exact",
+                **_now_status_fields(),
             },
         )
         return 0
@@ -164,6 +211,8 @@ def main():
         _write_status(
             status_path,
             {
+                "session_id": session_id,
+                "pid": os.getpid(),
                 "completed": False,
                 "reason": exc.reason,
                 "exit_code": 130,
@@ -171,6 +220,17 @@ def main():
                 "started_at": started_at,
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": exc.metric_keys,
+                "progress": status_state.get("progress", 0.0),
+                "progress_bar": _render_progress_bar(status_state.get("progress", 0.0)),
+                "current_phase": "interrupted",
+                "completed_scenarios": status_state.get("completed_scenarios", 0),
+                "total_scenarios": status_state.get("total_scenarios", 0),
+                "total_episodes": status_state.get("total_episodes", 0),
+                "current_scenario_idx": status_state.get("current_scenario_idx", 0),
+                "current_map": status_state.get("current_map"),
+                "current_profile": status_state.get("current_profile"),
+                "progress_mode": status_state.get("progress_mode", "exact"),
+                **_now_status_fields(),
             },
         )
         return 130
@@ -186,6 +246,8 @@ def main():
         _write_status(
             status_path,
             {
+                "session_id": session_id,
+                "pid": os.getpid(),
                 "completed": False,
                 "reason": exc.reason,
                 "exit_code": 1,
@@ -193,6 +255,17 @@ def main():
                 "started_at": started_at,
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": exc.metric_keys,
+                "progress": status_state.get("progress", 0.0),
+                "progress_bar": _render_progress_bar(status_state.get("progress", 0.0)),
+                "current_phase": "failed",
+                "completed_scenarios": status_state.get("completed_scenarios", 0),
+                "total_scenarios": status_state.get("total_scenarios", 0),
+                "total_episodes": status_state.get("total_episodes", 0),
+                "current_scenario_idx": status_state.get("current_scenario_idx", 0),
+                "current_map": status_state.get("current_map"),
+                "current_profile": status_state.get("current_profile"),
+                "progress_mode": status_state.get("progress_mode", "exact"),
+                **_now_status_fields(),
             },
         )
         print(f"[WARN] Final evaluation failed: {exc.reason}")
@@ -201,6 +274,8 @@ def main():
         _write_status(
             status_path,
             {
+                "session_id": session_id,
+                "pid": os.getpid(),
                 "completed": False,
                 "reason": "manual interrupt during evaluation subprocess",
                 "exit_code": 130,
@@ -208,6 +283,17 @@ def main():
                 "started_at": started_at,
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": [],
+                "progress": status_state.get("progress", 0.0),
+                "progress_bar": _render_progress_bar(status_state.get("progress", 0.0)),
+                "current_phase": "interrupted",
+                "completed_scenarios": status_state.get("completed_scenarios", 0),
+                "total_scenarios": status_state.get("total_scenarios", 0),
+                "total_episodes": status_state.get("total_episodes", 0),
+                "current_scenario_idx": status_state.get("current_scenario_idx", 0),
+                "current_map": status_state.get("current_map"),
+                "current_profile": status_state.get("current_profile"),
+                "progress_mode": status_state.get("progress_mode", "exact"),
+                **_now_status_fields(),
             },
         )
         print("\nValutazione finale interrotta manualmente.")
@@ -216,6 +302,8 @@ def main():
         _write_status(
             status_path,
             {
+                "session_id": session_id,
+                "pid": os.getpid(),
                 "completed": False,
                 "reason": f"evaluation subprocess error: {type(exc).__name__}",
                 "exit_code": 1,
@@ -223,6 +311,17 @@ def main():
                 "started_at": started_at,
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": [],
+                "progress": status_state.get("progress", 0.0),
+                "progress_bar": _render_progress_bar(status_state.get("progress", 0.0)),
+                "current_phase": "failed",
+                "completed_scenarios": status_state.get("completed_scenarios", 0),
+                "total_scenarios": status_state.get("total_scenarios", 0),
+                "total_episodes": status_state.get("total_episodes", 0),
+                "current_scenario_idx": status_state.get("current_scenario_idx", 0),
+                "current_map": status_state.get("current_map"),
+                "current_profile": status_state.get("current_profile"),
+                "progress_mode": status_state.get("progress_mode", "exact"),
+                **_now_status_fields(),
             },
         )
         traceback.print_exc()
