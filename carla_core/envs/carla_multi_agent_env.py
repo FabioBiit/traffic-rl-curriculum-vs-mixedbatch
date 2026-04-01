@@ -278,10 +278,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 self._tm.set_random_device_seed(seed)
             # Force traffic respawn for full scene replay
             if self._traffic_spawned:
-                self._cleanup_traffic()
+                self._cleanup_traffic_for_reset()
             respawn_traffic = True
 
-        self._cleanup_agents()
+        self._cleanup_agents_for_reset()
         self._setup_agents()
 
         if self.cfg["traffic"]["enabled"]:
@@ -289,7 +289,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 self._spawn_traffic()
                 self._traffic_spawned = True
             elif not self._traffic_spawned or not self.cfg["traffic"].get("persist_traffic", True):
-                self._cleanup_traffic()
+                self._cleanup_traffic_for_reset()
                 self._spawn_traffic()
                 self._traffic_spawned = True
 
@@ -1248,6 +1248,53 @@ class CarlaMultiAgentEnv(ParallelEnv):
         except Exception:
             return False
         return True
+
+    def _cleanup_agents_for_reset(self):
+        agent_data = list(self._agent_data.values())
+        self._terminated_agent_infos = {}
+
+        # Episode reset should mirror the pre-refactor behavior: attempt
+        # teardown, then drop all references so the next spawn starts fresh.
+        for ad in agent_data:
+            if ad.collision_sensor:
+                try:
+                    ad.collision_sensor.stop()
+                except Exception:
+                    pass
+
+        for ad in agent_data:
+            if ad.collision_sensor:
+                self._safe_destroy(ad.collision_sensor)
+                ad.collision_sensor = None
+            if ad.actor:
+                self._safe_destroy(ad.actor)
+                ad.actor = None
+
+        self._agent_data = {}
+
+    def _cleanup_traffic_for_reset(self):
+        controllers = list(self._npc_controllers)
+        walkers = list(self._npc_walkers)
+        vehicles = list(self._npc_vehicles)
+
+        for ctrl in controllers:
+            try:
+                if ctrl.is_alive:
+                    ctrl.stop()
+            except Exception:
+                pass
+            self._safe_destroy(ctrl)
+
+        for walker in walkers:
+            self._safe_destroy(walker)
+
+        for vehicle in vehicles:
+            self._safe_destroy(vehicle)
+
+        self._npc_controllers = []
+        self._npc_walkers = []
+        self._npc_vehicles = []
+        self._traffic_spawned = False
 
     def _collect_batch_actor_refs(self, actors):
         actor_refs = {}
