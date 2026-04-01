@@ -14,7 +14,6 @@ from pathlib import Path
 import carla
 import numpy as np
 import ray
-from ray.rllib.env.wrappers.pettingzoo_env import ParallelPettingZooEnv
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
 
@@ -22,8 +21,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from carla_core.agents.centralized_critic import CentralizedCriticModel
-from carla_core.envs.carla_multi_agent_env import CarlaMultiAgentEnv
-from carla_core.training.train_carla_mappo import _build_mappo_config
+from carla_core.training.mappo_runtime import _build_mappo_config, rllib_env_creator
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +48,6 @@ class FinalEvaluationFailed(RuntimeError):
         self.traces = traces
         self.metric_keys = metric_keys
         self.reason = reason
-
-
-def rllib_env_creator(env_config):
-    raw_env = CarlaMultiAgentEnv(config=env_config)
-    return ParallelPettingZooEnv(raw_env)
 
 
 def _sanitize_for_json(obj):
@@ -212,22 +205,59 @@ def _resolve_eval_metric_keys(eval_cfg):
 
 
 def _extract_eval_metrics_from_result(eval_result, metric_keys):
-    def _metric(*names):
-        containers = [
-            eval_result.get("custom_metrics", {}),
+    def _custom_metric_containers():
+        return [
+            eval_result.get("custom_metrics", {}) or {},
             _get_nested(eval_result, "sampler_results", "custom_metrics") or {},
+            _get_nested(eval_result, "env_runner_results", "custom_metrics") or {},
+            _get_nested(eval_result, "evaluation", "custom_metrics") or {},
+            _get_nested(eval_result, "evaluation", "sampler_results", "custom_metrics") or {},
+            _get_nested(eval_result, "evaluation", "env_runner_results", "custom_metrics") or {},
         ]
+
+    def _metric(*names):
+        containers = _custom_metric_containers()
         for name in names:
             for container in containers:
                 if name in container:
                     return _coerce_float(container[name])
+
+        # Fallback: average per-policy metrics when the aggregate key is absent.
+        for name in names:
+            prefixed_values = []
+            suffix = f"/{name}"
+            for container in containers:
+                for key, value in container.items():
+                    if key.endswith(suffix):
+                        coerced = _coerce_float(value)
+                        if coerced is not None:
+                            prefixed_values.append(coerced)
+            if prefixed_values:
+                return float(np.mean(prefixed_values))
         return None
 
-    evaluation_time_ms = _coerce_float(eval_result.get("evaluation_time_ms"))
+    def _scalar_from_result(*names):
+        containers = [
+            eval_result,
+            eval_result.get("sampler_results", {}) or {},
+            eval_result.get("env_runner_results", {}) or {},
+            eval_result.get("evaluation", {}) or {},
+            _get_nested(eval_result, "evaluation", "sampler_results") or {},
+            _get_nested(eval_result, "evaluation", "env_runner_results") or {},
+        ]
+        for name in names:
+            for container in containers:
+                if isinstance(container, dict) and name in container:
+                    coerced = _coerce_float(container[name])
+                    if coerced is not None:
+                        return coerced
+        return None
+
+    evaluation_time_ms = _scalar_from_result("evaluation_time_ms")
     wall_clock_seconds = (
         evaluation_time_ms / 1000.0
         if evaluation_time_ms is not None
-        else _coerce_float(eval_result.get("time_this_iter_s"))
+        else _scalar_from_result("time_this_iter_s")
     )
 
     rows = {
@@ -236,13 +266,13 @@ def _extract_eval_metrics_from_result(eval_result, metric_keys):
         "timeout_rate": _metric("timeout_rate_mean", "timeout_rate"),
         "route_completion": _metric("route_completion_mean", "route_completion"),
         "path_efficiency": _metric("path_efficiency_mean", "path_efficiency"),
-        "reward_mean": _coerce_float(
-            eval_result.get("episode_reward_mean"),
-            _coerce_float(_get_nested(eval_result, "sampler_results", "episode_reward_mean")),
+        "reward_mean": _scalar_from_result(
+            "episode_reward_mean",
+            "episode_return_mean",
         ),
-        "episode_length_mean": _coerce_float(
-            eval_result.get("episode_len_mean"),
-            _coerce_float(_get_nested(eval_result, "sampler_results", "episode_len_mean")),
+        "episode_length_mean": _scalar_from_result(
+            "episode_len_mean",
+            "episode_length_mean",
         ),
         "infraction_count": None,
         "wall_clock_timeout": None,
@@ -254,6 +284,9 @@ def _extract_eval_metrics_from_result(eval_result, metric_keys):
 def _extract_eval_episode_traces(eval_result, map_name, profile_name):
     hist_stats = (
         _get_nested(eval_result, "sampler_results", "hist_stats")
+        or _get_nested(eval_result, "env_runner_results", "hist_stats")
+        or _get_nested(eval_result, "evaluation", "sampler_results", "hist_stats")
+        or _get_nested(eval_result, "evaluation", "env_runner_results", "hist_stats")
         or eval_result.get("hist_stats")
         or {}
     )
@@ -781,7 +814,7 @@ def _write_status(status_path, payload):
 
 
 def _load_job(job_path):
-    with open(job_path, "r", encoding="utf-8") as f:
+    with open(job_path, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 
