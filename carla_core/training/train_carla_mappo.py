@@ -816,6 +816,7 @@ def _run_evaluation_scenarios(
     seed_base,
     n_gpus,
     status_callback=None,
+    scenario_setup_callback=None,
 ):
     def _publish_status(**fields):
         if status_callback is None:
@@ -935,6 +936,39 @@ def _run_evaluation_scenarios(
                 scenario_env_cfg["episode"]["max_steps"] = int(limits["max_steps_per_episode"])
             scenario_env_cfg.setdefault("traffic", {})
             scenario_env_cfg["traffic"]["seed"] = int(seed_base)
+            if scenario_setup_callback is not None:
+                _publish_status(
+                    reason="evaluation subprocess running",
+                    progress=(completed_scenarios / total_scenarios) if total_scenarios else 0.0,
+                    completed_scenarios=completed_scenarios,
+                    total_scenarios=total_scenarios,
+                    total_episodes=total_episodes,
+                    current_phase="scenario_setup",
+                    current_scenario_idx=scenario_idx,
+                    current_map=map_name,
+                    current_profile=profile_name,
+                    progress_mode="exact",
+                )
+                try:
+                    scenario_setup_callback(
+                        map_name=map_name,
+                        profile_name=profile_name,
+                        scenario_idx=scenario_idx,
+                        total_scenarios=total_scenarios,
+                        env_cfg=deepcopy(scenario_env_cfg),
+                    )
+                except Exception as exc:
+                    raw[map_name] = map_rows
+                    raise FinalEvaluationFailed(
+                        raw=deepcopy(raw),
+                        summary=_build_evaluation_summary(raw, train_map),
+                        traces=list(traces),
+                        metric_keys=list(aggregate_keys),
+                        reason=(
+                            "final evaluation scenario setup error: "
+                            f"{type(exc).__name__} ({map_name}/{profile_name})"
+                        ),
+                    ) from exc
             eval_config = _build_mappo_config(
                 env_cfg=scenario_env_cfg,
                 train_cfg=train_cfg,
@@ -944,7 +978,7 @@ def _run_evaluation_scenarios(
                 exp_seed=seed_base,
                 enable_periodic_evaluation=False,
             )
-            eval_algo = eval_config.build()
+            eval_algo = None
             heartbeat_stop = threading.Event()
             scenario_stall_warned = [False]
 
@@ -993,6 +1027,7 @@ def _run_evaluation_scenarios(
             )
             heartbeat_thread.start()
             try:
+                eval_algo = eval_config.build()
                 eval_algo.restore(checkpoint_path)
                 eval_result = eval_algo.evaluate()
                 metrics = _extract_eval_metrics_from_result(eval_result, aggregate_keys)
@@ -1030,13 +1065,17 @@ def _run_evaluation_scenarios(
             finally:
                 heartbeat_stop.set()
                 heartbeat_thread.join(timeout=1.0)
-                try:
-                    eval_algo.stop()
-                except Exception as stop_exc:
-                    print(
-                        "    [WARN] eval_algo.stop() failed during "
-                        f"{map_name}/{profile_name}: {type(stop_exc).__name__}: {stop_exc}"
-                    )
+                if eval_algo is not None:
+                    try:
+                        eval_algo.stop()
+                    except Exception as stop_exc:
+                        print(
+                            "    [WARN] eval_algo.stop() failed during "
+                            f"{map_name}/{profile_name}: {type(stop_exc).__name__}: {stop_exc}"
+                        )
+                    finally:
+                        del eval_algo
+                        gc.collect()
             scenario_elapsed = time.time() - scenario_t0
             completed_scenario_durations.append(scenario_elapsed)
             total_elapsed = time.time() - eval_t0

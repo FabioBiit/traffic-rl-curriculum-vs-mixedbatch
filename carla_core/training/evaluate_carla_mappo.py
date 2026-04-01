@@ -49,7 +49,7 @@ def _now_status_fields():
     }
 
 
-def _carla_preflight(env_cfg):
+def _carla_prepare_world(env_cfg, *, force_reload):
     sim = env_cfg["simulator"]
     client = carla.Client(sim["host"], sim["port"])
     client.set_timeout(sim["timeout_seconds"])
@@ -66,10 +66,19 @@ def _carla_preflight(env_cfg):
             f"Available maps: {sorted(available_maps)}"
         )
 
+    current_map = None
+    try:
+        current_map = client.get_world().get_map().name.split("/")[-1]
+    except Exception:
+        current_map = None
+
     # CARLA recommends reloading the world between repetitions to guarantee a
     # clean simulator state. The final eval runs in its own subprocess, so we
-    # can safely re-take ownership of the target map before building RLlib.
-    world = client.load_world(target_map)
+    # can safely re-take ownership of the target map before each scenario.
+    if force_reload or current_map != target_map:
+        world = client.load_world(target_map)
+    else:
+        world = client.get_world()
     _ = world.get_map().name
     _ = client.get_trafficmanager(int(sim.get("traffic_manager_port", 8000)))
 
@@ -148,11 +157,22 @@ def main():
     _update_running_status(status_path, status_state)
 
     try:
-        _carla_preflight(job["env_cfg"])
+        runtime_cfg = job.get("eval_cfg", {}).get("runtime", {})
+        reload_world_between_scenarios = bool(
+            runtime_cfg.get("reload_world_between_scenarios", True)
+        )
+
+        _carla_prepare_world(job["env_cfg"], force_reload=False)
         _register_eval_runtime()
 
         def _status_callback(**fields):
             _update_running_status(status_path, status_state, **fields)
+
+        def _scenario_setup_callback(**fields):
+            if not reload_world_between_scenarios:
+                return
+            gc.collect()
+            _carla_prepare_world(fields["env_cfg"], force_reload=True)
 
         evaluation_raw, evaluation_summary, evaluation_traces, evaluation_metric_keys = (
             _run_evaluation_scenarios(
@@ -163,6 +183,7 @@ def main():
                 seed_base=int(job["seed_base"]),
                 n_gpus=int(job["n_gpus"]),
                 status_callback=_status_callback,
+                scenario_setup_callback=_scenario_setup_callback,
             )
         )
         artifacts_written = _maybe_save_artifacts(

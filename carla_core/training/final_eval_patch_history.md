@@ -80,3 +80,8 @@ previously inconclusive changes.
     valid stdio handles; `pythonw.exe` caused `sys.stdout is None` in
     `dashboard_agent`.
     Outcome: current active patch under validation.
+
+17. Reload the CARLA world before each final-eval scenario and force Python
+    garbage collection after each scenario-local `Algorithm.stop()`.
+    Outcome: added to harden scenario-to-scenario simulator reset safety after
+    `libcarla` aborts during the second scenario.
