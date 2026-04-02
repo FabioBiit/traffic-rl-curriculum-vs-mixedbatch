@@ -727,10 +727,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
     # ------------------------------------------------------------------
 
     def _spawn_traffic(self):
-        self._npc_vehicles = []
-        self._npc_walkers = []
-        self._npc_controllers = []
-
         bp_lib = self._world.get_blueprint_library()
         t = self.cfg["traffic"]
         rng = np.random.default_rng(t.get("seed", 42))
@@ -757,7 +753,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
         walker_bps = list(bp_lib.filter("walker.pedestrian.*"))
         ctrl_bp = bp_lib.find("controller.ai.walker")
 
-        spawned_walkers = []
         for _ in range(t["n_pedestrians_npc"]):
             loc = self._world.get_random_location_from_navigation()
             if not loc:
@@ -767,58 +762,26 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 bp.set_attribute("is_invincible", "false")
             w = self._world.try_spawn_actor(bp, carla.Transform(loc))
             if w:
-                spawned_walkers.append(w)
+                self._npc_walkers.append(w)
 
         self._world.tick(10.0)  # 10 second timeout
 
-        spawned_pairs = []
-        for w in spawned_walkers:
+        for w in self._npc_walkers:
             ctrl = self._world.try_spawn_actor(ctrl_bp, carla.Transform(), w)
             if ctrl:
-                spawned_pairs.append((w, ctrl))
+                self._npc_controllers.append(ctrl)
 
         self._world.tick(10.0)  # 10 second timeout
 
-        paired_walker_ids = {
-            int(w.id) for w, _ in spawned_pairs if getattr(w, "id", None) is not None
-        }
-        startup_failures = [
-            walker for walker in spawned_walkers
-            if getattr(walker, "id", None) is not None and int(walker.id) not in paired_walker_ids
-        ]
-        tracked_actor_ids = []
-        for walker, ctrl in spawned_pairs:
-            for actor in (walker, ctrl):
-                actor_id = getattr(actor, "id", None)
-                if actor_id is not None:
-                    tracked_actor_ids.append(int(actor_id))
-        alive_actor_ids = self._alive_actor_ids(tracked_actor_ids)
-
-        for walker, ctrl in spawned_pairs:
+        for ctrl in self._npc_controllers:
             target = self._world.get_random_location_from_navigation()
-            walker_id = getattr(walker, "id", None)
-            ctrl_id = getattr(ctrl, "id", None)
-            if (
-                target
-                and walker_id is not None
-                and ctrl_id is not None
-                and int(walker_id) in alive_actor_ids
-                and int(ctrl_id) in alive_actor_ids
-            ):
+            if target:
                 try:
                     ctrl.start()
                     ctrl.go_to_location(target)
                     ctrl.set_max_speed(1.4)
-                    self._npc_walkers.append(walker)
-                    self._npc_controllers.append(ctrl)
-                    continue
                 except Exception:
                     pass
-
-            startup_failures.extend([ctrl, walker])
-
-        if startup_failures:
-            self._batch_destroy_actors(startup_failures, label="failed traffic startup actors")
 
         logger.info(f"NPC: {len(self._npc_vehicles)}V + {len(self._npc_walkers)}P")
 
