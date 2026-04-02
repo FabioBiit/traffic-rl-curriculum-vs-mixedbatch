@@ -230,6 +230,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._tm = None
         self._original_settings = None
         self._connected = False
+        runtime_cfg = self.cfg.get("runtime", {}) or {}
+        self._close_mode = str(runtime_cfg.get("close_mode", "legacy")).strip().lower()
+        if self._close_mode not in {"legacy", "robust"}:
+            self._close_mode = "legacy"
         self._closing = False
         self._closed = False
         self._traffic_spawned = False
@@ -278,10 +282,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 self._tm.set_random_device_seed(seed)
             # Force traffic respawn for full scene replay
             if self._traffic_spawned:
-                self._cleanup_traffic_for_reset()
+                self._cleanup_traffic()
             respawn_traffic = True
 
-        self._cleanup_agents_for_reset()
+        self._cleanup_agents()
         self._setup_agents()
 
         if self.cfg["traffic"]["enabled"]:
@@ -289,7 +293,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 self._spawn_traffic()
                 self._traffic_spawned = True
             elif not self._traffic_spawned or not self.cfg["traffic"].get("persist_traffic", True):
-                self._cleanup_traffic_for_reset()
+                self._cleanup_traffic()
                 self._spawn_traffic()
                 self._traffic_spawned = True
 
@@ -457,40 +461,56 @@ class CarlaMultiAgentEnv(ParallelEnv):
         return observations, rewards, terminations, truncations, infos
 
     def close(self):
-        if self._closed or self._closing:
+        if self._close_mode == "robust":
+            if self._closed or self._closing:
+                return
+
+            self._closing = True
+            tm = self._tm
+            world = self._world
+            original_settings = self._original_settings
+
+            self._connected = False
+
+            try:
+                self._cleanup_agents_robust()
+                self._cleanup_traffic_robust()
+                if tm:
+                    try:
+                        tm.set_synchronous_mode(False)
+                    except Exception:
+                        pass
+                if world and original_settings:
+                    try:
+                        world.apply_settings(original_settings)
+                    except Exception:
+                        pass
+            finally:
+                self._tm = None
+                self._world = None
+                self._map = None
+                self._client = None
+                self._original_settings = None
+                self._spawn_points = []
+                self._terminated_agent_infos = {}
+                self.agents = []
+                self._closed = True
+                self._closing = False
             return
 
-        self._closing = True
-        tm = self._tm
-        world = self._world
-        original_settings = self._original_settings
-
+        self._cleanup_agents()
+        self._cleanup_traffic()
+        if self._tm:
+            try:
+                self._tm.set_synchronous_mode(False)
+            except Exception:
+                pass
+        if self._world and self._original_settings:
+            try:
+                self._world.apply_settings(self._original_settings)
+            except Exception:
+                pass
         self._connected = False
-
-        try:
-            self._cleanup_agents()
-            self._cleanup_traffic()
-            if tm:
-                try:
-                    tm.set_synchronous_mode(False)
-                except Exception:
-                    pass
-            if world and original_settings:
-                try:
-                    world.apply_settings(original_settings)
-                except Exception:
-                    pass
-        finally:
-            self._tm = None
-            self._world = None
-            self._map = None
-            self._client = None
-            self._original_settings = None
-            self._spawn_points = []
-            self._terminated_agent_infos = {}
-            self.agents = []
-            self._closed = True
-            self._closing = False
 
     # ------------------------------------------------------------------
     # Connection
@@ -776,12 +796,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
         for ctrl in self._npc_controllers:
             target = self._world.get_random_location_from_navigation()
             if target:
-                try:
-                    ctrl.start()
-                    ctrl.go_to_location(target)
-                    ctrl.set_max_speed(1.4)
-                except Exception:
-                    pass
+                ctrl.start()
+                ctrl.go_to_location(target)
+                ctrl.set_max_speed(1.4)
 
         logger.info(f"NPC: {len(self._npc_vehicles)}V + {len(self._npc_walkers)}P")
 
@@ -1207,57 +1224,17 @@ class CarlaMultiAgentEnv(ParallelEnv):
         try:
             if actor and actor.is_alive:
                 actor.destroy()
+        except RuntimeError:
+            pass
+
+    def _safe_destroy_robust(self, actor):
+        try:
+            if actor and actor.is_alive:
+                actor.destroy()
             return True
         except Exception:
             return False
         return True
-
-    def _cleanup_agents_for_reset(self):
-        agent_data = list(self._agent_data.values())
-        self._terminated_agent_infos = {}
-
-        # Episode reset should mirror the pre-refactor behavior: attempt
-        # teardown, then drop all references so the next spawn starts fresh.
-        for ad in agent_data:
-            if ad.collision_sensor:
-                try:
-                    ad.collision_sensor.stop()
-                except Exception:
-                    pass
-
-        for ad in agent_data:
-            if ad.collision_sensor:
-                self._safe_destroy(ad.collision_sensor)
-                ad.collision_sensor = None
-            if ad.actor:
-                self._safe_destroy(ad.actor)
-                ad.actor = None
-
-        self._agent_data = {}
-
-    def _cleanup_traffic_for_reset(self):
-        controllers = list(self._npc_controllers)
-        walkers = list(self._npc_walkers)
-        vehicles = list(self._npc_vehicles)
-
-        for ctrl in controllers:
-            try:
-                if ctrl.is_alive:
-                    ctrl.stop()
-            except Exception:
-                pass
-            self._safe_destroy(ctrl)
-
-        for walker in walkers:
-            self._safe_destroy(walker)
-
-        for vehicle in vehicles:
-            self._safe_destroy(vehicle)
-
-        self._npc_controllers = []
-        self._npc_walkers = []
-        self._npc_vehicles = []
-        self._traffic_spawned = False
 
     def _collect_batch_actor_refs(self, actors):
         actor_refs = {}
@@ -1297,7 +1274,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         if self._client is None or self._world is None:
             for actor in actor_refs.values():
-                self._safe_destroy(actor)
+                self._safe_destroy_robust(actor)
             return self._alive_actor_ids(actor_refs.keys())
 
         commands = [carla.command.DestroyActor(actor_id) for actor_id in actor_refs]
@@ -1312,16 +1289,29 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 label,
             )
             for actor in actor_refs.values():
-                self._safe_destroy(actor)
+                self._safe_destroy_robust(actor)
 
         return set(actor_refs.keys())
 
     def _cleanup_agents(self):
+        # Stop sensors BEFORE destroying to prevent callback-during-destroy deadlock
+        for ad in self._agent_data.values():
+            if ad.collision_sensor:
+                try:
+                    ad.collision_sensor.stop()
+                except Exception:
+                    pass
+        for ad in self._agent_data.values():
+            if ad.collision_sensor:
+                self._safe_destroy(ad.collision_sensor)
+            self._safe_destroy(ad.actor)
+        self._agent_data.clear()
+
+    def _cleanup_agents_robust(self):
         agent_data = list(self._agent_data.values())
         self._terminated_agent_infos = {}
         failed_agents = {}
 
-        # Stop sensors BEFORE destroying to prevent callback-during-destroy deadlock
         for ad in agent_data:
             if ad.collision_sensor:
                 try:
@@ -1362,6 +1352,23 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._agent_data = failed_agents
 
     def _cleanup_traffic(self):
+        for ctrl in self._npc_controllers:
+            try:
+                if ctrl.is_alive:
+                    ctrl.stop()
+            except Exception:
+                pass
+            self._safe_destroy(ctrl)
+        self._npc_controllers.clear()
+        for w in self._npc_walkers:
+            self._safe_destroy(w)
+        self._npc_walkers.clear()
+        for v in self._npc_vehicles:
+            self._safe_destroy(v)
+        self._npc_vehicles.clear()
+        self._traffic_spawned = False
+
+    def _cleanup_traffic_robust(self):
         controllers = list(self._npc_controllers)
         walkers = list(self._npc_walkers)
         vehicles = list(self._npc_vehicles)

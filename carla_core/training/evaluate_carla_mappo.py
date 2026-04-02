@@ -498,6 +498,8 @@ def _run_evaluation_scenarios(
                     scenario_env_cfg["episode"]["max_steps"] = int(limits["max_steps_per_episode"])
                 scenario_env_cfg.setdefault("traffic", {})
                 scenario_env_cfg["traffic"]["seed"] = int(seed_base)
+                scenario_env_cfg.setdefault("runtime", {})
+                scenario_env_cfg["runtime"]["close_mode"] = "robust"
 
                 current_episode_number = episode_idx + 1
                 exact_progress = (
