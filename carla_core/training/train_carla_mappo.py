@@ -532,6 +532,48 @@ def _write_json_atomic(path, payload):
     os.replace(tmp_path, path)
 
 
+def _set_algo_env_close_mode_for_teardown(algo, mode):
+    """Switch existing RLlib env instances to the requested close mode."""
+
+    workers = getattr(algo, "workers", None)
+    if workers is None:
+        return 0
+
+    def _switch_env_mode(env):
+        changed = 0
+        seen = set()
+        pending = [env]
+
+        while pending:
+            current = pending.pop()
+            if current is None:
+                continue
+
+            marker = id(current)
+            if marker in seen:
+                continue
+            seen.add(marker)
+
+            setter = getattr(current, "set_close_mode", None)
+            if callable(setter):
+                setter(mode)
+                changed += 1
+
+            for attr_name in ("par_env", "env", "unwrapped"):
+                try:
+                    nested = getattr(current, attr_name)
+                except Exception:
+                    continue
+                if nested is None or nested is current:
+                    continue
+                pending.append(nested)
+
+        return changed
+
+    results = workers.foreach_env(_switch_env_mode)
+    return int(sum(sum(worker_results) for worker_results in results if worker_results))
+
+
 def _write_final_eval_job(
     *,
     out_dir,
@@ -1006,6 +1048,17 @@ def main():
             )
 
         try:
+            try:
+                switched_envs = _set_algo_env_close_mode_for_teardown(algo, "robust")
+                print(
+                    f"Switch close mode for final train teardown: robust ({switched_envs} envs)"
+                )
+            except Exception as e:
+                print(f"[WARN] Could not enable robust close mode before algo.stop(): {e}")
+                finalization_issues.append(
+                    "enable robust close mode before algo.stop() failed: "
+                    f"{type(e).__name__}: {e}"
+                )
             algo.stop()
         except Exception as e:
             print(f"[WARN] algo.stop() failed: {e}")

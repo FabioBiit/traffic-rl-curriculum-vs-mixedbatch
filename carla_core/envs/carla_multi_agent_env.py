@@ -512,6 +512,14 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 pass
         self._connected = False
 
+    def set_close_mode(self, mode: str):
+        mode = str(mode).strip().lower()
+        if mode not in {"legacy", "robust"}:
+            raise ValueError(f"Unsupported close mode: {mode}")
+        self._close_mode = mode
+        self._closed = False
+        self._closing = False
+
     # ------------------------------------------------------------------
     # Connection
     # ------------------------------------------------------------------
