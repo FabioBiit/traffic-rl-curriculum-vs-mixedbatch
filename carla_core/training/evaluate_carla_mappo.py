@@ -31,6 +31,7 @@ import gc
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -400,6 +401,212 @@ def _tail_text_block(text, *, lines=30):
     if len(parts) <= lines:
         return "\n".join(parts)
     return "\n".join(parts[-lines:])
+
+
+def _normalize_command_args(command_value):
+    if not command_value:
+        return None
+    if isinstance(command_value, (list, tuple)):
+        args = [str(part).strip() for part in command_value if str(part).strip()]
+        return args or None
+    text = str(command_value).strip()
+    if not text:
+        return None
+    return shlex.split(text, posix=(os.name != "nt"))
+
+
+def _is_local_carla_host(host):
+    return str(host).strip().lower() in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+
+
+def _resolve_carla_server_command(env_cfg, runtime_cfg):
+    runtime_cfg = runtime_cfg or {}
+    simulator_cfg = env_cfg.get("simulator", {}) or {}
+    world_cfg = env_cfg.get("world", {}) or {}
+    port = int(simulator_cfg.get("port", 2000))
+
+    candidates = []
+    for key in ("carla_server_command", "server_launch_command"):
+        if runtime_cfg.get(key):
+            candidates.append(runtime_cfg.get(key))
+    for env_name in ("CARLA_SERVER_CMD", "CARLA_SERVER_COMMAND"):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            candidates.append(env_value)
+
+    if os.name == "nt":
+        default_exe = Path("C:/CARLA_0.9.16/CarlaUE4.exe")
+        if default_exe.exists():
+            default_cmd = [
+                str(default_exe),
+                f"-carla-rpc-port={port}",
+                "-quality-level=Medium",
+            ]
+            if bool(world_cfg.get("no_rendering", False)):
+                default_cmd.append("-RenderOffScreen")
+            candidates.append(default_cmd)
+
+    for candidate in candidates:
+        args = _normalize_command_args(candidate)
+        if args:
+            return args
+    return None
+
+
+def _launch_carla_server(command_args):
+    args = _normalize_command_args(command_args)
+    if not args:
+        return {"ok": False, "reason": "missing CARLA server launch command"}
+
+    exe_path = Path(args[0])
+    cwd = str(exe_path.parent) if exe_path.is_absolute() and exe_path.exists() else None
+    popen_kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+        popen_kwargs["close_fds"] = True
+
+    try:
+        proc = subprocess.Popen(args, cwd=cwd, **popen_kwargs)
+    except Exception as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}", "command": args}
+
+    return {"ok": True, "pid": proc.pid, "command": args}
+
+
+def _wait_for_carla_server(env_cfg, *, timeout_seconds, poll_seconds):
+    simulator_cfg = env_cfg.get("simulator", {}) or {}
+    host = simulator_cfg.get("host", "127.0.0.1")
+    port = int(simulator_cfg.get("port", 2000))
+    client_timeout_s = min(5.0, max(1.0, float(simulator_cfg.get("timeout_seconds", 20.0))))
+    deadline = time.time() + max(5.0, float(timeout_seconds))
+    poll_s = max(0.5, float(poll_seconds))
+    last_error = None
+    attempts = 0
+
+    while time.time() < deadline:
+        attempts += 1
+        try:
+            client = carla.Client(host, port)
+            client.set_timeout(client_timeout_s)
+            world = client.get_world()
+            _ = world.get_map().name
+            return {"ok": True, "attempts": attempts}
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(poll_s)
+
+    return {"ok": False, "attempts": attempts, "last_error": last_error}
+
+
+def _looks_like_carla_server_failure(failure):
+    if not failure:
+        return False
+
+    returncode = failure.get("returncode")
+    if returncode in {None, 3221225477, 3221226505, -1073741819, -1073740791}:
+        return True
+
+    haystack = "\n".join(
+        str(part or "")
+        for part in (
+            failure.get("reason"),
+            failure.get("stdout"),
+            failure.get("stderr"),
+        )
+    ).lower()
+
+    server_tokens = (
+        "access violation",
+        "sigabrt",
+        "pyinit_libcarla",
+        "waiting for the simulator",
+        "simulator is ready and connected",
+        "time-out of 20000ms",
+        "failed to destroy actor",
+        "load_world",
+        "unable to destroy actor",
+        "episode worker timeout",
+    )
+    return any(token in haystack for token in server_tokens)
+
+
+def _recover_carla_server(env_cfg, runtime_cfg, *, reason):
+    runtime_cfg = runtime_cfg or {}
+    simulator_cfg = env_cfg.get("simulator", {}) or {}
+    host = simulator_cfg.get("host", "127.0.0.1")
+    recovery_timeout_s = float(
+        runtime_cfg.get(
+            "carla_server_recovery_timeout_seconds",
+            max(60.0, float(simulator_cfg.get("timeout_seconds", 20.0)) * 6.0),
+        )
+    )
+    poll_s = float(runtime_cfg.get("carla_server_poll_seconds", 2.0))
+    post_kill_sleep_s = float(runtime_cfg.get("carla_server_post_kill_sleep_seconds", 3.0))
+    startup_grace_s = float(runtime_cfg.get("carla_server_startup_grace_seconds", 10.0))
+
+    shutdown_result = shutdown_carla_processes()
+    if post_kill_sleep_s > 0:
+        time.sleep(post_kill_sleep_s)
+
+    launch_result = {
+        "ok": False,
+        "reason": "restart skipped",
+        "command": None,
+    }
+    if _is_local_carla_host(host):
+        launch_command = _resolve_carla_server_command(env_cfg, runtime_cfg)
+        if launch_command:
+            launch_result = _launch_carla_server(launch_command)
+            if launch_result["ok"] and startup_grace_s > 0:
+                time.sleep(startup_grace_s)
+        else:
+            launch_result = {
+                "ok": False,
+                "reason": "no CARLA server command configured or discovered",
+                "command": None,
+            }
+
+    wait_result = _wait_for_carla_server(
+        env_cfg,
+        timeout_seconds=recovery_timeout_s,
+        poll_seconds=poll_s,
+    )
+
+    parts = [f"recovery after {reason}"]
+    if shutdown_result.get("killed_any"):
+        parts.append("stale CARLA process killed")
+    elif shutdown_result.get("issues"):
+        parts.append("shutdown issues: " + "; ".join(shutdown_result["issues"]))
+    elif shutdown_result.get("attempted"):
+        parts.append("no running CARLA process found")
+
+    if launch_result.get("command"):
+        parts.append(
+            "restart "
+            + ("ok" if launch_result.get("ok") else f"failed ({launch_result.get('reason')})")
+        )
+    elif _is_local_carla_host(host):
+        parts.append(launch_result.get("reason", "restart unavailable"))
+
+    if wait_result["ok"]:
+        parts.append("server reachable")
+    else:
+        parts.append(f"server still unavailable ({wait_result.get('last_error')})")
+
+    return {
+        "ok": bool(wait_result["ok"]),
+        "message": "; ".join(parts),
+        "shutdown": shutdown_result,
+        "launch": launch_result,
+        "wait": wait_result,
+    }
 
 
 def _run_episode_job(payload):
@@ -805,10 +1012,19 @@ def _run_evaluation_scenarios(
                             print(_tail_text_block(episode_result["stdout"], lines=20))
                         if episode_result.get("stderr"):
                             print(_tail_text_block(episode_result["stderr"], lines=20))
-                        shutdown_carla_processes()
-                        gc.collect()
+
                         if attempt < max_retries_per_episode:
-                            time.sleep(2.0)
+                            if _looks_like_carla_server_failure(episode_result):
+                                recovery = _recover_carla_server(
+                                    scenario_env_cfg,
+                                    runtime_cfg,
+                                    reason=episode_result["reason"],
+                                )
+                                print(f"    [WARN] {recovery['message']}")
+                            else:
+                                shutdown_carla_processes()
+                                gc.collect()
+                                time.sleep(2.0)
 
                     if not episode_result or not episode_result["ok"]:
                         failure = last_failure or {"reason": "unknown episode worker failure"}
