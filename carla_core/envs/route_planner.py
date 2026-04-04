@@ -14,6 +14,10 @@ Usage:
 
 import logging
 import math
+import os
+import sys
+from importlib import import_module
+from pathlib import Path
 
 import numpy as np
 
@@ -31,19 +35,75 @@ logger = logging.getLogger(__name__)
 _GlobalRoutePlanner = None
 
 
+def _candidate_carla_pythonapi_dirs():
+    candidates = []
+
+    carla_root = os.environ.get("CARLA_ROOT")
+    if carla_root:
+        candidates.append(Path(carla_root) / "PythonAPI" / "carla")
+
+    candidates.append(Path("C:/CARLA_0.9.16/PythonAPI/carla"))
+
+    seen = set()
+    unique_candidates = []
+    for candidate in candidates:
+        normalized = str(candidate).lower() if os.name == "nt" else str(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_candidates.append(candidate)
+
+    return unique_candidates
+
+
+def _path_on_syspath(path: Path) -> bool:
+    target = str(path.resolve()) if path.exists() else str(path)
+    if os.name == "nt":
+        target = target.lower()
+
+    for entry in sys.path:
+        entry_str = str(entry)
+        if os.name == "nt":
+            entry_str = entry_str.lower()
+        if entry_str == target:
+            return True
+    return False
+
+
+def _maybe_add_carla_pythonapi_to_syspath():
+    for candidate in _candidate_carla_pythonapi_dirs():
+        if not candidate.is_dir():
+            continue
+        if not _path_on_syspath(candidate):
+            sys.path.insert(0, str(candidate))
+        return str(candidate)
+    return None
+
+
 def _ensure_grp_import():
     global _GlobalRoutePlanner
     if _GlobalRoutePlanner is not None:
         return
+
+    last_exc = None
     try:
-        from agents.navigation.global_route_planner import GlobalRoutePlanner
-        _GlobalRoutePlanner = GlobalRoutePlanner
-    except ImportError:
-        raise ImportError(
-            "Cannot import agents.navigation.global_route_planner. "
-            "Add CARLA's PythonAPI/carla directory to PYTHONPATH, e.g.:\n"
-            "  set PYTHONPATH=%CARLA_ROOT%/PythonAPI/carla"
-        )
+        module = import_module("agents.navigation.global_route_planner")
+    except ImportError as exc:
+        last_exc = exc
+        _maybe_add_carla_pythonapi_to_syspath()
+        try:
+            module = import_module("agents.navigation.global_route_planner")
+        except ImportError as retry_exc:
+            last_exc = retry_exc
+            searched = ", ".join(str(path) for path in _candidate_carla_pythonapi_dirs())
+            raise ImportError(
+                "Cannot import agents.navigation.global_route_planner. "
+                "Tried the current Python path and these CARLA PythonAPI locations: "
+                f"{searched}. Set CARLA_ROOT or add PythonAPI/carla to PYTHONPATH. "
+                f"Last import error: {last_exc}"
+            ) from retry_exc
+
+    _GlobalRoutePlanner = getattr(module, "GlobalRoutePlanner")
 
 
 # ---------------------------------------------------------------------------
