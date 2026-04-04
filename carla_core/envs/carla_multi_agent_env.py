@@ -139,6 +139,16 @@ def load_ma_config(config_path=None):
     return config
 
 
+def _load_levels_yaml():
+    """Load level definitions from levels.yaml (Block 5.2)."""
+    p = Path(__file__).resolve().parent.parent / "configs" / "levels.yaml"
+    if p.exists():
+        with open(p) as f:
+            data = yaml.safe_load(f) or {}
+        return data.get("levels", {})
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Agent data container
 # ---------------------------------------------------------------------------
@@ -251,7 +261,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._step_count = 0
         self._reset_count = 0
         self._terminated_agent_infos = {}
-        self._route_planner = None  # Block 5.1: initialized in _connect()
+        self._route_planner = None                          # Block 5.1: initialized in _connect()
+        self._current_map_name = None                       # Block 5.2: tracks loaded map
+        self._current_level = None                          # Block 5.2: current level name
+        self._needs_traffic_respawn = False                 # Block 5.2: flag for level switch
+        self._level_configs = self._load_level_configs()    # Block 5.2
 
     # ------------------------------------------------------------------
     # PettingZoo API
@@ -277,9 +291,15 @@ class CarlaMultiAgentEnv(ParallelEnv):
         if not self._connected:
             self._connect()
 
+        # Block 5.2: detect map switch
+        target_map = self.cfg["world"]["map"]
+        if self._current_map_name is not None and target_map != self._current_map_name:
+            self._switch_map(target_map)
+
         # Apply seed BEFORE any spawn
         self._reset_count += 1
-        respawn_traffic = False
+        respawn_traffic = self._needs_traffic_respawn  # Block 5.2: level switch forces respawn
+        self._needs_traffic_respawn = False
         if seed is not None:
             self.cfg["traffic"]["seed"] = seed
             self._reset_count = 0  # deterministic replay from explicit seed
@@ -527,6 +547,65 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._closed = False
         self._closing = False
 
+    def _load_level_configs(self):
+        """Load from levels.yaml, merge with any env_config overrides."""
+        levels = _load_levels_yaml()
+        # Also accept levels embedded in env_config (for RLlib passthrough)
+        cfg_levels = self.cfg.get("levels", {})
+        if cfg_levels:
+            for k, v in cfg_levels.items():
+                levels.setdefault(k, {}).update(v)
+        return levels
+
+    def set_level(self, level_name: str):
+        """Apply a curriculum level config (Block 5.2).
+
+        Updates cfg in-place: map, traffic NPC counts, route distances.
+        Map switch happens on next reset(). Call before reset().
+
+        Args:
+            level_name: one of the keys in levels.yaml (easy/medium/hard/test).
+        """
+        if level_name not in self._level_configs:
+            raise ValueError(
+                f"Unknown level '{level_name}'. "
+                f"Available: {list(self._level_configs.keys())}"
+            )
+        lc = self._level_configs[level_name]
+
+        # Map — test level picks randomly from list
+        if "maps" in lc:
+            rng = np.random.default_rng(
+                self.cfg["traffic"].get("seed", 42) + self._reset_count
+            )
+            map_name = rng.choice(lc["maps"])
+        else:
+            map_name = lc["map"]
+        self.cfg["world"]["map"] = map_name
+
+        # Traffic NPC counts
+        self.cfg["traffic"]["n_vehicles_npc"] = lc.get(
+            "n_vehicles_npc", self.cfg["traffic"]["n_vehicles_npc"]
+        )
+        self.cfg["traffic"]["n_pedestrians_npc"] = lc.get(
+            "n_pedestrians_npc", self.cfg["traffic"]["n_pedestrians_npc"]
+        )
+
+        # Route distances (Block 5.1)
+        self.cfg["episode"]["route_distance_m"] = lc.get("route_distance_m")
+        self.cfg["episode"]["route_distance_m_pedestrian"] = lc.get(
+            "route_distance_m_pedestrian"
+        )
+
+        self._current_level = level_name
+        self._needs_traffic_respawn = True
+
+        logger.info("Level set: %s → map=%s, npc=%dV+%dP, route=%sm",
+                     level_name, map_name,
+                     self.cfg["traffic"]["n_vehicles_npc"],
+                     self.cfg["traffic"]["n_pedestrians_npc"],
+                     self.cfg["episode"].get("route_distance_m", "legacy"))
+
     # ------------------------------------------------------------------
     # Connection
     # ------------------------------------------------------------------
@@ -546,6 +625,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         self._map = self._world.get_map()
         self._spawn_points = self._map.get_spawn_points()
+        self._current_map_name = self._map.name.split("/")[-1]  # Block 5.2
 
         # Block 5.1: build A* route planner (rebuilt on every _connect for map-switch safety)
         if self.cfg["episode"].get("route_distance_m") is not None:
@@ -575,6 +655,65 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._connected = True
         self._closed = False
         self._closing = False
+
+
+    def _switch_map(self, new_map_name: str):
+        """Switch CARLA world to a different map without reconnecting client (Block 5.2).
+
+        Rebuilds: world, map, spawn_points, route_planner, sync settings, TM.
+        Does NOT rebuild client connection.
+        """
+        logger.info("Switching map: %s → %s", self._current_map_name, new_map_name)
+
+        # Cleanup everything on old map
+        self._cleanup_agents()
+        if self._traffic_spawned:
+            self._cleanup_traffic()
+
+        # Restore old world settings before loading new map
+        if self._world and self._original_settings:
+            try:
+                self._world.apply_settings(self._original_settings)
+            except Exception:
+                pass
+
+        # Load new map
+        self._client.load_world(new_map_name)
+        import time
+        time.sleep(2.0)  # allow map load to complete
+        self._world = self._client.get_world()
+        self._map = self._world.get_map()
+        self._spawn_points = self._map.get_spawn_points()
+        self._current_map_name = self._map.name.split("/")[-1]
+
+        # Rebuild route planner
+        if self.cfg["episode"].get("route_distance_m") is not None:
+            self._route_planner = CARLARoutePlanner(self._map, sampling_resolution=2.0)
+        else:
+            self._route_planner = None
+
+        # Re-apply sync settings on new world
+        self._original_settings = self._world.get_settings()
+        settings = self._world.get_settings()
+        sim = self.cfg["simulator"]
+        settings.synchronous_mode = sim["sync_mode"]
+        settings.fixed_delta_seconds = sim["fixed_delta_seconds"]
+        if self.cfg["world"].get("no_rendering", False):
+            settings.no_rendering_mode = True
+        self._world.apply_settings(settings)
+
+        # Re-sync TM
+        if self._tm:
+            self._tm.set_synchronous_mode(True)
+
+        # Re-apply weather
+        weather = self.cfg["world"].get("weather_preset", "ClearNoon")
+        if hasattr(carla.WeatherParameters, weather):
+            self._world.set_weather(getattr(carla.WeatherParameters, weather))
+
+        self._traffic_spawned = False
+        self._needs_traffic_respawn = True
+
 
     # ------------------------------------------------------------------
     # Agent setup

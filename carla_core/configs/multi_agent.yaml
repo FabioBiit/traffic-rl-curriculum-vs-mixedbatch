@@ -36,3 +36,4 @@ episode:
   terminate_on_route_completion: true       # End episode when route is completed.
   route_distance_m: null                    # Block 5.1: A* vehicle route by meters (null = legacy wp chain)
   route_distance_m_pedestrian: null         # Block 5.1: sidewalk route by meters (null = legacy wp count)
+  levels_config: "carla_core/configs/levels.yaml" # Block 5.2: level definitions loaded from levels.yaml # Override here or pass via env_config["levels"] for programmatic use.
