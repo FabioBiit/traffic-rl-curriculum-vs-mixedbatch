@@ -176,6 +176,59 @@ def _render_progress_bar(progress, width=24):
     return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
 
 
+def _format_duration_hm(total_seconds):
+    if total_seconds is None:
+        return None
+    total_seconds = max(0, int(total_seconds))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    return f"{hours}h{minutes:02d}m"
+
+
+def _compute_eval_timing(*, started_epoch_s, completed_episodes, total_episodes, now_epoch_s=None):
+    if started_epoch_s is None:
+        return None, None
+
+    try:
+        start_value = float(started_epoch_s)
+    except (TypeError, ValueError):
+        return None, None
+
+    now_value = float(now_epoch_s if now_epoch_s is not None else time.time())
+    elapsed_s = max(0.0, now_value - start_value)
+
+    try:
+        completed = int(completed_episodes or 0)
+    except (TypeError, ValueError):
+        completed = 0
+    try:
+        total = int(total_episodes or 0)
+    except (TypeError, ValueError):
+        total = 0
+
+    eta_s = None
+    if total > 0:
+        remaining = max(total - completed, 0)
+        if completed > 0:
+            eta_s = 0.0 if remaining == 0 else (elapsed_s / completed) * remaining
+
+    return elapsed_s, eta_s
+
+
+def _attach_status_timing(payload):
+    payload = dict(payload)
+    elapsed_s, eta_s = _compute_eval_timing(
+        started_epoch_s=payload.get("started_epoch_s"),
+        completed_episodes=payload.get("completed_episodes"),
+        total_episodes=payload.get("total_episodes"),
+    )
+    payload["elapsed_seconds"] = elapsed_s
+    payload["elapsed_hm"] = _format_duration_hm(elapsed_s)
+    payload["eta_seconds"] = eta_s
+    payload["eta_hm"] = _format_duration_hm(eta_s)
+    return payload
+
+
 def _aggregate_eval_metric_rows(rows, keys):
     if not rows:
         return {key: None for key in keys}
@@ -872,11 +925,13 @@ def _run_evaluation_scenarios(
         completed_scenarios=0,
         total_scenarios=total_scenarios,
         total_episodes=total_episodes,
+        completed_episodes=0,
         current_phase="starting",
         current_scenario_idx=0,
         current_map=None,
         current_profile=None,
         progress_mode="exact",
+        started_epoch_s=eval_t0,
     )
 
     for map_name in maps:
@@ -893,11 +948,13 @@ def _run_evaluation_scenarios(
                 completed_scenarios=completed_scenarios,
                 total_scenarios=total_scenarios,
                 total_episodes=total_episodes,
+                completed_episodes=completed_episodes_total,
                 current_phase="scenario_pending",
                 current_scenario_idx=scenario_idx,
                 current_map=map_name,
                 current_profile=profile_name,
                 progress_mode="exact",
+                started_epoch_s=eval_t0,
             )
             print(
                 f"  [Eval {scenario_idx}/{total_scenarios}] {map_name}/{profile_name} | "
@@ -934,12 +991,19 @@ def _run_evaluation_scenarios(
                         progress = (
                             completed_episodes_total / total_episodes if total_episodes else 0.0
                         )
+                        total_elapsed_s, eta_s = _compute_eval_timing(
+                            started_epoch_s=eval_t0,
+                            completed_episodes=completed_episodes_total,
+                            total_episodes=total_episodes,
+                        )
+                        eta_label = _format_duration_hm(eta_s) or "n/a"
                         print(
                             f"Eval progress {_render_progress_bar(progress)} "
                             f"{progress * 100:5.1f}% exact "
                             f"({completed_episodes_total}/{total_episodes} episodi completati, "
                             f"scenario {scenario_idx}/{total_scenarios}, "
-                            f"episodio {current_episode_number}/{episodes_per_map})"
+                            f"episodio {current_episode_number}/{episodes_per_map}) | "
+                            f"Elapsed {_format_duration_hm(total_elapsed_s)} | ETA {eta_label}"
                         )
                         _publish_status(
                             reason="evaluation subprocess running",
@@ -955,6 +1019,7 @@ def _run_evaluation_scenarios(
                             current_map=map_name,
                             current_profile=profile_name,
                             progress_mode="exact",
+                            started_epoch_s=eval_t0,
                         )
                         current_elapsed_s = time.time() - episode_t0
                         if not episode_stall_warned[0] and current_elapsed_s >= episode_stall_warning_s:
@@ -1110,6 +1175,7 @@ def _run_evaluation_scenarios(
                     current_map=map_name,
                     current_profile=profile_name,
                     progress_mode="exact",
+                    started_epoch_s=eval_t0,
                 )
                 print(
                     f"    episodio {current_episode_number}/{episodes_per_map} completato | "
@@ -1140,11 +1206,13 @@ def _run_evaluation_scenarios(
                 current_map=map_name,
                 current_profile=profile_name,
                 progress_mode="exact",
+                started_epoch_s=eval_t0,
             )
             print(
                 f"Eval progress {_render_progress_bar(exact_progress)} {exact_progress * 100:5.1f}% "
                 f"exact ({completed_episodes_total}/{total_episodes} episodi, "
-                f"{scenario_idx}/{total_scenarios} scenari completati)"
+                f"{scenario_idx}/{total_scenarios} scenari completati) | "
+                f"Elapsed {_format_duration_hm(total_elapsed)} | ETA {_format_duration_hm(eta)}"
             )
             print(
                 f"Done in {int(scenario_elapsed//3600)}h{int((scenario_elapsed%3600)//60):02d}m | "
@@ -1357,7 +1425,7 @@ def _update_results_json(
 def _update_running_status(status_path, state, **fields):
     state.update(fields)
     state.update(_now_status_fields())
-    payload = dict(state)
+    payload = _attach_status_timing(state)
     progress = float(payload.get("progress", 0.0) or 0.0)
     progress = min(max(progress, 0.0), 1.0)
     payload["progress"] = progress
@@ -1389,6 +1457,7 @@ def main():
         "exit_code": None,
         "artifacts_written": False,
         "started_at": started_at,
+        "started_epoch_s": time.time(),
         "finished_at": None,
         "evaluation_metric_keys": [],
         "progress": 0.0,
@@ -1449,7 +1518,8 @@ def main():
             ) from exc
         _write_status(
             status_path,
-            {
+            _attach_status_timing(
+                {
                 "session_id": session_id,
                 "pid": os.getpid(),
                 "completed": True,
@@ -1457,6 +1527,7 @@ def main():
                 "exit_code": 0,
                 "artifacts_written": artifacts_written,
                 "started_at": started_at,
+                "started_epoch_s": status_state.get("started_epoch_s"),
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": evaluation_metric_keys,
                 "progress": 1.0,
@@ -1473,7 +1544,8 @@ def main():
                 "current_profile": status_state.get("current_profile"),
                 "progress_mode": "exact",
                 **_now_status_fields(),
-            },
+                }
+            ),
         )
         return 0
     except FinalEvaluationInterrupted as exc:
@@ -1494,7 +1566,8 @@ def main():
         )
         _write_status(
             status_path,
-            {
+            _attach_status_timing(
+                {
                 "session_id": session_id,
                 "pid": os.getpid(),
                 "completed": False,
@@ -1502,6 +1575,7 @@ def main():
                 "exit_code": 130,
                 "artifacts_written": artifacts_written,
                 "started_at": started_at,
+                "started_epoch_s": status_state.get("started_epoch_s"),
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": exc.metric_keys,
                 "progress": status_state.get("progress", 0.0),
@@ -1518,7 +1592,8 @@ def main():
                 "current_profile": status_state.get("current_profile"),
                 "progress_mode": status_state.get("progress_mode", "exact"),
                 **_now_status_fields(),
-            },
+                }
+            ),
         )
         return 130
     except FinalEvaluationFailed as exc:
@@ -1539,7 +1614,8 @@ def main():
         )
         _write_status(
             status_path,
-            {
+            _attach_status_timing(
+                {
                 "session_id": session_id,
                 "pid": os.getpid(),
                 "completed": False,
@@ -1547,6 +1623,7 @@ def main():
                 "exit_code": 1,
                 "artifacts_written": artifacts_written,
                 "started_at": started_at,
+                "started_epoch_s": status_state.get("started_epoch_s"),
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": exc.metric_keys,
                 "progress": status_state.get("progress", 0.0),
@@ -1563,7 +1640,8 @@ def main():
                 "current_profile": status_state.get("current_profile"),
                 "progress_mode": status_state.get("progress_mode", "exact"),
                 **_now_status_fields(),
-            },
+                }
+            ),
         )
         print(f"[WARN] Final evaluation failed: {exc.reason}")
         return 1
@@ -1575,7 +1653,8 @@ def main():
         )
         _write_status(
             status_path,
-            {
+            _attach_status_timing(
+                {
                 "session_id": session_id,
                 "pid": os.getpid(),
                 "completed": False,
@@ -1583,6 +1662,7 @@ def main():
                 "exit_code": 130,
                 "artifacts_written": False,
                 "started_at": started_at,
+                "started_epoch_s": status_state.get("started_epoch_s"),
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": [],
                 "progress": status_state.get("progress", 0.0),
@@ -1599,7 +1679,8 @@ def main():
                 "current_profile": status_state.get("current_profile"),
                 "progress_mode": status_state.get("progress_mode", "exact"),
                 **_now_status_fields(),
-            },
+                }
+            ),
         )
         print("\nValutazione finale interrotta manualmente.")
         return 130
@@ -1611,7 +1692,8 @@ def main():
         )
         _write_status(
             status_path,
-            {
+            _attach_status_timing(
+                {
                 "session_id": session_id,
                 "pid": os.getpid(),
                 "completed": False,
@@ -1619,6 +1701,7 @@ def main():
                 "exit_code": 1,
                 "artifacts_written": False,
                 "started_at": started_at,
+                "started_epoch_s": status_state.get("started_epoch_s"),
                 "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "evaluation_metric_keys": [],
                 "progress": status_state.get("progress", 0.0),
@@ -1635,7 +1718,8 @@ def main():
                 "current_profile": status_state.get("current_profile"),
                 "progress_mode": status_state.get("progress_mode", "exact"),
                 **_now_status_fields(),
-            },
+                }
+            ),
         )
         traceback.print_exc()
         return 1
