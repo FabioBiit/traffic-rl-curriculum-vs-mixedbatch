@@ -54,6 +54,8 @@ try:
 except ImportError:
     raise ImportError("pip install carla==0.9.16")
 
+from carla_core.envs.route_planner import CARLARoutePlanner
+
 logger = logging.getLogger(__name__)
 
 if sys.platform == "win32":
@@ -109,8 +111,10 @@ DEFAULT_MA_CONFIG = {
     "episode": {
         "max_steps": 1000,
         "terminate_on_collision": True,
-        "route_length_vehicle": 10, # Waypoints for vehicle route
-        "route_length_pedestrian": 10, # Sidewalk waypoints for pedestrian route
+        "route_length_vehicle": 10,
+        "route_length_pedestrian": 10,
+        "route_distance_m": None,              # Block 5.1: A* route by meters (None=legacy)
+        "route_distance_m_pedestrian": None,   # Block 5.1: sidewalk by meters (None=legacy)
     },
 }
 
@@ -247,6 +251,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._step_count = 0
         self._reset_count = 0
         self._terminated_agent_infos = {}
+        self._route_planner = None  # Block 5.1: initialized in _connect()
 
     # ------------------------------------------------------------------
     # PettingZoo API
@@ -492,6 +497,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 self._client = None
                 self._original_settings = None
                 self._spawn_points = []
+                self._route_planner = None  # Block 5.1: release stale map ref
                 self._terminated_agent_infos = {}
                 self.agents = []
                 self._closed = True
@@ -510,6 +516,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 self._world.apply_settings(self._original_settings)
             except Exception:
                 pass
+        self._route_planner = None  # Block 5.1
         self._connected = False
 
     def set_close_mode(self, mode: str):
@@ -539,6 +546,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         self._map = self._world.get_map()
         self._spawn_points = self._map.get_spawn_points()
+
+        # Block 5.1: build A* route planner (rebuilt on every _connect for map-switch safety)
+        if self.cfg["episode"].get("route_distance_m") is not None:
+            self._route_planner = CARLARoutePlanner(self._map, sampling_resolution=2.0)
+        else:
+            self._route_planner = None
 
         self._original_settings = self._world.get_settings()
         settings = self._world.get_settings()
@@ -694,6 +707,26 @@ class CarlaMultiAgentEnv(ParallelEnv):
         ad.prev_location = ad.actor.get_location()
 
     def _setup_vehicle_route(self, ad: AgentData, skip_current_wp: bool = False):
+        # Block 5.1: A* route by distance (if configured)
+        route_distance_m = self.cfg["episode"].get("route_distance_m")
+        if route_distance_m is not None and self._route_planner is not None:
+            origin = ad.actor.get_location()
+            rng = np.random.default_rng(
+                self.cfg["traffic"].get("seed", 42) + self._reset_count * 1000
+                + hash(ad.agent_id) % 10000
+            )
+            wps = self._route_planner.plan_vehicle_route(
+                origin, route_distance_m, self._spawn_points, rng,
+            )
+            if wps is not None and len(wps) >= 2:
+                ad.route_waypoints = wps
+                ad.current_wp_idx = 0
+                ad.route_optimal_length = self._compute_route_optimal_length(ad)
+                ad.prev_location = ad.actor.get_location()
+                return
+            logger.debug("GRP fallback to legacy chain for %s", ad.agent_id)
+
+        # Legacy: chain waypoints via wp.next()
         loc = ad.actor.get_location()
         wp = self._map.get_waypoint(loc, project_to_road=True)
         route_len = self.cfg["episode"].get("route_length_vehicle", 10) # 50 -> 10 Reward v5 - Waypoints for vehicle route
@@ -719,6 +752,22 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
     def _setup_pedestrian_route(self, ad: AgentData):
         """Build a pedestrian route by chaining sidewalk waypoints like vehicles."""
+        # Block 5.1: distance-based sidewalk routing (if configured)
+        ped_dist = self.cfg["episode"].get("route_distance_m_pedestrian")
+        if ped_dist is not None and self._route_planner is not None:
+            origin = ad.actor.get_location()
+            wps = self._route_planner.plan_pedestrian_route_by_distance(
+                origin, ped_dist, self._map,
+            )
+            if wps is not None and len(wps) >= 2:
+                ad.route_waypoints = wps
+                ad.current_wp_idx = 0
+                ad.goal_location = wps[0].transform.location
+                ad.route_optimal_length = self._compute_route_optimal_length(ad)
+                ad.prev_location = ad.actor.get_location()
+                return
+            logger.debug("Ped distance routing fallback for %s", ad.agent_id)
+
         route_len = self.cfg["episode"].get("route_length_pedestrian", 10)
         ad.route_waypoints = []
         ad.current_wp_idx = 0

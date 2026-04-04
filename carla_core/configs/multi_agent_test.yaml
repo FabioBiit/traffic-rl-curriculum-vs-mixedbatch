@@ -34,3 +34,5 @@ episode:
   terminate_on_collision: true              # End episode when collision occurs.
   terminate_on_offroad: true                # End episode when ego leaves drivable road.
   terminate_on_route_completion: true       # End episode when route is completed.
+  route_distance_m: null                    # Block 5.1: A* vehicle route by meters (null = legacy wp chain)
+  route_distance_m_pedestrian: null         # Block 5.1: sidewalk route by meters (null = legacy wp count)
