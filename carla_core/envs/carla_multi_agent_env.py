@@ -149,6 +149,53 @@ def _load_levels_yaml():
     return {}
 
 
+def get_level_configs(env_cfg=None):
+    """Load levels.yaml and merge optional env-config level overrides."""
+    levels = _load_levels_yaml()
+    cfg_levels = (env_cfg or {}).get("levels", {})
+    if cfg_levels:
+        for key, value in cfg_levels.items():
+            levels.setdefault(key, {}).update(value)
+    return levels
+
+
+def apply_level_config(env_cfg, level_name: str, *, level_configs=None, reset_count: int = 0):
+    """Apply one level definition to an env config dict without touching CARLA state."""
+    cfg = env_cfg
+    cfg.setdefault("world", {})
+    cfg.setdefault("traffic", {})
+    cfg.setdefault("episode", {})
+
+    levels = level_configs if level_configs is not None else get_level_configs(cfg)
+    if level_name not in levels:
+        raise ValueError(
+            f"Unknown level '{level_name}'. "
+            f"Available: {list(levels.keys())}"
+        )
+
+    lc = levels[level_name]
+    if "maps" in lc:
+        rng = np.random.default_rng(cfg["traffic"].get("seed", 42) + int(reset_count))
+        map_name = str(rng.choice(lc["maps"]))
+    else:
+        map_name = lc["map"]
+
+    cfg["world"]["map"] = map_name
+    cfg["traffic"]["n_vehicles_npc"] = lc.get(
+        "n_vehicles_npc",
+        cfg["traffic"].get("n_vehicles_npc"),
+    )
+    cfg["traffic"]["n_pedestrians_npc"] = lc.get(
+        "n_pedestrians_npc",
+        cfg["traffic"].get("n_pedestrians_npc"),
+    )
+    cfg["episode"]["route_distance_m"] = lc.get("route_distance_m")
+    cfg["episode"]["route_distance_m_pedestrian"] = lc.get(
+        "route_distance_m_pedestrian"
+    )
+    return map_name
+
+
 # ---------------------------------------------------------------------------
 # Agent data container
 # ---------------------------------------------------------------------------
@@ -549,13 +596,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
     def _load_level_configs(self):
         """Load from levels.yaml, merge with any env_config overrides."""
-        levels = _load_levels_yaml()
-        # Also accept levels embedded in env_config (for RLlib passthrough)
-        cfg_levels = self.cfg.get("levels", {})
-        if cfg_levels:
-            for k, v in cfg_levels.items():
-                levels.setdefault(k, {}).update(v)
-        return levels
+        return get_level_configs(self.cfg)
 
     def set_level(self, level_name: str):
         """Apply a curriculum level config (Block 5.2).
@@ -566,45 +607,24 @@ class CarlaMultiAgentEnv(ParallelEnv):
         Args:
             level_name: one of the keys in levels.yaml (easy/medium/hard/test).
         """
-        if level_name not in self._level_configs:
-            raise ValueError(
-                f"Unknown level '{level_name}'. "
-                f"Available: {list(self._level_configs.keys())}"
-            )
-        lc = self._level_configs[level_name]
-
-        # Map — test level picks randomly from list
-        if "maps" in lc:
-            rng = np.random.default_rng(
-                self.cfg["traffic"].get("seed", 42) + self._reset_count
-            )
-            map_name = rng.choice(lc["maps"])
-        else:
-            map_name = lc["map"]
-        self.cfg["world"]["map"] = map_name
-
-        # Traffic NPC counts
-        self.cfg["traffic"]["n_vehicles_npc"] = lc.get(
-            "n_vehicles_npc", self.cfg["traffic"]["n_vehicles_npc"]
-        )
-        self.cfg["traffic"]["n_pedestrians_npc"] = lc.get(
-            "n_pedestrians_npc", self.cfg["traffic"]["n_pedestrians_npc"]
-        )
-
-        # Route distances (Block 5.1)
-        self.cfg["episode"]["route_distance_m"] = lc.get("route_distance_m")
-        self.cfg["episode"]["route_distance_m_pedestrian"] = lc.get(
-            "route_distance_m_pedestrian"
+        map_name = apply_level_config(
+            self.cfg,
+            level_name,
+            level_configs=self._level_configs,
+            reset_count=self._reset_count,
         )
 
         self._current_level = level_name
         self._needs_traffic_respawn = True
 
-        logger.info("Level set: %s → map=%s, npc=%dV+%dP, route=%sm",
-                     level_name, map_name,
-                     self.cfg["traffic"]["n_vehicles_npc"],
-                     self.cfg["traffic"]["n_pedestrians_npc"],
-                     self.cfg["episode"].get("route_distance_m", "legacy"))
+        logger.info(
+            "Level set: %s -> map=%s, npc=%dV+%dP, route=%sm",
+            level_name,
+            map_name,
+            self.cfg["traffic"]["n_vehicles_npc"],
+            self.cfg["traffic"]["n_pedestrians_npc"],
+            self.cfg["episode"].get("route_distance_m", "legacy"),
+        )
 
     # ------------------------------------------------------------------
     # Connection

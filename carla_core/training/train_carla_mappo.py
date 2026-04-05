@@ -50,6 +50,7 @@ from ray.tune.registry import register_env
 # Project imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from carla_core.envs.carla_multi_agent_env import (
+    apply_level_config,
     CarlaMultiAgentEnv,
     VEHICLE_OBS_DIM,
     PEDESTRIAN_OBS_DIM,
@@ -652,6 +653,16 @@ def _derive_mode(exp_cfg, name):
     return "unknown"
 
 
+def _scope_output_base_by_mode(out_base_path, mode):
+    """Nest experiment outputs under experiments/<mode> when applicable."""
+    out_base_path = Path(out_base_path)
+    if mode not in {"batch", "curriculum"}:
+        return out_base_path
+    if out_base_path.name.lower() == mode:
+        return out_base_path
+    return out_base_path / mode
+
+
 def _build_results_payload(
     *,
     exp_cfg,
@@ -783,14 +794,14 @@ def main():
     ts_str = time.strftime("%Y%m%d_%H%M%S")
     name = exp_cfg.get("name", "carla_mappo")
     if args.checkpoint_dir:
-        out_dir = str(
+        tentative_out_dir = str(
             _resolve_project_path(args.checkpoint_dir, project_root=project_root)
         )
     else:
-        out_dir = str((out_base_path / f"{name}_{ts_str}").resolve(strict=False))
+        tentative_out_dir = str((out_base_path / f"{name}_{ts_str}").resolve(strict=False))
     resolved_mode = _derive_mode(
         {**exp_cfg, "output_dir": str(out_base_path)},
-        out_dir,
+        tentative_out_dir,
     )
     if resolved_mode == "unknown":
         raise ValueError(
@@ -798,6 +809,13 @@ def main():
             "'batch' or 'curriculum', or pass --mode explicitly."
         )
     exp_cfg["mode"] = resolved_mode
+
+    if args.checkpoint_dir:
+        out_dir = tentative_out_dir
+    else:
+        out_base_path = _scope_output_base_by_mode(out_base_path, resolved_mode)
+        exp_cfg["output_dir"] = str(out_base_path)
+        out_dir = str((out_base_path / f"{name}_{ts_str}").resolve(strict=False))
     os.makedirs(out_dir, exist_ok=True)
 
     # Episode-level JSON log path (read by MAPPOTrainingCallbacks)
@@ -805,6 +823,38 @@ def main():
     episode_log_path = os.environ["MAPPO_EPISODE_LOG"]
     episode_log_offset = os.path.getsize(episode_log_path) if os.path.exists(episode_log_path) else 0
     cumulative_agent_outcomes = {"total": 0, "success": 0, "collision": 0}
+    cb_cfg = load_yaml(base / "configs" / "curriculum_batch.yaml")
+    build_env_cfg = deepcopy(env_cfg)
+    level_manager = None
+    level_tracker = None
+    current_training_level = None
+    initial_level = None
+    initial_map = None
+
+    if resolved_mode == "curriculum":
+        cc = cb_cfg.get("curriculum", {})
+        level_manager = CurriculumManager(
+            levels=cc.get("levels", ["easy", "medium", "hard"]),
+            promotion_threshold=cc.get("promotion_threshold", 0.6),
+            collision_threshold=cc.get("collision_threshold", 0.3),
+            min_episodes=cc.get("min_episodes", 50),
+            min_timesteps=cc.get("min_timesteps", 200_000),
+            replay_ratio=cc.get("replay_ratio", 0.2),
+            max_blocks_without_replay=cc.get("max_blocks_without_replay", 2),
+            window_size=cc.get("window_size", 50),
+        )
+        level_tracker = EpisodeTracker(window_size=cc.get("window_size", 50))
+        initial_level = level_manager.current_level
+        initial_map = apply_level_config(build_env_cfg, initial_level)
+    elif resolved_mode == "batch":
+        bc = cb_cfg.get("batch", {})
+        level_manager = BatchLevelSampler(
+            levels=bc.get("levels", ["easy", "medium", "hard"]),
+            seed=bc.get("seed", exp_seed),
+        )
+        level_tracker = EpisodeTracker(window_size=50)
+        initial_level = level_manager.sample()
+        initial_map = apply_level_config(build_env_cfg, initial_level)
 
     print(f"{'=' * 60}")
     print(f"CARLA MAPPO Training - Centralized Critic (CTDE)")
@@ -828,7 +878,7 @@ def main():
         "rollout": roll,
         "model": model_cfg,
         "runtime": runtime_cfg,
-        "env_config": env_cfg,
+        "env_config": build_env_cfg,
         "eval_config": eval_cfg,
     }
     with open(os.path.join(out_dir, "run_config.json"), "w") as f:
@@ -847,7 +897,7 @@ def main():
 
     # --- PPO Config ---
     config = _build_mappo_config(
-        env_cfg=env_cfg,
+        env_cfg=build_env_cfg,
         train_cfg=train_cfg,
         eval_cfg=eval_cfg,
         n_gpus=n_gpus,
@@ -861,51 +911,20 @@ def main():
     print("\nMAPPO training avviato.\n")
 
     # --- Block 5.4: Level manager setup ---
-    cb_cfg = load_yaml(base / "configs" / "curriculum_batch.yaml")
-    level_manager = None
-    level_tracker = None
-    current_training_level = None
+    if level_manager is not None and _unwrap_carla_env(algo) is None:
+        logger.error("Cannot unwrap env for %s — falling back to baseline", resolved_mode)
+        level_manager = None
+        level_tracker = None
+        current_training_level = None
+        initial_level = None
+        initial_map = None
 
-    if resolved_mode == "curriculum":
-        cc = cb_cfg.get("curriculum", {})
-        level_manager = CurriculumManager(
-            levels=cc.get("levels", ["easy", "medium", "hard"]),
-            promotion_threshold=cc.get("promotion_threshold", 0.6),
-            collision_threshold=cc.get("collision_threshold", 0.3),
-            min_episodes=cc.get("min_episodes", 50),
-            min_timesteps=cc.get("min_timesteps", 200_000),
-            replay_ratio=cc.get("replay_ratio", 0.2),
-            max_blocks_without_replay=cc.get("max_blocks_without_replay", 2),
-            window_size=cc.get("window_size", 50),
-        )
-        level_tracker = EpisodeTracker(window_size=cc.get("window_size", 50))
-        raw_env = _unwrap_carla_env(algo)
-        if raw_env:
-            initial_level = level_manager.current_level
-            raw_env.set_level(initial_level)
-            current_training_level = initial_level
-            print(f"  Curriculum mode: starting at '{initial_level}'")
-        else:
-            logger.error("Cannot unwrap env for curriculum — falling back to baseline")
-            level_manager = None
-
-    elif resolved_mode == "batch":
-        bc = cb_cfg.get("batch", {})
-        level_manager = BatchLevelSampler(
-            levels=bc.get("levels", ["easy", "medium", "hard"]),
-            seed=bc.get("seed", exp_seed),
-        )
-        level_tracker = EpisodeTracker(window_size=50)
-        raw_env = _unwrap_carla_env(algo)
-        if raw_env:
-            initial_level = level_manager.sample()
-            raw_env.set_level(initial_level)
-            current_training_level = initial_level
-            print(f"  Batch mode: starting at '{initial_level}'")
-        else:
-            logger.error("Cannot unwrap env for batch — falling back to baseline")
-            level_manager = None
-
+    if isinstance(level_manager, CurriculumManager):
+        current_training_level = initial_level
+        print(f"  Curriculum mode: starting at '{initial_level}' (map={initial_map})")
+    elif isinstance(level_manager, BatchLevelSampler):
+        current_training_level = initial_level
+        print(f"  Batch mode: starting at '{initial_level}' (map={initial_map})")
     else:
         print("  Baseline mode: no level switching")
 
