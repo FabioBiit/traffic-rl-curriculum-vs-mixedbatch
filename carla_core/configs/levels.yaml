@@ -1,10 +1,12 @@
-# Block 5.2 — Curriculum level definitions (Design B)
-# Each level = map + traffic combo + route distance.
-# Used by set_level() in CarlaMultiAgentEnv.
+# Block 5.2 — Curriculum level definitions (Design B revised)
+# Training levels: traffic + route difficulty on fixed map (Town03).
+# Map-based generalization tested in final eval (subprocess isolation).
+# Rationale: CARLA 0.9.16 load_world SIGABRT on Windows prevents
+# in-process map switching during training.
 
 levels:
   easy:
-    map: "Town01"
+    map: "Town03"
     n_vehicles_npc: 5
     n_pedestrians_npc: 10
     route_distance_m: 50
@@ -18,14 +20,14 @@ levels:
     route_distance_m_pedestrian: 50
 
   hard:
-    map: "Town05"
+    map: "Town03"
     n_vehicles_npc: 30
     n_pedestrians_npc: 60
     route_distance_m: 250
     route_distance_m_pedestrian: 80
 
   test:
-    maps: ["Town02", "Town10"]     # random pick per episode
+    maps: ["Town02", "Town10"]     # eval only — subprocess isolation
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
     route_distance_m: 120
