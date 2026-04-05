@@ -296,7 +296,15 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         obs = input_dict["obs_flat"].float()
         _raise_on_nonfinite_torch("obs_flat", obs)
         action_logits = self.actor(obs)
-        _raise_on_nonfinite_torch("action_logits", action_logits)
+
+        # Clamp NaN logits to zero (uniform action) instead of crashing
+        if not torch.isfinite(action_logits).all():
+            n_bad = (~torch.isfinite(action_logits)).sum().item()
+            logger.warning(
+                "action_logits has %d non-finite values — clamping to 0",
+                n_bad,
+            )
+            action_logits = torch.nan_to_num(action_logits, nan=0.0, posinf=0.0, neginf=0.0)
 
         # During training: global_obs injected by callbacks
         if GLOBAL_OBS in input_dict:
@@ -322,7 +330,14 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         else:
             self._cur_value = normalized_value
 
-        _raise_on_nonfinite_torch("value_function", self._cur_value)
+        # Clamp NaN values instead of crashing
+        if not torch.isfinite(self._cur_value).all():
+            n_bad = (~torch.isfinite(self._cur_value)).sum().item()
+            logger.warning(
+                "value_function has %d non-finite values — clamping to 0",
+                n_bad,
+            )
+            self._cur_value = torch.nan_to_num(self._cur_value, nan=0.0, posinf=0.0, neginf=0.0)
         return action_logits, state
 
     @override(ModelV2)

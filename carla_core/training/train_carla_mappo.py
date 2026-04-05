@@ -824,6 +824,18 @@ def main():
     episode_log_offset = os.path.getsize(episode_log_path) if os.path.exists(episode_log_path) else 0
     cumulative_agent_outcomes = {"total": 0, "success": 0, "collision": 0}
     cb_cfg = load_yaml(base / "configs" / "curriculum_batch.yaml")
+
+    # Apply conservative optimizer overrides for multi-level runs
+    if resolved_mode in ("curriculum", "batch"):
+        opt_overrides = cb_cfg.get("optimization_overrides", {})
+        if opt_overrides:
+            for k, v in opt_overrides.items():
+                if k in opt or k in roll:
+                    target = roll if k in roll else opt
+                    old_val = target.get(k)
+                    target[k] = v
+                    logger.info("Override %s: %s -> %s (multi-level stabilization)", k, old_val, v)
+
     build_env_cfg = deepcopy(env_cfg)
     level_manager = None
     level_tracker = None

@@ -16,3 +16,9 @@ batch:
   levels: ["easy", "medium", "hard"]
   window_size: 3                 # K=3 stratified window
   seed: 42                       # shuffle seed for reproducibility
+
+# Conservative hyperparams for multi-level to prevent NaN from distribution shift
+# To validate => This hyperparam can be a problem for the convergence of the loss
+optimization_overrides:
+  num_sgd_iter: 10               # 15 -> 10 # Run v1 batch and curriculum
+  lr: 0.0003                     # 0.0005 -> 0.0003 # Run v1 batch and curriculum
