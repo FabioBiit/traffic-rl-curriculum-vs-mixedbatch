@@ -362,6 +362,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         if self.cfg["traffic"]["enabled"]:
             if respawn_traffic:
+                if self._traffic_spawned:
+                    self._cleanup_traffic()
                 self._spawn_traffic()
                 self._traffic_spawned = True
             elif not self._traffic_spawned or not self.cfg["traffic"].get("persist_traffic", True):
