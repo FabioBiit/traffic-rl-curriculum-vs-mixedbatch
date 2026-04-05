@@ -682,25 +682,44 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         Rebuilds: world, map, spawn_points, route_planner, sync settings, TM.
         Does NOT rebuild client connection.
+
+        Bug2-fix: sensor.stop() before cleanup, async-mode before load_world,
+        tick+sleep to drain pending destroys (prevents SIGABRT on Windows).
         """
+        import time
         logger.info("Switching map: %s → %s", self._current_map_name, new_map_name)
 
-        # Cleanup everything on old map
+        # S1: Stop ALL sensors FIRST — prevent callback-during-destroy SIGABRT
+        for ad in self._agent_data.values():
+            if ad.collision_sensor:
+                try:
+                    ad.collision_sensor.stop()
+                except Exception:
+                    pass
+
+        # Cleanup agents + traffic on old map
         self._cleanup_agents()
         if self._traffic_spawned:
             self._cleanup_traffic()
 
-        # Restore old world settings before loading new map
+        # S3: Disable sync mode BEFORE load_world — prevents sync deadlock
         if self._world and self._original_settings:
             try:
                 self._world.apply_settings(self._original_settings)
             except Exception:
                 pass
 
+        # S1: Tick to let CARLA process pending destroys, then sleep
+        try:
+            for _ in range(5):
+                self._world.tick(10.0)
+        except Exception:
+            pass
+        time.sleep(1.0)
+
         # Load new map
         self._client.load_world(new_map_name)
-        import time
-        time.sleep(2.0)  # allow map load to complete
+        time.sleep(3.0)  # allow full map load on Windows
         self._world = self._client.get_world()
         self._map = self._world.get_map()
         self._spawn_points = self._map.get_spawn_points()
