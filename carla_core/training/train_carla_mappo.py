@@ -59,6 +59,11 @@ from carla_core.agents.centralized_critic import (
     CentralizedCriticCallbacks,
     compute_global_obs_dim_with_mask,
 )
+from carla_core.training.curriculum_batch_manager import (
+    EpisodeTracker,
+    CurriculumManager,
+    BatchLevelSampler,
+)
 
 os.environ["PYTHONWARNINGS"] = "ignore::DeprecationWarning"
 logger = logging.getLogger(__name__)
@@ -210,6 +215,30 @@ def rllib_env_creator(env_config):
     """Wrap CarlaMultiAgentEnv for RLlib via ParallelPettingZooEnv."""
     raw_env = CarlaMultiAgentEnv(config=env_config)
     return ParallelPettingZooEnv(raw_env)
+
+
+def _unwrap_carla_env(algo):
+    """Unwrap CarlaMultiAgentEnv from RLlib worker for set_level() access.
+
+    With num_workers=0, the env lives in the local worker.
+    Returns None if unwrapping fails (e.g. remote workers).
+    """
+    try:
+        worker = algo.workers.local_worker()
+        env = worker.env
+        # ParallelPettingZooEnv → par_env → CarlaMultiAgentEnv
+        inner = getattr(env, "par_env", None) or getattr(env, "env", None)
+        if inner is None:
+            inner = env
+        if hasattr(inner, "set_level"):
+            return inner
+        # One more level (some RLlib versions)
+        deeper = getattr(inner, "env", None)
+        if deeper is not None and hasattr(deeper, "set_level"):
+            return deeper
+    except Exception as e:
+        logger.warning("Could not unwrap CARLA env: %s", e)
+    return None
 
 
 def policy_mapping_fn(agent_id, episode=None, worker=None, **kwargs):
@@ -831,6 +860,55 @@ def main():
     algo = config.build()
     print("\nMAPPO training avviato.\n")
 
+    # --- Block 5.4: Level manager setup ---
+    cb_cfg = load_yaml(base / "configs" / "curriculum_batch.yaml")
+    level_manager = None
+    level_tracker = None
+    current_training_level = None
+
+    if resolved_mode == "curriculum":
+        cc = cb_cfg.get("curriculum", {})
+        level_manager = CurriculumManager(
+            levels=cc.get("levels", ["easy", "medium", "hard"]),
+            promotion_threshold=cc.get("promotion_threshold", 0.6),
+            collision_threshold=cc.get("collision_threshold", 0.3),
+            min_episodes=cc.get("min_episodes", 50),
+            min_timesteps=cc.get("min_timesteps", 200_000),
+            replay_ratio=cc.get("replay_ratio", 0.2),
+            max_blocks_without_replay=cc.get("max_blocks_without_replay", 2),
+            window_size=cc.get("window_size", 50),
+        )
+        level_tracker = EpisodeTracker(window_size=cc.get("window_size", 50))
+        raw_env = _unwrap_carla_env(algo)
+        if raw_env:
+            initial_level = level_manager.current_level
+            raw_env.set_level(initial_level)
+            current_training_level = initial_level
+            print(f"  Curriculum mode: starting at '{initial_level}'")
+        else:
+            logger.error("Cannot unwrap env for curriculum — falling back to baseline")
+            level_manager = None
+
+    elif resolved_mode == "batch":
+        bc = cb_cfg.get("batch", {})
+        level_manager = BatchLevelSampler(
+            levels=bc.get("levels", ["easy", "medium", "hard"]),
+            seed=bc.get("seed", exp_seed),
+        )
+        level_tracker = EpisodeTracker(window_size=50)
+        raw_env = _unwrap_carla_env(algo)
+        if raw_env:
+            initial_level = level_manager.sample()
+            raw_env.set_level(initial_level)
+            current_training_level = initial_level
+            print(f"  Batch mode: starting at '{initial_level}'")
+        else:
+            logger.error("Cannot unwrap env for batch — falling back to baseline")
+            level_manager = None
+
+    else:
+        print("  Baseline mode: no level switching")
+
     ts_done = 0
     iteration = 0
     t0 = time.time()
@@ -879,6 +957,50 @@ def main():
                 cumulative_agent_outcomes["total"],
             )
 
+            # --- Block 5.4: Level management per iteration ---
+            if level_manager is not None and level_tracker is not None:
+                iter_ts = result.get("timesteps_this_iter", 0)
+                level_tracker.add_timesteps(iter_ts)
+
+                raw_env = _unwrap_carla_env(algo)
+
+                if isinstance(level_manager, CurriculumManager):
+                    # Feed tracker with per-episode outcomes from episode log
+                    n_success = delta_stats.get("success", 0)
+                    n_collision = delta_stats.get("collision", 0)
+                    n_total = delta_stats.get("total", 0)
+                    n_other = n_total - n_success - n_collision
+                    for _ in range(n_success):
+                        level_tracker.record(success=True, collision=False)
+                    for _ in range(n_collision):
+                        level_tracker.record(success=False, collision=True)
+                    for _ in range(n_other):
+                        level_tracker.record(success=False, collision=False)
+
+                    if raw_env:
+                        # Check promotion
+                        if level_manager.should_promote(level_tracker):
+                            new_level = level_manager.promote(level_tracker, global_timestep=ts_done)
+                            raw_env.set_level(new_level)
+                            current_training_level = new_level
+                            print(f"    >>> PROMOTED to '{new_level}' at {ts_done:,} steps")
+                        else:
+                            # Get level for next iteration (may be replay)
+                            next_level, is_replay = level_manager.get_episode_level()
+                            if next_level != current_training_level:
+                                raw_env.set_level(next_level)
+                                current_training_level = next_level
+                                if is_replay:
+                                    print(f"    [replay] level='{next_level}'")
+
+                elif isinstance(level_manager, BatchLevelSampler):
+                    # Batch: sample next level (no tracker dependency)
+                    if raw_env:
+                        next_level = level_manager.sample()
+                        if next_level != current_training_level:
+                            raw_env.set_level(next_level)
+                            current_training_level = next_level
+
             elapsed = time.time() - t0
             pct = ts_done / total_ts * 100
             eta = (elapsed / max(ts_done, 1)) * (total_ts - ts_done)
@@ -895,18 +1017,20 @@ def main():
                 "reward_mean": _coerce_float(tot_r),
                 "reward_std": _extract_reward_std(result),
                 "episode_length_mean": _coerce_float(ep_len),
+                "level": current_training_level  # Block 5.4
             })
 
             bar_len = 30
             filled = int(bar_len * ts_done / total_ts)
             bar = "\u2588" * filled + "\u2591" * (bar_len - filled)
 
+            level_tag = f" | Lv:{current_training_level}" if current_training_level else ""
             print(
-                f"  [{bar}] {pct:5.1f}% | "
+                f"[{bar}] {pct:5.1f}% | "
                 f"{ts_done:,}/{total_ts:,} | "
                 f"R:{tot_r:+.1f} (V:{veh_r:+.1f} P:{ped_r:+.1f}) | "
-                f"Len:{ep_len:.0f} | Eps:{eps} | "
-                f"ST: {int(elapsed//3600)}h{int((elapsed%3600)//60):02d}m / ETA: {int(eta//3600)}h{int((eta%3600)//60):02d}m"
+                f"Eps:{eps}{level_tag} | Len:{ep_len:.0f} |"
+                f"ETS: {int(elapsed//3600)}h{int((elapsed%3600)//60):02d}m / ETA: {int(eta//3600)}h{int((eta%3600)//60):02d}m"
             )
 
             if tot_r > best_reward:
@@ -1039,6 +1163,14 @@ def main():
                 cumulative_collision_rate=cumulative_collision_rate,
                 final_evaluation_skip_reason=final_evaluation_skip_reason,
             )
+            # Block 5.4: inject level management summary
+            if level_manager is not None:
+                if isinstance(level_manager, CurriculumManager):
+                    results_payload["curriculum"] = level_manager.summary()
+                elif isinstance(level_manager, BatchLevelSampler):
+                    results_payload["batch_sampling"] = level_manager.summary()
+            if level_tracker is not None:
+                results_payload["level_tracker"] = level_tracker.summary()
             _write_json_atomic(results_path, results_payload)
             print(f"\nResults schema: {results_path}")
         except Exception as e:

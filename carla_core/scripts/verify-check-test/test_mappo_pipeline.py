@@ -68,11 +68,13 @@ def main():
         raw.close()
 
         # global_obs = 3 agents * obs_dim + alive_mask (3 agents)
+        # Block 4.1 compat: agent_order fixes slot ordering for fixed-slot layout
         global_obs_dim = 3 * obs_dim + 3
         cc_cfg = {
             "hidden_size": 64,
             "n_hidden_layers": 1,
             "global_obs_dim": global_obs_dim,
+            "agent_order": list(agents),
         }
 
         print(f"  Agents: {agents}")
