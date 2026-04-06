@@ -847,8 +847,8 @@ def main():
         cc = cb_cfg.get("curriculum", {})
         level_manager = CurriculumManager(
             levels=cc.get("levels", ["easy", "medium", "hard"]),
-            promotion_threshold=cc.get("promotion_threshold", 0.6),
-            collision_threshold=cc.get("collision_threshold", 0.3),
+            promotion_threshold=cc.get("promotion_threshold", 0.48), # Run v2: 0.6 -> 0.48
+            collision_threshold=cc.get("collision_threshold", 0.36), # Run v2: 0.3 -> 0.36
             min_episodes=cc.get("min_episodes", 50),
             min_timesteps=cc.get("min_timesteps", 200_000),
             replay_ratio=cc.get("replay_ratio", 0.2),

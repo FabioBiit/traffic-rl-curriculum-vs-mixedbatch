@@ -20,5 +20,5 @@ batch:
 # Conservative hyperparams for multi-level to prevent NaN from distribution shift
 # To validate => This hyperparam can be a problem for the convergence of the loss
 optimization_overrides:
-  num_sgd_iter: 10               # 15 -> 10 # Run v1 batch and curriculum
-  lr: 0.0003                     # 0.0005 -> 0.0003 # Run v1 batch and curriculum
+  num_sgd_iter: 15               # Run v2 10 -> 15 #  Run v1 15 -> 10 # For batch and curriculum
+  lr: 0.0005                     # Run v2 0.0003 -> 0.0005 # 0.0005 ->  Run v1 0.0003 # For batch and curriculum
