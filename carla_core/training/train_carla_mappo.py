@@ -1034,7 +1034,10 @@ def main():
 
             elapsed = time.time() - t0
             pct = ts_done / total_ts * 100
-            eta = (elapsed / max(ts_done, 1)) * (total_ts - ts_done)
+            if ts_done >= total_ts:
+                eta = 0.0
+            else:
+                eta = (elapsed / max(ts_done, 1)) * (total_ts - ts_done)
 
             timeseries.append({
                 "timestep": int(ts_done),
