@@ -4,27 +4,28 @@
 # Rationale: CARLA 0.9.16 load_world SIGABRT on Windows prevents
 # in-process map switching during training.
 
+# Finetuning Run v3
 levels:
   easy:
     map: "Town03"
     n_vehicles_npc: 5
     n_pedestrians_npc: 10
-    route_distance_m: 50
-    route_distance_m_pedestrian: 25
+    route_distance_m: 30
+    route_distance_m_pedestrian: 15
 
   medium:
     map: "Town03"
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
-    route_distance_m: 120
-    route_distance_m_pedestrian: 50
+    route_distance_m: 80
+    route_distance_m_pedestrian: 35
 
   hard:
     map: "Town03"
     n_vehicles_npc: 30
     n_pedestrians_npc: 60
-    route_distance_m: 250
-    route_distance_m_pedestrian: 80
+    route_distance_m: 150
+    route_distance_m_pedestrian: 60
 
   test:
     maps: ["Town02", "Town10"]     # eval only — subprocess isolation

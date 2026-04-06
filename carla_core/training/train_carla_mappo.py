@@ -844,15 +844,16 @@ def main():
     initial_map = None
 
     if resolved_mode == "curriculum":
-        cc = cb_cfg.get("curriculum", {})
+        cc = cb_cfg.get("curriculum", {}) # Finetuning Run3
         level_manager = CurriculumManager(
             levels=cc.get("levels", ["easy", "medium", "hard"]),
-            promotion_threshold=cc.get("promotion_threshold", 0.48), # Run v2: 0.6 -> 0.48
-            collision_threshold=cc.get("collision_threshold", 0.36), # Run v2: 0.3 -> 0.36
+            promotion_threshold=cc.get("promotion_threshold", 0.6),
+            collision_threshold=cc.get("collision_threshold", 0.3),
             min_episodes=cc.get("min_episodes", 50),
             min_timesteps=cc.get("min_timesteps", 200_000),
             replay_ratio=cc.get("replay_ratio", 0.2),
             max_blocks_without_replay=cc.get("max_blocks_without_replay", 2),
+            level_criteria=cc.get("level_criteria", {}),
             window_size=cc.get("window_size", 50),
         )
         level_tracker = EpisodeTracker(window_size=cc.get("window_size", 50))
