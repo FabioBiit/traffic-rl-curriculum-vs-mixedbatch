@@ -388,9 +388,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.position_history = []
             ad.last_wp_advance_step = 0
             ad.loop_penalty_active = False
-            ad.route_optimal_length = 0.0
-            ad.actual_distance_traveled = 0.0
-            ad.prev_location = None
 
         observations = {a: self._get_obs(a) for a in self.agents}
         infos = {a: {} for a in self.agents}

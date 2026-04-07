@@ -4,8 +4,8 @@
 
 curriculum:
   levels: ["easy", "medium", "hard"]
-  promotion_threshold: 0.48      # min window SR to promote
-  collision_threshold: 0.36      # max window CR to promote
+  promotion_threshold: 0.48      # Run v3 0.6 -> 0.48 # min window SR to promote
+  collision_threshold: 0.36      # Run v3 0.3 -> 0.36 # max window CR to promote
   min_episodes: 50               # min episodes on level before check
   min_timesteps: 200000          # min timesteps on level before check
   replay_ratio: 0.2              # fraction of episodes replaying earlier levels
