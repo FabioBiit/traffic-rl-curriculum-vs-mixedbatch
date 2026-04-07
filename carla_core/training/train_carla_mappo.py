@@ -991,7 +991,8 @@ def main():
 
             # --- Block 5.4: Level management per iteration ---
             if level_manager is not None and level_tracker is not None:
-                iter_ts = result.get("timesteps_this_iter", 0)
+                iter_ts = result.get("num_env_steps_sampled_this_iter",
+                      result.get("timesteps_this_iter", 0))
                 level_tracker.add_timesteps(iter_ts)
 
                 raw_env = _unwrap_carla_env(algo)
