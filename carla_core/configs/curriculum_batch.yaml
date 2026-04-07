@@ -17,6 +17,8 @@ curriculum:
       min_timesteps: 100000      # ~12 iter, promozione rapida
     medium:
       min_timesteps: 300000      # ~37 iter, adattamento al traffico 3x
+    hard:
+      min_timesteps: 500000      # ~62 iter, consolidamento su route lunghe
 
 batch:
   levels: ["easy", "medium", "hard"]
