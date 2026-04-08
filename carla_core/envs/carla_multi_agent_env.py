@@ -469,11 +469,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
             terminations[agent_id] = term
             truncations[agent_id] = trunc
 
-            # Path efficiency: optimal / actual (1.0 = perfect, <1.0 = inefficient)
-            # Guard: route_completion < 5% → metric not meaningful (Bug fix)
-            rc = self._route_completion(ad)
-            completed_optimal = ad.route_optimal_length * rc
-            if rc >= 0.05 and ad.actual_distance_traveled > 0.1 and completed_optimal > 0.1:
+             # Path efficiency: optimal / actual (1.0 = perfect, <1.0 = inefficient)
+            # Bug fix: stuck agents get 0.0 — metric not meaningful for
+            # agents that failed to make real progress along the route.
+            completed_optimal = ad.route_optimal_length * self._route_completion(ad)
+            if ad.actual_distance_traveled > 0.1 and completed_optimal > 0.1:
                 path_eff = min(completed_optimal / ad.actual_distance_traveled, 1.0)
             else:
                 path_eff = 0.0
@@ -510,6 +510,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     termination_reason = "timeout"
             else:
                 termination_reason = "alive"
+
+            # Bug fix: path_efficiency is not meaningful for stuck agents
+            if termination_reason == "stuck":
+                path_eff = 0.0
 
             # Build info dict for this agent
             agent_info = {
