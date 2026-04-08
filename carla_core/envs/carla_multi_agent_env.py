@@ -470,8 +470,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
             truncations[agent_id] = trunc
 
             # Path efficiency: optimal / actual (1.0 = perfect, <1.0 = inefficient)
-            if ad.actual_distance_traveled > 0.1:
-                path_eff = min(ad.route_optimal_length / ad.actual_distance_traveled, 1.0)
+            completed_optimal = ad.route_optimal_length * self._route_completion(ad)
+            if ad.actual_distance_traveled > 0.1 and completed_optimal > 0.1:
+                path_eff = min(completed_optimal / ad.actual_distance_traveled, 1.0)
             else:
                 path_eff = 0.0
 
