@@ -5,10 +5,9 @@ Load a MAPPO RLlib checkpoint and run RL vehicles + pedestrians with
 visual rendering. The spectator follows the selected agent.
 
 Usage:
-    python carla_core/scripts/visualize_mappo_agent.py --checkpoint <experiment_dir_or_checkpoint_path>
-
-    NOTE: --checkpoint is passed directly to algo.restore().
-          RLlib 2.10 accepts both experiment directories and checkpoint paths.
+    python carla_core/scripts/visualize_mappo_agent.py \
+        --checkpoint <experiment_dir_or_checkpoint_path> \
+        [--level easy|medium|hard]
 
 IMPORTANT: Start CARLA with rendering enabled:
     C:/CARLA_0.9.16/CarlaUE4.exe -quality-level=Medium -windowed -ResX=1280 -ResY=720
@@ -48,6 +47,7 @@ from carla_core.envs.carla_multi_agent_env import (
     PEDESTRIAN_OBS_DIM,
     VEHICLE_OBS_DIM,
     CarlaMultiAgentEnv,
+    apply_level_config,
 )
 
 
@@ -288,6 +288,7 @@ def _build_worker_payload(args):
         "follow": args.follow,
         "env_config": args.env_config,
         "train_config": args.train_config,
+        "level": args.level,
         "map": args.map,
         "npc_vehicles": args.npc_vehicles,
         "npc_pedestrians": args.npc_pedestrians,
@@ -326,6 +327,8 @@ def _run_visualization_worker(payload):
     env_cfg = load_yaml(payload.get("env_config") or base / "configs" / "multi_agent.yaml")
 
     env_cfg.setdefault("world", {})
+    if payload.get("level"):
+        apply_level_config(env_cfg, str(payload["level"]).strip().lower())
     env_cfg["world"]["no_rendering"] = False
     if payload.get("map"):
         env_cfg["world"]["map"] = payload["map"]
@@ -372,6 +375,7 @@ def _run_visualization_worker(payload):
     print(f"MAPPO Visualization - {n_veh}V + {n_ped}P")
     print(f"{'=' * 60}")
     print(f"  Checkpoint: {payload['checkpoint']}")
+    print(f"  Level: {payload.get('level') or 'base-env'}")
     print(f"  Episodes: {total_episodes}")
     print(f"  Following: {payload['follow']}")
     print(f"  Map: {env_cfg['world'].get('map')}")
@@ -735,6 +739,13 @@ def main():
     )
     parser.add_argument("--env-config", type=str, default=None)
     parser.add_argument("--train-config", type=str, default=None)
+    parser.add_argument(
+        "--level",
+        type=str,
+        choices=("easy", "medium", "hard"),
+        default=None,
+        help="Apply level settings from levels.yaml before explicit map/NPC overrides",
+    )
     parser.add_argument("--map", type=str, default=None, help="Override CARLA map (e.g. Town05)")
     parser.add_argument("--npc-vehicles", type=int, default=None, help="Override NPC vehicles")
     parser.add_argument(
