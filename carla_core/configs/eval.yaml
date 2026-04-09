@@ -5,23 +5,27 @@
 evaluation:
   enabled: true                 # Enable evaluation stage.
   deterministic_policy: true    # Use deterministic actions (no exploration noise).
-  episodes_per_map: 17          # Number of episodes evaluated per map/profile (~102K max test env-steps).
+  episodes_per_map: 17          # Number of episodes evaluated per scenario.
   parallel_envs: 1              # Fixed to 1: true parallel evaluation requires multiple CARLA instances.
 
 scenarios:
-  maps:
-    - "Town03"                  # Evaluation map 1.
-    - "Town05"                  # Evaluation map 2.
-  traffic_profiles:
-    - name: "low"               # Low traffic profile.
-      n_vehicles: 20            # Number of NPC vehicles in this profile.
-      n_pedestrians: 40         # Number of pedestrians in this profile.
-    - name: "medium"            # Medium traffic profile.
-      n_vehicles: 40
-      n_pedestrians: 80
-    - name: "high"              # High traffic profile.
-      n_vehicles: 70
-      n_pedestrians: 120
+  # Eval scenarios are resolved against levels.yaml.
+  # Train-map checks stay on Town03 via easy/medium/hard.
+  # Holdout test follows levels.test on Town02/Town10.
+  entries:
+    - name: "easy"
+      map: "Town03"
+      level: "easy"
+    - name: "medium"
+      map: "Town03"
+      level: "medium"
+    - name: "hard"
+      map: "Town03"
+      level: "hard"
+    - name: "test"
+      maps:
+        - "Town05"
+      level: "test"
 
 limits:
   max_steps_per_episode: 1000   # Hard cap to prevent very long episodes.
@@ -37,6 +41,8 @@ runtime:
 metrics:
   success_rate: true            # Track successful route completion rate.
   collision_rate: true          # Track collision frequency.
+  stuck_rate: true              # Track agents ending in stuck termination.
+  offroad_rate: true            # Track agents ending off-road.
   route_completion: true        # Track route completion percentage.
   path_efficiency: true         # Track optimal-path / actual-path ratio.
   avg_episode_length: true      # Track average episode duration (steps).

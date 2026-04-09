@@ -1,8 +1,7 @@
-# Block 5.2 — Curriculum level definitions (Design B revised)
+# Block 5.2 — Curriculum and Batch level definitions (map + traffic)
+# Used by CurriculumManager and BatchLevelSampler in curriculum_batch_manager.py
 # Training levels: traffic + route difficulty on fixed map (Town03).
-# Map-based generalization tested in final eval (subprocess isolation).
-# Rationale: CARLA 0.9.16 load_world SIGABRT on Windows prevents
-# in-process map switching during training.
+# Map-based generalization tested in final eval (Town05).
 
 # Finetuning Run v3
 levels:
@@ -27,9 +26,10 @@ levels:
     route_distance_m: 150
     route_distance_m_pedestrian: 60
 
+  # eval only
   test:
-    maps: ["Town02", "Town10"]     # eval only — subprocess isolation
-    n_vehicles_npc: 15
-    n_pedestrians_npc: 30
+    map: "Town05"
+    n_vehicles_npc: 17
+    n_pedestrians_npc: 32
     route_distance_m: 120
     route_distance_m_pedestrian: 50

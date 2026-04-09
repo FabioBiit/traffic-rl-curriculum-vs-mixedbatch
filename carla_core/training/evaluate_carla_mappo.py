@@ -50,6 +50,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from carla_core.agents.centralized_critic import CentralizedCriticModel
+from carla_core.envs.carla_multi_agent_env import apply_level_config, get_level_configs
 from carla_core.training.mappo_runtime import (
     _build_mappo_config,
     rllib_env_creator,
@@ -142,7 +143,115 @@ def _mean_metric_dicts(rows, keys):
     return merged
 
 
-def _build_evaluation_summary(raw, train_map):
+def _expand_eval_entries(scenario_cfg):
+    entries = []
+    for idx, entry in enumerate(scenario_cfg.get("entries", []) or []):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Invalid eval scenario entry at index {idx}: expected dict")
+
+        entry_name = str(entry.get("name") or f"scenario_{idx + 1}")
+        level_name = entry.get("level")
+        summary_level = str(entry.get("summary_level") or level_name or entry_name)
+        maps = []
+        if entry.get("map") is not None:
+            maps.append(str(entry["map"]))
+        for map_name in entry.get("maps", []) or []:
+            maps.append(str(map_name))
+
+        if not maps:
+            raise ValueError(
+                f"Eval scenario '{entry_name}' must define 'map' or 'maps'."
+            )
+
+        for map_name in maps:
+            scenario_name = entry_name if len(maps) == 1 else f"{entry_name}_{map_name}"
+            entries.append(
+                {
+                    "scenario_name": scenario_name,
+                    "map_name": map_name,
+                    "level_name": level_name,
+                    "summary_level": summary_level,
+                    "overrides": {
+                        "n_vehicles_npc": entry.get("n_vehicles_npc"),
+                        "n_pedestrians_npc": entry.get("n_pedestrians_npc"),
+                        "route_distance_m": entry.get("route_distance_m"),
+                        "route_distance_m_pedestrian": entry.get(
+                            "route_distance_m_pedestrian"
+                        ),
+                    },
+                }
+            )
+    return entries
+
+
+def _build_scenario_env_cfg(
+    *,
+    base_env_cfg,
+    map_name,
+    level_name,
+    level_configs,
+    limits,
+    seed_base,
+    reset_count,
+    overrides=None,
+):
+    scenario_env_cfg = deepcopy(base_env_cfg)
+    scenario_env_cfg.setdefault("traffic", {})
+    scenario_env_cfg["traffic"]["seed"] = int(seed_base)
+    scenario_env_cfg.setdefault("runtime", {})
+    scenario_env_cfg["runtime"]["close_mode"] = "robust"
+
+    if level_name:
+        apply_level_config(
+            scenario_env_cfg,
+            level_name,
+            level_configs=level_configs,
+            reset_count=reset_count,
+        )
+
+    scenario_env_cfg.setdefault("world", {})
+    scenario_env_cfg["world"]["map"] = str(map_name)
+    scenario_env_cfg.setdefault("episode", {})
+
+    overrides = overrides or {}
+    if overrides.get("n_vehicles_npc") is not None:
+        scenario_env_cfg["traffic"]["n_vehicles_npc"] = int(overrides["n_vehicles_npc"])
+    if overrides.get("n_pedestrians_npc") is not None:
+        scenario_env_cfg["traffic"]["n_pedestrians_npc"] = int(overrides["n_pedestrians_npc"])
+    if overrides.get("route_distance_m") is not None:
+        scenario_env_cfg["episode"]["route_distance_m"] = int(overrides["route_distance_m"])
+    if overrides.get("route_distance_m_pedestrian") is not None:
+        scenario_env_cfg["episode"]["route_distance_m_pedestrian"] = int(
+            overrides["route_distance_m_pedestrian"]
+        )
+
+    if "max_steps_per_episode" in limits:
+        scenario_env_cfg["episode"]["max_steps"] = int(limits["max_steps_per_episode"])
+
+    return scenario_env_cfg
+
+
+def _build_evaluation_summary(raw, train_map, scenario_entries=None):
+    if scenario_entries:
+        summary = {}
+        grouped_rows = {}
+        for entry in scenario_entries:
+            metrics = raw.get(entry["map_name"], {}).get(entry["scenario_name"])
+            if metrics is None:
+                continue
+            grouped_rows.setdefault(entry["summary_level"], []).append(metrics)
+
+        for level_name in ("easy", "medium", "hard", "test"):
+            rows = grouped_rows.get(level_name, [])
+            if not rows:
+                continue
+            metrics = _mean_metric_dicts(rows, ["success_rate", "collision_rate"])
+            summary[level_name] = {
+                "success_rate": metrics.get("success_rate"),
+                "collision_rate": metrics.get("collision_rate"),
+            }
+        return summary
+
     summary = {}
     if train_map in raw:
         for profile_name, metrics in raw[train_map].items():
@@ -264,6 +373,8 @@ def _resolve_eval_metric_keys(eval_cfg):
     metric_aliases = [
         ("success_rate", "success_rate", True),
         ("collision_rate", "collision_rate", True),
+        ("stuck_rate", "stuck_rate", True),
+        ("offroad_rate", "offroad_rate", True),
         ("route_completion", "route_completion", True),
         ("avg_episode_length", "episode_length_mean", True),
         ("avg_reward", "reward_mean", True),
@@ -349,6 +460,8 @@ def _extract_eval_metrics_from_result(eval_result, metric_keys):
     rows = {
         "success_rate": _metric("success_rate_mean", "success_rate"),
         "collision_rate": _metric("collision_rate_mean", "collision_rate"),
+        "stuck_rate": _metric("stuck_rate_mean", "stuck_rate"),
+        "offroad_rate": _metric("offroad_rate_mean", "offroad_rate"),
         "timeout_rate": _metric("timeout_rate_mean", "timeout_rate"),
         "route_completion": _metric("route_completion_mean", "route_completion"),
         "path_efficiency": _metric("path_efficiency_mean", "path_efficiency"),
@@ -878,11 +991,13 @@ def _run_evaluation_scenarios(
         return {}, {}, [], []
 
     scenario_cfg = eval_cfg.get("scenarios", {})
-    maps = scenario_cfg.get("maps", [])
-    traffic_profiles = scenario_cfg.get("traffic_profiles", [])
     limits = eval_cfg.get("limits", {})
+    entries = _expand_eval_entries(scenario_cfg)
+    legacy_maps = scenario_cfg.get("maps", [])
+    legacy_profiles = scenario_cfg.get("traffic_profiles", [])
+    use_entry_scenarios = bool(entries)
 
-    if not maps or not traffic_profiles:
+    if not use_entry_scenarios and (not legacy_maps or not legacy_profiles):
         return {}, {}, [], []
 
     parallel_envs = int(eval_section.get("parallel_envs", 1))
@@ -901,6 +1016,32 @@ def _run_evaluation_scenarios(
     raw = {}
     traces = []
     train_map = base_env_cfg.get("world", {}).get("map")
+    level_configs = get_level_configs(base_env_cfg)
+    scenario_groups = {}
+    summary_entries = entries if use_entry_scenarios else None
+    if use_entry_scenarios:
+        for entry in entries:
+            scenario_groups.setdefault(entry["map_name"], []).append(entry)
+    else:
+        for map_name in legacy_maps:
+            scenario_groups[map_name] = []
+            for profile in legacy_profiles:
+                scenario_groups[map_name].append(
+                    {
+                        "scenario_name": profile.get("name", "unnamed"),
+                        "map_name": map_name,
+                        "level_name": None,
+                        "summary_level": _profile_name_to_level(profile.get("name", "")),
+                        "overrides": {
+                            "n_vehicles_npc": profile.get("n_vehicles"),
+                            "n_pedestrians_npc": profile.get("n_pedestrians"),
+                            "route_distance_m": profile.get("route_distance_m"),
+                            "route_distance_m_pedestrian": profile.get(
+                                "route_distance_m_pedestrian"
+                            ),
+                        },
+                    }
+                )
     aggregate_keys = list(dict.fromkeys(metric_keys + unsupported_metric_keys))
     save_traces = bool(eval_cfg.get("outputs", {}).get("save_per_episode_trace", False))
     episodes_per_map = int(eval_section.get("episodes_per_map", 1))
@@ -918,7 +1059,7 @@ def _run_evaluation_scenarios(
         if "max_steps_per_episode" in limits
         else None
     )
-    total_scenarios = len(maps) * len(traffic_profiles)
+    total_scenarios = sum(len(profiles) for profiles in scenario_groups.values())
     total_episodes = total_scenarios * episodes_per_map
     total_env_steps_budget = (
         total_episodes * max_steps_per_episode if max_steps_per_episode is not None else None
@@ -937,9 +1078,13 @@ def _run_evaluation_scenarios(
 
     print()
     print(f"{'=' * 19}EVAL{'=' * 20}")
-    print(
-        f"  Eval scenarios: {total_scenarios} ({len(maps)} maps x {len(traffic_profiles)} profiles)"
-    )
+    if use_entry_scenarios:
+        print(f"  Eval scenarios: {total_scenarios} (explicit entries)")
+    else:
+        print(
+            f"  Eval scenarios: {total_scenarios} "
+            f"({len(legacy_maps)} maps x {len(legacy_profiles)} profiles)"
+        )
     print(f"  Eval episodes: {total_episodes}")
     if total_env_steps_budget is not None:
         print(f"  Eval max env-steps: {total_env_steps_budget:,}\n")
@@ -959,11 +1104,11 @@ def _run_evaluation_scenarios(
         started_epoch_s=eval_t0,
     )
 
-    for map_name in maps:
-        map_rows = {}
-        for profile in traffic_profiles:
+    for map_name, profiles in scenario_groups.items():
+        map_rows = raw.setdefault(map_name, {})
+        for profile in profiles:
             scenario_idx += 1
-            profile_name = profile.get("name", "unnamed")
+            profile_name = profile.get("scenario_name", profile.get("name", "unnamed"))
             scenario_t0 = time.time()
             completed_scenarios = scenario_idx - 1
             scenario_episode_rows = []
@@ -987,21 +1132,16 @@ def _run_evaluation_scenarios(
             )
             print(f"{'=' * 43}")
             for episode_idx in range(episodes_per_map):
-                scenario_env_cfg = deepcopy(base_env_cfg)
-                scenario_env_cfg.setdefault("world", {})
-                scenario_env_cfg["world"]["map"] = map_name
-                scenario_env_cfg.setdefault("traffic", {})
-                scenario_env_cfg["traffic"]["n_vehicles_npc"] = int(profile.get("n_vehicles", 0))
-                scenario_env_cfg["traffic"]["n_pedestrians_npc"] = int(
-                    profile.get("n_pedestrians", 0)
+                scenario_env_cfg = _build_scenario_env_cfg(
+                    base_env_cfg=base_env_cfg,
+                    map_name=map_name,
+                    level_name=profile.get("level_name"),
+                    level_configs=level_configs,
+                    limits=limits,
+                    seed_base=seed_base,
+                    reset_count=episode_idx,
+                    overrides=profile.get("overrides"),
                 )
-                scenario_env_cfg.setdefault("episode", {})
-                if "max_steps_per_episode" in limits:
-                    scenario_env_cfg["episode"]["max_steps"] = int(limits["max_steps_per_episode"])
-                scenario_env_cfg.setdefault("traffic", {})
-                scenario_env_cfg["traffic"]["seed"] = int(seed_base)
-                scenario_env_cfg.setdefault("runtime", {})
-                scenario_env_cfg["runtime"]["close_mode"] = "robust"
 
                 current_episode_number = episode_idx + 1
                 exact_progress = (
@@ -1129,7 +1269,7 @@ def _run_evaluation_scenarios(
                         raw[map_name] = map_rows
                         raise FinalEvaluationFailed(
                             raw=deepcopy(raw),
-                            summary=_build_evaluation_summary(raw, train_map),
+                            summary=_build_evaluation_summary(raw, train_map, summary_entries),
                             traces=list(traces),
                             metric_keys=list(aggregate_keys),
                             reason=failure["reason"],
@@ -1155,7 +1295,7 @@ def _run_evaluation_scenarios(
                     )
                     raise FinalEvaluationInterrupted(
                         raw=deepcopy(raw),
-                        summary=_build_evaluation_summary(raw, train_map),
+                        summary=_build_evaluation_summary(raw, train_map, summary_entries),
                         traces=list(traces),
                         metric_keys=list(aggregate_keys),
                         reason=(
@@ -1172,7 +1312,7 @@ def _run_evaluation_scenarios(
                     raw[map_name] = map_rows
                     raise FinalEvaluationFailed(
                         raw=deepcopy(raw),
-                        summary=_build_evaluation_summary(raw, train_map),
+                        summary=_build_evaluation_summary(raw, train_map, summary_entries),
                         traces=list(traces),
                         metric_keys=list(aggregate_keys),
                         reason=(
@@ -1250,7 +1390,7 @@ def _run_evaluation_scenarios(
             )
         raw[map_name] = map_rows
 
-    summary = _build_evaluation_summary(raw, train_map)
+    summary = _build_evaluation_summary(raw, train_map, summary_entries)
     return raw, summary, traces, aggregate_keys
 
 

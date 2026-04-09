@@ -140,8 +140,9 @@ class EpisodeTracker:
 class CurriculumManager:
     """Easy → Medium → Hard progression with replay for forgetting guard.
 
-    After promotion, a fraction of episodes replays earlier levels
-    (round-robin) to prevent catastrophic forgetting.
+    After promotion, a fraction of blocks replays only the immediately
+    previous level to prevent catastrophic forgetting without fully
+    regressing to the easiest stage.
 
     The manager does NOT call env.set_level() — it returns the level name
     and the caller is responsible for applying it.
@@ -152,7 +153,7 @@ class CurriculumManager:
         collision_threshold: max window CR to promote (default 0.3).
         min_episodes: min episodes on level before promotion check.
         min_timesteps: min timesteps on level before promotion check.
-        replay_ratio: probability of replay block after first promotion.
+        replay_ratio: target replay fraction after first promotion.
         max_blocks_without_replay: forced replay after this many consecutive non-replay blocks.
         level_criteria: per-level override dict {level: {promotion_threshold, ...}}.
         window_size: EpisodeTracker window size (for reference).
@@ -182,7 +183,7 @@ class CurriculumManager:
         self.current_index = 0
         self.promotion_history = []
         self._blocks_since_replay = 0
-        self._replay_cursor = 0
+        self._replay_credit = 0.0
 
     # --- Properties ---
 
@@ -194,9 +195,11 @@ class CurriculumManager:
     def is_final_level(self) -> bool:
         return self.current_index >= len(self.levels) - 1
 
-    @property
-    def completed_levels(self) -> list:
-        return self.levels[:self.current_index]
+    def get_replay_candidates(self) -> list:
+        """Return replayable levels for the current stage."""
+        if self.current_index <= 0:
+            return []
+        return [self.levels[self.current_index - 1]]
 
     # --- Core API ---
 
@@ -209,18 +212,19 @@ class CurriculumManager:
         if self.current_index == 0 or self.replay_ratio <= 0:
             return self.current_level, False
 
-        completed = self.completed_levels
-        if not completed:
+        replay_candidates = self.get_replay_candidates()
+        if not replay_candidates:
             return self.current_level, False
 
+        self._replay_credit += self.replay_ratio
         should_force = self._blocks_since_replay >= self.max_blocks_without_replay
-        should_sample = random.random() < self.replay_ratio
+        should_replay_from_credit = self._replay_credit >= 1.0
 
-        if should_force or should_sample:
-            replay_level = completed[self._replay_cursor % len(completed)]
-            self._replay_cursor += 1
+        if should_force or should_replay_from_credit:
             self._blocks_since_replay = 0
-            return replay_level, True
+            if should_replay_from_credit:
+                self._replay_credit = max(0.0, self._replay_credit - 1.0)
+            return replay_candidates[0], True
 
         self._blocks_since_replay += 1
         return self.current_level, False
@@ -270,6 +274,7 @@ class CurriculumManager:
         })
         self.current_index += 1
         self._blocks_since_replay = 0
+        self._replay_credit = 0.0
         tracker.reset()
         logger.info(
             "Promoted to %s at timestep %s (SR=%.2f, CR=%.2f)",
@@ -314,6 +319,7 @@ class CurriculumManager:
             "min_timesteps": self.min_timesteps,
             "replay_ratio": self.replay_ratio,
             "max_blocks_without_replay": self.max_blocks_without_replay,
+            "replay_candidates": self.get_replay_candidates(),
             "promotion_history": deepcopy(self.promotion_history),
         }
 
