@@ -8,7 +8,7 @@ curriculum:
   collision_threshold: 0.30      # Run v4 0.36 -> 0.30 # Run v3 0.3 -> 0.36 # max window CR to promote
   min_episodes: 50               # min episodes on level before check
   min_timesteps: 200000          # min timesteps on level before check
-  replay_ratio: 0.05              # fraction of episodes replaying earlier levels
+  replay_ratio: 0.05             # fraction of episodes replaying earlier levels
   max_blocks_without_replay: 6   # forced replay after N consecutive non-replay blocks
   window_size: 50                # episode tracker sliding window
   level_criteria:                # per-level promotion overrides
