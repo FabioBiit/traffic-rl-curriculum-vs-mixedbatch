@@ -8,17 +8,14 @@ curriculum:
   collision_threshold: 0.30      # Run v4 0.36 -> 0.30 # Run v3 0.3 -> 0.36 # max window CR to promote
   min_episodes: 50               # min episodes on level before check
   min_timesteps: 200000          # min timesteps on level before check
-  replay_ratio: 0.2              # fraction of episodes replaying earlier levels
-  max_blocks_without_replay: 2   # forced replay after N consecutive non-replay blocks
-  # Finetuning Run v3
+  replay_ratio: 0.05              # fraction of episodes replaying earlier levels
+  max_blocks_without_replay: 6   # forced replay after N consecutive non-replay blocks
   window_size: 50                # episode tracker sliding window
   level_criteria:                # per-level promotion overrides
     easy:
-      min_timesteps: 100000      # ~12 iter, promozione rapida
+      min_timesteps: 500000      # Finetuning Run v5 100k -> 500k 
     medium:
-      min_timesteps: 300000      # ~37 iter, adattamento al traffico 3x
-    hard:
-      min_timesteps: 500000      # ~62 iter, consolidamento su route lunghe
+      min_timesteps: 1500000     # Finetuning Run v5 500k -> 1.5M
 
 batch:
   levels: ["easy", "medium", "hard"]

@@ -590,6 +590,31 @@ def _looks_like_carla_server_failure(failure):
     return any(token in haystack for token in server_tokens)
 
 
+def _looks_like_ray_startup_failure(failure):
+    if not failure:
+        return False
+
+    haystack = "\n".join(
+        str(part or "")
+        for part in (
+            failure.get("reason"),
+            failure.get("stdout"),
+            failure.get("stderr"),
+        )
+    ).lower()
+
+    ray_tokens = (
+        "the current node timed out during startup",
+        "current node timed out during startup",
+        "some of the ray processes failed to startup",
+        "ray processes failed to startup",
+        "auto_init_ray",
+        "ray.init()",
+        "ray.init(",
+    )
+    return any(token in haystack for token in ray_tokens)
+
+
 def _recover_carla_server(env_cfg, runtime_cfg, *, reason):
     runtime_cfg = runtime_cfg or {}
     simulator_cfg = env_cfg.get("simulator", {}) or {}
@@ -1087,7 +1112,11 @@ def _run_evaluation_scenarios(
                                 )
                                 print(f"    [WARN] {recovery['message']}")
                             else:
-                                shutdown_carla_processes()
+                                if _looks_like_ray_startup_failure(episode_result):
+                                    print(
+                                        "    [WARN] retrying after Ray startup failure; "
+                                        "preserving CARLA server"
+                                    )
                                 gc.collect()
                                 time.sleep(2.0)
 
