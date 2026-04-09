@@ -30,8 +30,9 @@ runtime:
   heartbeat_interval_seconds: 30    # Child eval heartbeat cadence written to evaluation_status.json.
   heartbeat_timeout_seconds: 180    # Launcher aborts stale eval if heartbeat stops updating.
   status_poll_interval_seconds: 5   # Launcher poll cadence for progress/heartbeat monitoring.
-  subprocess_timeout_seconds: 14400 # Hard wall-clock cap for the eval subprocess.
-  reload_world_between_episodes: true  # Reload CARLA world before each eval episode for clean state.
+  subprocess_timeout_seconds: 600   # 10 min hard cap per episode subprocess. 1000 steps @ 20 FPS = 50s sim + overhead.
+  # Disabled: reload_world, causes stalls on Windows (CARLA 0.9.16). Env reset() handles cleanup.
+  reload_world_between_episodes: false  # Reload CARLA world before each eval episode for clean state.
 
 metrics:
   success_rate: true            # Track successful route completion rate.
