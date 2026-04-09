@@ -885,7 +885,7 @@ def _run_evaluation_scenarios(
     reload_world_between_episodes = bool(
         runtime_cfg.get(
             "reload_world_between_episodes",
-            runtime_cfg.get("reload_world_between_scenarios", True),
+            runtime_cfg.get("reload_world_between_scenarios", False),
         )
     )
     max_steps_per_episode = (
