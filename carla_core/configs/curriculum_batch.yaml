@@ -8,14 +8,19 @@ curriculum:
   collision_threshold: 0.30      # Run v4 0.36 -> 0.30 # Run v3 0.3 -> 0.36 # max window CR to promote
   min_episodes: 50               # min episodes on level before check
   min_timesteps: 200000          # min timesteps on level before check
-  replay_ratio: 0.05             # fraction of episodes replaying earlier levels
-  max_blocks_without_replay: 6   # forced replay after N consecutive non-replay blocks
+  replay_ratio: 0.05             # replay quota when forgetting is active
+  max_blocks_without_replay: 6   # guardrail only while forgetting/warmup is active
+  replay_trigger_delta_sr: 0.05  # replay if previous level SR drops >= delta vs promotion baseline
+  replay_trigger_delta_cr: 0.05  # replay if previous level CR rises >= delta vs promotion baseline
+  replay_warmup_blocks_after_promotion: 1  # brief replay probe after each promotion
   window_size: 50                # episode tracker sliding window
   level_criteria:                # per-level promotion overrides
     easy:
-      min_timesteps: 500000      # Finetuning Run v5 100k -> 500k 
+      min_timesteps: 500000      # promote only after a stable easy phase
+      max_timesteps: 800000      # cap easy budget to preserve room for hard
     medium:
-      min_timesteps: 1500000     # Finetuning Run v5 500k -> 1.5M
+      min_timesteps: 800000      # allow hard entry earlier than the old 1.5M gate
+      max_timesteps: 1000000     # prevent medium from monopolizing the 3M budget
 
 batch:
   levels: ["easy", "medium", "hard"]

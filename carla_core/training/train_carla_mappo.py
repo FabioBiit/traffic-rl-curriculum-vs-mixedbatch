@@ -380,6 +380,16 @@ def _read_episode_log_delta(log_path, start_offset):
     return offset, stats
 
 
+def _apply_delta_stats_to_tracker(tracker, delta_stats):
+    if tracker is None:
+        return
+    tracker.record_counts(
+        successes=delta_stats.get("success", 0),
+        collisions=delta_stats.get("collision", 0),
+        total=delta_stats.get("total", 0),
+    )
+
+
 def _extract_custom_metric(result, *names):
     containers = [
         result.get("custom_metrics", {}),
@@ -839,12 +849,16 @@ def main():
     build_env_cfg = deepcopy(env_cfg)
     level_manager = None
     level_tracker = None
+    promotion_tracker = None
+    executed_level_trackers = None
     current_training_level = None
     initial_level = None
     initial_map = None
+    stage_timesteps = 0
 
     if resolved_mode == "curriculum":
         cc = cb_cfg.get("curriculum", {}) # Finetuning Run3
+        window_size = cc.get("window_size", 50)
         level_manager = CurriculumManager(
             levels=cc.get("levels", ["easy", "medium", "hard"]),
             promotion_threshold=cc.get("promotion_threshold", 0.45),
@@ -854,9 +868,17 @@ def main():
             replay_ratio=cc.get("replay_ratio", 0.2),
             max_blocks_without_replay=cc.get("max_blocks_without_replay", 2),
             level_criteria=cc.get("level_criteria", {}),
-            window_size=cc.get("window_size", 50),
+            window_size=window_size,
+            replay_trigger_delta_sr=cc.get("replay_trigger_delta_sr", 0.05),
+            replay_trigger_delta_cr=cc.get("replay_trigger_delta_cr", 0.05),
+            replay_warmup_blocks_after_promotion=cc.get("replay_warmup_blocks_after_promotion", 1),
         )
-        level_tracker = EpisodeTracker(window_size=cc.get("window_size", 50))
+        promotion_tracker = EpisodeTracker(window_size=window_size)
+        executed_level_trackers = {
+            level_name: EpisodeTracker(window_size=window_size)
+            for level_name in level_manager.levels
+        }
+        level_tracker = promotion_tracker
         initial_level = level_manager.current_level
         initial_map = apply_level_config(build_env_cfg, initial_level)
     elif resolved_mode == "batch":
@@ -928,6 +950,8 @@ def main():
         logger.error("Cannot unwrap env for %s — falling back to baseline", resolved_mode)
         level_manager = None
         level_tracker = None
+        promotion_tracker = None
+        executed_level_trackers = None
         current_training_level = None
         initial_level = None
         initial_map = None
@@ -990,36 +1014,68 @@ def main():
             )
 
             # --- Block 5.4: Level management per iteration ---
-            if level_manager is not None and level_tracker is not None:
-                iter_ts = result.get("num_env_steps_sampled_this_iter",
-                      result.get("timesteps_this_iter", 0))
-                level_tracker.add_timesteps(iter_ts)
-
+            if level_manager is not None:
+                iter_ts = result.get(
+                    "num_env_steps_sampled_this_iter",
+                    result.get("timesteps_this_iter", 0),
+                )
                 raw_env = _unwrap_carla_env(algo)
 
                 if isinstance(level_manager, CurriculumManager):
-                    # Feed tracker with per-episode outcomes from episode log
-                    n_success = delta_stats.get("success", 0)
-                    n_collision = delta_stats.get("collision", 0)
-                    n_total = delta_stats.get("total", 0)
-                    n_other = n_total - n_success - n_collision
-                    for _ in range(n_success):
-                        level_tracker.record(success=True, collision=False)
-                    for _ in range(n_collision):
-                        level_tracker.record(success=False, collision=True)
-                    for _ in range(n_other):
-                        level_tracker.record(success=False, collision=False)
+                    anchor_level = level_manager.current_level
+                    executed_level = current_training_level or anchor_level
+                    stage_timesteps += iter_ts
+                    executed_tracker = None
+                    if executed_level_trackers is not None:
+                        executed_tracker = executed_level_trackers.get(executed_level)
+
+                    if executed_tracker is not None:
+                        executed_tracker.add_timesteps(iter_ts)
+                        _apply_delta_stats_to_tracker(executed_tracker, delta_stats)
+
+                    if promotion_tracker is not None and executed_level == anchor_level:
+                        promotion_tracker.add_timesteps(iter_ts)
+                        _apply_delta_stats_to_tracker(promotion_tracker, delta_stats)
 
                     if raw_env:
-                        # Check promotion
-                        if level_manager.should_promote(level_tracker):
-                            new_level = level_manager.promote(level_tracker, global_timestep=ts_done)
+                        promotion_status = (
+                            level_manager.promotion_status(
+                                promotion_tracker,
+                                stage_timesteps=stage_timesteps,
+                            )
+                            if promotion_tracker is not None
+                            else {}
+                        )
+                        if (
+                            promotion_tracker is not None
+                            and level_manager.should_promote(
+                                promotion_tracker,
+                                stage_timesteps=stage_timesteps,
+                            )
+                        ):
+                            promotion_reason = (
+                                "max_timesteps_cap"
+                                if promotion_status.get("max_timesteps_reached")
+                                else "thresholds_met"
+                            )
+                            new_level = level_manager.promote(
+                                promotion_tracker,
+                                global_timestep=ts_done,
+                                reason=promotion_reason,
+                                stage_timesteps=stage_timesteps,
+                            )
                             raw_env.set_level(new_level)
                             current_training_level = new_level
+                            stage_timesteps = 0
                             print(f"    >>> PROMOTED to '{new_level}' at {ts_done:,} steps")
                         else:
-                            # Get level for next iteration (may be replay)
-                            next_level, is_replay = level_manager.get_episode_level()
+                            replay_candidates = level_manager.get_replay_candidates()
+                            replay_tracker = None
+                            if replay_candidates and executed_level_trackers is not None:
+                                replay_tracker = executed_level_trackers.get(replay_candidates[0])
+                            next_level, is_replay = level_manager.get_episode_level(
+                                replay_tracker=replay_tracker
+                            )
                             if next_level != current_training_level:
                                 raw_env.set_level(next_level)
                                 current_training_level = next_level
@@ -1027,6 +1083,8 @@ def main():
                                     print(f"    [replay] level='{next_level}'")
 
                 elif isinstance(level_manager, BatchLevelSampler):
+                    if level_tracker is not None:
+                        level_tracker.add_timesteps(iter_ts)
                     # Batch: sample next level (no tracker dependency)
                     if raw_env:
                         next_level = level_manager.sample()
@@ -1203,9 +1261,21 @@ def main():
             if level_manager is not None:
                 if isinstance(level_manager, CurriculumManager):
                     results_payload["curriculum"] = level_manager.summary()
+                    results_payload["curriculum"]["anchor_level"] = level_manager.current_level
+                    results_payload["curriculum"]["stage_timesteps_current"] = stage_timesteps
+                    if promotion_tracker is not None:
+                        anchor_summary = promotion_tracker.summary()
+                        anchor_summary["scope"] = "curriculum_anchor_level"
+                        anchor_summary["anchor_level"] = level_manager.current_level
+                        results_payload["level_tracker"] = anchor_summary
+                    if executed_level_trackers:
+                        results_payload["level_trackers"] = {
+                            level_name: tracker.summary()
+                            for level_name, tracker in executed_level_trackers.items()
+                        }
                 elif isinstance(level_manager, BatchLevelSampler):
                     results_payload["batch_sampling"] = level_manager.summary()
-            if level_tracker is not None:
+            if level_tracker is not None and "level_tracker" not in results_payload:
                 results_payload["level_tracker"] = level_tracker.summary()
             _write_json_atomic(results_path, results_payload)
             print(f"\nResults schema: {results_path}")

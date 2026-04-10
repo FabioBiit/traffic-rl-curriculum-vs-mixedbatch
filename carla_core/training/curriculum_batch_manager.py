@@ -63,6 +63,27 @@ class EpisodeTracker:
         if collision:
             self.total_collisions += 1
 
+    def record_counts(self, *, successes: int = 0, collisions: int = 0, total: int = 0):
+        """Record multiple outcomes using aggregated counts."""
+        success_count = max(int(successes), 0)
+        collision_count = max(int(collisions), 0)
+        total_count = max(int(total), success_count + collision_count)
+        other_count = max(total_count - success_count - collision_count, 0)
+
+        if total_count <= 0:
+            return
+
+        self.successes.extend([1] * success_count)
+        self.successes.extend([0] * (collision_count + other_count))
+        self.collisions.extend([0] * success_count)
+        self.collisions.extend([1] * collision_count)
+        self.collisions.extend([0] * other_count)
+
+        self.total_episodes += total_count
+        self.level_episodes += total_count
+        self.total_successes += success_count
+        self.total_collisions += collision_count
+
     def record_from_custom_metrics(self, custom_metrics: dict):
         """Record from RLlib custom_metrics dict (success_rate, collision_rate).
 
@@ -170,6 +191,9 @@ class CurriculumManager:
         max_blocks_without_replay=2,
         level_criteria=None,
         window_size=50,
+        replay_trigger_delta_sr=0.05,
+        replay_trigger_delta_cr=0.05,
+        replay_warmup_blocks_after_promotion=1,
     ):
         self.levels = levels or ["easy", "medium", "hard"]
         self.promotion_threshold = promotion_threshold
@@ -180,10 +204,14 @@ class CurriculumManager:
         self.max_blocks_without_replay = max(0, int(max_blocks_without_replay))
         self.level_criteria = level_criteria or {}
         self.window_size = window_size
+        self.replay_trigger_delta_sr = max(0.0, float(replay_trigger_delta_sr))
+        self.replay_trigger_delta_cr = max(0.0, float(replay_trigger_delta_cr))
+        self.replay_warmup_blocks_after_promotion = max(0, int(replay_warmup_blocks_after_promotion))
         self.current_index = 0
         self.promotion_history = []
         self._blocks_since_replay = 0
         self._replay_credit = 0.0
+        self._warmup_replays_remaining = 0
 
     # --- Properties ---
 
@@ -201,9 +229,44 @@ class CurriculumManager:
             return []
         return [self.levels[self.current_index - 1]]
 
+    def _criteria_for(self, level_name: str | None = None) -> dict:
+        level_name = level_name or self.current_level
+        criteria = self.level_criteria.get(level_name, {})
+        return {
+            "promotion_threshold": criteria.get("promotion_threshold", self.promotion_threshold),
+            "collision_threshold": criteria.get("collision_threshold", self.collision_threshold),
+            "min_timesteps": criteria.get("min_timesteps", self.min_timesteps),
+            "max_timesteps": criteria.get("max_timesteps"),
+        }
+
+    def baseline_for_level(self, level_name: str):
+        for item in reversed(self.promotion_history):
+            if item.get("from") == level_name:
+                return item
+        return None
+
+    def should_replay(self, tracker: EpisodeTracker | None) -> bool:
+        if tracker is None or not tracker.window_full:
+            return False
+
+        replay_candidates = self.get_replay_candidates()
+        if not replay_candidates:
+            return False
+
+        baseline = self.baseline_for_level(replay_candidates[0])
+        if baseline is None:
+            return False
+
+        sr_drop = baseline["success_rate_at_promotion"] - tracker.window_success_rate
+        cr_rise = tracker.window_collision_rate - baseline["collision_rate_at_promotion"]
+        return (
+            sr_drop >= self.replay_trigger_delta_sr
+            or cr_rise >= self.replay_trigger_delta_cr
+        )
+
     # --- Core API ---
 
-    def get_episode_level(self):
+    def get_episode_level(self, replay_tracker: EpisodeTracker | None = None):
         """Determine level for the next episode/block.
 
         Returns:
@@ -216,8 +279,22 @@ class CurriculumManager:
         if not replay_candidates:
             return self.current_level, False
 
+        if self._warmup_replays_remaining > 0:
+            self._warmup_replays_remaining -= 1
+            self._blocks_since_replay = 0
+            return replay_candidates[0], True
+
+        forgetting_active = self.should_replay(replay_tracker)
+        if not forgetting_active:
+            self._blocks_since_replay = 0
+            self._replay_credit = 0.0
+            return self.current_level, False
+
         self._replay_credit += self.replay_ratio
-        should_force = self._blocks_since_replay >= self.max_blocks_without_replay
+        should_force = (
+            self.max_blocks_without_replay > 0
+            and self._blocks_since_replay >= self.max_blocks_without_replay
+        )
         should_replay_from_credit = self._replay_credit >= 1.0
 
         if should_force or should_replay_from_credit:
@@ -229,7 +306,7 @@ class CurriculumManager:
         self._blocks_since_replay += 1
         return self.current_level, False
 
-    def should_promote(self, tracker: EpisodeTracker) -> bool:
+    def should_promote(self, tracker: EpisodeTracker, stage_timesteps: int | None = None) -> bool:
         """Check all promotion criteria against tracker metrics.
 
         All conditions must be met:
@@ -243,13 +320,17 @@ class CurriculumManager:
         if self.is_final_level:
             return False
 
-        criteria = self.level_criteria.get(self.current_level, {})
-        req_sr = criteria.get("promotion_threshold", self.promotion_threshold)
-        req_cr = criteria.get("collision_threshold", self.collision_threshold)
-        req_ts = criteria.get("min_timesteps", self.min_timesteps)
+        criteria = self._criteria_for()
+        req_sr = criteria["promotion_threshold"]
+        req_cr = criteria["collision_threshold"]
+        req_ts = criteria["min_timesteps"]
+        req_max_ts = criteria["max_timesteps"]
+        current_stage_timesteps = tracker.level_timesteps if stage_timesteps is None else int(stage_timesteps)
 
         if tracker.level_episodes < self.min_episodes:
             return False
+        if req_max_ts is not None and current_stage_timesteps >= req_max_ts:
+            return True
         if tracker.level_timesteps < req_ts:
             return False
         if not tracker.window_full:
@@ -261,35 +342,49 @@ class CurriculumManager:
 
         return True
 
-    def promote(self, tracker: EpisodeTracker, global_timestep=None) -> str:
+    def promote(
+        self,
+        tracker: EpisodeTracker,
+        global_timestep=None,
+        reason="thresholds_met",
+        stage_timesteps: int | None = None,
+    ) -> str:
         """Promote to next level. Returns new level name."""
         self.promotion_history.append({
             "from": self.current_level,
             "to": self.levels[self.current_index + 1],
             "episodes_on_level": tracker.level_episodes,
             "timesteps_on_level": tracker.level_timesteps,
+            "stage_timesteps_at_promotion": (
+                tracker.level_timesteps if stage_timesteps is None else int(stage_timesteps)
+            ),
             "success_rate_at_promotion": tracker.window_success_rate,
             "collision_rate_at_promotion": tracker.window_collision_rate,
             "timestep_at_promotion": global_timestep,
+            "reason": reason,
         })
         self.current_index += 1
         self._blocks_since_replay = 0
         self._replay_credit = 0.0
+        self._warmup_replays_remaining = self.replay_warmup_blocks_after_promotion
         tracker.reset()
         logger.info(
-            "Promoted to %s at timestep %s (SR=%.2f, CR=%.2f)",
+            "Promoted to %s at timestep %s (SR=%.2f, CR=%.2f, reason=%s)",
             self.current_level, global_timestep,
             self.promotion_history[-1]["success_rate_at_promotion"],
             self.promotion_history[-1]["collision_rate_at_promotion"],
+            self.promotion_history[-1]["reason"],
         )
         return self.current_level
 
-    def promotion_status(self, tracker: EpisodeTracker) -> dict:
+    def promotion_status(self, tracker: EpisodeTracker, stage_timesteps: int | None = None) -> dict:
         """Diagnostic dict showing which promotion criteria are met/unmet."""
-        criteria = self.level_criteria.get(self.current_level, {})
-        req_sr = criteria.get("promotion_threshold", self.promotion_threshold)
-        req_cr = criteria.get("collision_threshold", self.collision_threshold)
-        req_ts = criteria.get("min_timesteps", self.min_timesteps)
+        criteria = self._criteria_for()
+        req_sr = criteria["promotion_threshold"]
+        req_cr = criteria["collision_threshold"]
+        req_ts = criteria["min_timesteps"]
+        req_max_ts = criteria["max_timesteps"]
+        current_stage_timesteps = tracker.level_timesteps if stage_timesteps is None else int(stage_timesteps)
 
         return {
             "is_final_level": self.is_final_level,
@@ -299,6 +394,11 @@ class CurriculumManager:
             "timesteps_ok": tracker.level_timesteps >= req_ts,
             "timesteps_current": tracker.level_timesteps,
             "timesteps_required": req_ts,
+            "stage_timesteps_current": current_stage_timesteps,
+            "max_timesteps_cap": req_max_ts,
+            "max_timesteps_reached": (
+                req_max_ts is not None and current_stage_timesteps >= req_max_ts
+            ),
             "window_full": tracker.window_full,
             "success_rate_ok": tracker.window_success_rate >= req_sr,
             "success_rate_current": tracker.window_success_rate,
@@ -319,6 +419,9 @@ class CurriculumManager:
             "min_timesteps": self.min_timesteps,
             "replay_ratio": self.replay_ratio,
             "max_blocks_without_replay": self.max_blocks_without_replay,
+            "replay_trigger_delta_sr": self.replay_trigger_delta_sr,
+            "replay_trigger_delta_cr": self.replay_trigger_delta_cr,
+            "replay_warmup_blocks_after_promotion": self.replay_warmup_blocks_after_promotion,
             "replay_candidates": self.get_replay_candidates(),
             "promotion_history": deepcopy(self.promotion_history),
         }
