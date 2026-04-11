@@ -4,8 +4,8 @@ CurriculumManager & BatchLevelSampler — CARLA MAPPO (Block 5.3 + 5.3b)
 Port from MetaDrive prototype, decoupled from simulator and framework.
 
 Components:
-  1. EpisodeTracker   — windowed SR/CR metrics for promotion decisions
-  2. CurriculumManager — Easy→Medium→Hard progression with replay guard
+  1. EpisodeTracker   — windowed SR/CR metrics for curriculum competence checks
+  2. CurriculumManager — budget-normalized distributional teacher
   3. BatchLevelSampler — stratified shuffle w/o replacement, cap uniforme
 
 Integration:
@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 # ====================================================================
 
 class EpisodeTracker:
-    """Windowed success/collision tracker for promotion decisions.
+    """Windowed success/collision tracker for curriculum competence checks.
 
-    Tracks both a sliding window (for promotion checks) and cumulative
+    Tracks both a sliding window (for unlock checks) and cumulative
     totals (for final reporting). Window and level counters reset on
     level change; cumulative totals persist.
 
@@ -159,273 +159,495 @@ class EpisodeTracker:
 # ====================================================================
 
 class CurriculumManager:
-    """Easy → Medium → Hard progression with replay for forgetting guard.
+    """Budget-normalized distributional teacher with competence-based unlocks.
 
-    After promotion, a fraction of blocks replays only the immediately
-    previous level to prevent catastrophic forgetting without fully
-    regressing to the easiest stage.
-
-    The manager does NOT call env.set_level() — it returns the level name
-    and the caller is responsible for applying it.
-
-    Args:
-        levels: ordered level names (default: ["easy", "medium", "hard"]).
-        promotion_threshold: min window SR to promote (default 0.6).
-        collision_threshold: max window CR to promote (default 0.3).
-        min_episodes: min episodes on level before promotion check.
-        min_timesteps: min timesteps on level before promotion check.
-        replay_ratio: target replay fraction after first promotion.
-        max_blocks_without_replay: forced replay after this many consecutive non-replay blocks.
-        level_criteria: per-level override dict {level: {promotion_threshold, ...}}.
-        window_size: EpisodeTracker window size (for reference).
+    The manager unlocks harder levels when the immediately preceding level
+    reaches competence criteria, then keeps sampling distributional across the
+    unlocked levels while enforcing cumulative budget constraints relative to
+    the total training budget.
     """
 
     def __init__(
         self,
         levels=None,
-        promotion_threshold=0.6,
-        collision_threshold=0.3,
-        min_episodes=50,
-        min_timesteps=200_000,
-        replay_ratio=0.2,
-        max_blocks_without_replay=2,
-        level_criteria=None,
+        total_budget_timesteps=1_000_000,
+        default_success_rate_threshold=0.45,
+        default_collision_threshold=0.30,
+        default_min_episodes=50,
+        unlock_criteria=None,
+        budget_constraints=None,
+        base_sampling_weights=None,
+        probation_sampling_weights=None,
+        probation_blocks_after_unlock=2,
+        probation_blocks_after_cap_pressure=1,
+        teacher_seed=42,
         window_size=50,
-        replay_trigger_delta_sr=0.05,
-        replay_trigger_delta_cr=0.05,
-        replay_warmup_blocks_after_promotion=1,
     ):
         self.levels = levels or ["easy", "medium", "hard"]
-        self.promotion_threshold = promotion_threshold
-        self.collision_threshold = collision_threshold
-        self.min_episodes = min_episodes
-        self.min_timesteps = min_timesteps
-        self.replay_ratio = replay_ratio
-        self.max_blocks_without_replay = max(0, int(max_blocks_without_replay))
-        self.level_criteria = level_criteria or {}
-        self.window_size = window_size
-        self.replay_trigger_delta_sr = max(0.0, float(replay_trigger_delta_sr))
-        self.replay_trigger_delta_cr = max(0.0, float(replay_trigger_delta_cr))
-        self.replay_warmup_blocks_after_promotion = max(0, int(replay_warmup_blocks_after_promotion))
-        self.current_index = 0
-        self.promotion_history = []
-        self._blocks_since_replay = 0
-        self._replay_credit = 0.0
-        self._warmup_replays_remaining = 0
+        self.total_budget_timesteps = max(int(total_budget_timesteps), 1)
+        self.default_success_rate_threshold = float(default_success_rate_threshold)
+        self.default_collision_threshold = float(default_collision_threshold)
+        self.default_min_episodes = max(int(default_min_episodes), 1)
+        self.unlock_criteria = unlock_criteria or {}
+        self.window_size = max(int(window_size), 1)
+        self.probation_blocks_after_unlock = max(0, int(probation_blocks_after_unlock))
+        self.probation_blocks_after_cap_pressure = max(0, int(probation_blocks_after_cap_pressure))
+        self._rng = random.Random(teacher_seed)
 
-    # --- Properties ---
+        default_weights = {
+            level_name: 1.0 + (0.25 * idx)
+            for idx, level_name in enumerate(self.levels)
+        }
+        self.base_sampling_weights = self._normalize_weights(
+            base_sampling_weights or default_weights,
+            allowed_levels=self.levels,
+        )
+        self.probation_sampling_weights = self._normalize_weights(
+            probation_sampling_weights or {"medium": 1.0, "hard": 1.35},
+            allowed_levels=self.levels,
+        )
+
+        budget_constraints = budget_constraints or {}
+        self.easy_max_share = self._clip_share(budget_constraints.get("easy_max_share"))
+        self.medium_max_share = self._clip_share(budget_constraints.get("medium_max_share"))
+        self.hard_min_share = self._clip_share(
+            budget_constraints.get("hard_min_share"),
+            default=0.0,
+        )
+
+        self.current_level = self.levels[0]
+        self.unlocked_levels = [self.levels[0]]
+        self._excluded_from_sampling = set()
+        self._timesteps_by_level = {level_name: 0 for level_name in self.levels}
+        self._blocks_by_level = {level_name: 0 for level_name in self.levels}
+        self._sample_counts = {level_name: 0 for level_name in self.levels}
+        self._sample_counts[self.current_level] = 1
+        self.unlock_history = []
+        self.probation_history = []
+        self._probation_remaining = 0
+        self._cap_pressure_active = False
+        self._last_probabilities = {self.levels[0]: 1.0}
+        self._last_constraints = {}
 
     @property
-    def current_level(self) -> str:
-        return self.levels[self.current_index]
+    def total_assigned_timesteps(self) -> int:
+        return int(sum(self._timesteps_by_level.values()))
 
     @property
-    def is_final_level(self) -> bool:
-        return self.current_index >= len(self.levels) - 1
+    def hard_unlocked(self) -> bool:
+        return "hard" in self.unlocked_levels
 
-    def get_replay_candidates(self) -> list:
-        """Return replayable levels for the current stage."""
-        if self.current_index <= 0:
-            return []
-        return [self.levels[self.current_index - 1]]
+    def _clip_share(self, value, default=None) -> float | None:
+        if value is None:
+            return default
+        return max(0.0, min(float(value), 1.0))
 
-    def _criteria_for(self, level_name: str | None = None) -> dict:
-        level_name = level_name or self.current_level
-        criteria = self.level_criteria.get(level_name, {})
+    def _normalize_weights(self, weights: dict, allowed_levels: list[str]) -> dict:
+        normalized = {}
+        for level_name in allowed_levels:
+            normalized[level_name] = max(0.0, float(weights.get(level_name, 0.0)))
+        if sum(normalized.values()) <= 0.0:
+            equal_weight = 1.0 / max(len(allowed_levels), 1)
+            return {level_name: equal_weight for level_name in allowed_levels}
+        return normalized
+
+    def _criteria_for(self, target_level: str) -> dict:
+        criteria = self.unlock_criteria.get(target_level, {})
+        min_budget_share = criteria.get(
+            "min_budget_share",
+            criteria.get("min_timesteps_share", 0.0),
+        )
         return {
-            "promotion_threshold": criteria.get("promotion_threshold", self.promotion_threshold),
-            "collision_threshold": criteria.get("collision_threshold", self.collision_threshold),
-            "min_timesteps": criteria.get("min_timesteps", self.min_timesteps),
-            "max_timesteps": criteria.get("max_timesteps"),
+            "min_episodes": max(int(criteria.get("min_episodes", self.default_min_episodes)), 1),
+            "min_budget_share": max(0.0, float(min_budget_share)),
+            "success_rate_threshold": float(
+                criteria.get("success_rate_threshold", self.default_success_rate_threshold)
+            ),
+            "collision_rate_threshold": float(
+                criteria.get("collision_rate_threshold", self.default_collision_threshold)
+            ),
         }
 
-    def baseline_for_level(self, level_name: str):
-        for item in reversed(self.promotion_history):
-            if item.get("from") == level_name:
-                return item
-        return None
-
-    def should_replay(self, tracker: EpisodeTracker | None) -> bool:
-        if tracker is None or not tracker.window_full:
+    def _meets_unlock_criteria(self, tracker: EpisodeTracker | None, target_level: str) -> bool:
+        if tracker is None:
             return False
 
-        replay_candidates = self.get_replay_candidates()
-        if not replay_candidates:
+        criteria = self._criteria_for(target_level)
+        required_timesteps = int(criteria["min_budget_share"] * self.total_budget_timesteps)
+
+        if tracker.level_episodes < criteria["min_episodes"]:
             return False
-
-        baseline = self.baseline_for_level(replay_candidates[0])
-        if baseline is None:
-            return False
-
-        sr_drop = baseline["success_rate_at_promotion"] - tracker.window_success_rate
-        cr_rise = tracker.window_collision_rate - baseline["collision_rate_at_promotion"]
-        return (
-            sr_drop >= self.replay_trigger_delta_sr
-            or cr_rise >= self.replay_trigger_delta_cr
-        )
-
-    # --- Core API ---
-
-    def get_episode_level(self, replay_tracker: EpisodeTracker | None = None):
-        """Determine level for the next episode/block.
-
-        Returns:
-            (level_name: str, is_replay: bool)
-        """
-        if self.current_index == 0 or self.replay_ratio <= 0:
-            return self.current_level, False
-
-        replay_candidates = self.get_replay_candidates()
-        if not replay_candidates:
-            return self.current_level, False
-
-        if self._warmup_replays_remaining > 0:
-            self._warmup_replays_remaining -= 1
-            self._blocks_since_replay = 0
-            return replay_candidates[0], True
-
-        forgetting_active = self.should_replay(replay_tracker)
-        if not forgetting_active:
-            self._blocks_since_replay = 0
-            self._replay_credit = 0.0
-            return self.current_level, False
-
-        self._replay_credit += self.replay_ratio
-        should_force = (
-            self.max_blocks_without_replay > 0
-            and self._blocks_since_replay >= self.max_blocks_without_replay
-        )
-        should_replay_from_credit = self._replay_credit >= 1.0
-
-        if should_force or should_replay_from_credit:
-            self._blocks_since_replay = 0
-            if should_replay_from_credit:
-                self._replay_credit = max(0.0, self._replay_credit - 1.0)
-            return replay_candidates[0], True
-
-        self._blocks_since_replay += 1
-        return self.current_level, False
-
-    def should_promote(self, tracker: EpisodeTracker, stage_timesteps: int | None = None) -> bool:
-        """Check all promotion criteria against tracker metrics.
-
-        All conditions must be met:
-          1. Not already at final level
-          2. level_episodes >= min_episodes
-          3. level_timesteps >= min_timesteps
-          4. Window full
-          5. window_success_rate >= threshold
-          6. window_collision_rate <= threshold
-        """
-        if self.is_final_level:
-            return False
-
-        criteria = self._criteria_for()
-        req_sr = criteria["promotion_threshold"]
-        req_cr = criteria["collision_threshold"]
-        req_ts = criteria["min_timesteps"]
-        req_max_ts = criteria["max_timesteps"]
-        current_stage_timesteps = tracker.level_timesteps if stage_timesteps is None else int(stage_timesteps)
-
-        if tracker.level_episodes < self.min_episodes:
-            return False
-        if req_max_ts is not None and current_stage_timesteps >= req_max_ts:
-            return True
-        if tracker.level_timesteps < req_ts:
+        if tracker.level_timesteps < required_timesteps:
             return False
         if not tracker.window_full:
             return False
-        if tracker.window_success_rate < req_sr:
+        if tracker.window_success_rate < criteria["success_rate_threshold"]:
             return False
-        if tracker.window_collision_rate > req_cr:
+        if tracker.window_collision_rate > criteria["collision_rate_threshold"]:
             return False
-
         return True
 
-    def promote(
-        self,
-        tracker: EpisodeTracker,
-        global_timestep=None,
-        reason="thresholds_met",
-        stage_timesteps: int | None = None,
-    ) -> str:
-        """Promote to next level. Returns new level name."""
-        self.promotion_history.append({
-            "from": self.current_level,
-            "to": self.levels[self.current_index + 1],
-            "episodes_on_level": tracker.level_episodes,
-            "timesteps_on_level": tracker.level_timesteps,
-            "stage_timesteps_at_promotion": (
-                tracker.level_timesteps if stage_timesteps is None else int(stage_timesteps)
-            ),
-            "success_rate_at_promotion": tracker.window_success_rate,
-            "collision_rate_at_promotion": tracker.window_collision_rate,
-            "timestep_at_promotion": global_timestep,
-            "reason": reason,
-        })
-        self.current_index += 1
-        self._blocks_since_replay = 0
-        self._replay_credit = 0.0
-        self._warmup_replays_remaining = self.replay_warmup_blocks_after_promotion
-        tracker.reset()
-        logger.info(
-            "Promoted to %s at timestep %s (SR=%.2f, CR=%.2f, reason=%s)",
-            self.current_level, global_timestep,
-            self.promotion_history[-1]["success_rate_at_promotion"],
-            self.promotion_history[-1]["collision_rate_at_promotion"],
-            self.promotion_history[-1]["reason"],
-        )
-        return self.current_level
+    def _sampling_levels(self) -> list[str]:
+        return [
+            level_name
+            for level_name in self.unlocked_levels
+            if level_name not in self._excluded_from_sampling
+        ]
 
-    def promotion_status(self, tracker: EpisodeTracker, stage_timesteps: int | None = None) -> dict:
-        """Diagnostic dict showing which promotion criteria are met/unmet."""
-        criteria = self._criteria_for()
-        req_sr = criteria["promotion_threshold"]
-        req_cr = criteria["collision_threshold"]
-        req_ts = criteria["min_timesteps"]
-        req_max_ts = criteria["max_timesteps"]
-        current_stage_timesteps = tracker.level_timesteps if stage_timesteps is None else int(stage_timesteps)
+    def _activate_probation(self, *, reason: str, global_timestep=None, blocks: int):
+        blocks = max(0, int(blocks))
+        if blocks <= 0:
+            return
+        self._probation_remaining = max(self._probation_remaining, blocks)
+        self.probation_history.append({
+            "reason": reason,
+            "timestep": global_timestep,
+            "probation_blocks": blocks,
+        })
+
+    def _maybe_unlock_levels(self, trackers: dict | None = None, global_timestep=None) -> list[str]:
+        trackers = trackers or {}
+        events = []
+
+        for idx in range(1, len(self.levels)):
+            target_level = self.levels[idx]
+            if target_level in self.unlocked_levels:
+                continue
+
+            source_level = self.levels[idx - 1]
+            if source_level not in self.unlocked_levels:
+                break
+
+            tracker = trackers.get(source_level)
+            if not self._meets_unlock_criteria(tracker, target_level):
+                break
+
+            unlock_event = {
+                "from": source_level,
+                "to": target_level,
+                "episodes_on_level": tracker.level_episodes,
+                "timesteps_on_level": tracker.level_timesteps,
+                "success_rate_at_unlock": tracker.window_success_rate,
+                "collision_rate_at_unlock": tracker.window_collision_rate,
+                "timestep_at_unlock": global_timestep,
+                "reason": "competence_unlocked",
+            }
+            self.unlocked_levels.append(target_level)
+            self.unlock_history.append(unlock_event)
+            events.append(f"unlock:{target_level}")
+
+            logger.info(
+                "Unlocked %s from %s at timestep %s (SR=%.2f, CR=%.2f)",
+                target_level,
+                source_level,
+                global_timestep,
+                tracker.window_success_rate,
+                tracker.window_collision_rate,
+            )
+
+            if target_level == "hard":
+                self._excluded_from_sampling.add("easy")
+                self._activate_probation(
+                    reason="unlock_hard",
+                    global_timestep=global_timestep,
+                    blocks=self.probation_blocks_after_unlock,
+                )
+
+        return events
+
+    def record_execution(self, level_name: str, timesteps: int):
+        timesteps = max(int(timesteps), 0)
+        if level_name not in self._timesteps_by_level or timesteps <= 0:
+            return
+        self._timesteps_by_level[level_name] += timesteps
+        self._blocks_by_level[level_name] += 1
+
+    def _build_base_probabilities(self, levels: list[str], weights: dict) -> dict:
+        if not levels:
+            return {}
+
+        total_weight = sum(max(weights.get(level_name, 0.0), 0.0) for level_name in levels)
+        if total_weight <= 0.0:
+            equal_prob = 1.0 / len(levels)
+            return {level_name: equal_prob for level_name in levels}
 
         return {
-            "is_final_level": self.is_final_level,
-            "episodes_ok": tracker.level_episodes >= self.min_episodes,
-            "episodes_current": tracker.level_episodes,
-            "episodes_required": self.min_episodes,
-            "timesteps_ok": tracker.level_timesteps >= req_ts,
-            "timesteps_current": tracker.level_timesteps,
-            "timesteps_required": req_ts,
-            "stage_timesteps_current": current_stage_timesteps,
-            "max_timesteps_cap": req_max_ts,
-            "max_timesteps_reached": (
-                req_max_ts is not None and current_stage_timesteps >= req_max_ts
-            ),
-            "window_full": tracker.window_full,
-            "success_rate_ok": tracker.window_success_rate >= req_sr,
-            "success_rate_current": tracker.window_success_rate,
-            "success_rate_required": req_sr,
-            "collision_rate_ok": tracker.window_collision_rate <= req_cr,
-            "collision_rate_current": tracker.window_collision_rate,
-            "collision_rate_max": req_cr,
+            level_name: max(weights.get(level_name, 0.0), 0.0) / total_weight
+            for level_name in levels
         }
+
+    def _remaining_budget_timesteps(self) -> int:
+        return max(self.total_budget_timesteps - self.total_assigned_timesteps, 0)
+
+    def _dynamic_ceiling(self, level_name: str, max_share: float | None) -> float | None:
+        if max_share is None:
+            return None
+
+        remaining_budget = self._remaining_budget_timesteps()
+        if remaining_budget <= 0:
+            return 0.0
+
+        remaining_allowance = max(
+            int(round(max_share * self.total_budget_timesteps)) - self._timesteps_by_level[level_name],
+            0,
+        )
+        return max(0.0, min(float(remaining_allowance) / float(remaining_budget), 1.0))
+
+    def _dynamic_hard_floor(self) -> float:
+        if not self.hard_unlocked or self.hard_min_share <= 0.0:
+            return 0.0
+
+        remaining_budget = self._remaining_budget_timesteps()
+        if remaining_budget <= 0:
+            target_hard_budget = int(round(self.hard_min_share * self.total_budget_timesteps))
+            return 1.0 if self._timesteps_by_level.get("hard", 0) < target_hard_budget else 0.0
+
+        required_hard_budget = max(
+            int(round(self.hard_min_share * self.total_budget_timesteps)) - self._timesteps_by_level.get("hard", 0),
+            0,
+        )
+        return max(0.0, min(float(required_hard_budget) / float(remaining_budget), 1.0))
+
+    def _constraint_state(self, raw_probabilities: dict) -> dict:
+        easy_ceiling = None
+        medium_ceiling = None
+
+        if "medium" in self.unlocked_levels and "easy" not in self._excluded_from_sampling:
+            easy_ceiling = self._dynamic_ceiling("easy", self.easy_max_share)
+        if self.hard_unlocked:
+            medium_ceiling = self._dynamic_ceiling("medium", self.medium_max_share)
+
+        hard_floor = self._dynamic_hard_floor()
+        return {
+            "remaining_budget_timesteps": self._remaining_budget_timesteps(),
+            "easy_dynamic_ceiling": easy_ceiling,
+            "medium_dynamic_ceiling": medium_ceiling,
+            "hard_dynamic_floor": hard_floor,
+            "easy_ceiling_active": (
+                easy_ceiling is not None
+                and "easy" in raw_probabilities
+                and raw_probabilities["easy"] > easy_ceiling + 1e-9
+            ),
+            "medium_ceiling_active": (
+                medium_ceiling is not None
+                and "medium" in raw_probabilities
+                and raw_probabilities["medium"] > medium_ceiling + 1e-9
+            ),
+            "hard_floor_active": (
+                "hard" in raw_probabilities
+                and hard_floor > raw_probabilities["hard"] + 1e-9
+            ),
+        }
+
+    def _project_probabilities(
+        self,
+        levels: list[str],
+        base_probabilities: dict,
+        min_probabilities: dict,
+        max_probabilities: dict,
+    ) -> dict:
+        if not levels:
+            return {}
+
+        probabilities = {level_name: 0.0 for level_name in levels}
+        for level_name in levels:
+            floor = max(0.0, float(min_probabilities.get(level_name, 0.0)))
+            ceiling = max(0.0, float(max_probabilities.get(level_name, 1.0)))
+            probabilities[level_name] = min(floor, ceiling)
+
+        assigned_mass = sum(probabilities.values())
+        if assigned_mass >= 1.0:
+            if assigned_mass <= 0.0:
+                return {levels[0]: 1.0}
+            return {
+                level_name: probabilities[level_name] / assigned_mass
+                for level_name in levels
+            }
+
+        free_levels = {
+            level_name
+            for level_name in levels
+            if probabilities[level_name] + 1e-9 < max(0.0, float(max_probabilities.get(level_name, 1.0)))
+        }
+
+        while free_levels:
+            remaining_mass = max(1.0 - sum(probabilities.values()), 0.0)
+            if remaining_mass <= 1e-9:
+                break
+
+            total_weight = sum(base_probabilities.get(level_name, 0.0) for level_name in free_levels)
+            if total_weight <= 0.0:
+                equal_weight = 1.0 / len(free_levels)
+                weight_lookup = {level_name: equal_weight for level_name in free_levels}
+            else:
+                weight_lookup = {
+                    level_name: base_probabilities.get(level_name, 0.0) / total_weight
+                    for level_name in free_levels
+                }
+
+            saturated = []
+            for level_name in list(free_levels):
+                ceiling = max(0.0, float(max_probabilities.get(level_name, 1.0)))
+                candidate = probabilities[level_name] + (remaining_mass * weight_lookup[level_name])
+                if candidate >= ceiling - 1e-9:
+                    probabilities[level_name] = ceiling
+                    saturated.append(level_name)
+
+            if not saturated:
+                for level_name in free_levels:
+                    probabilities[level_name] += remaining_mass * weight_lookup[level_name]
+                break
+
+            for level_name in saturated:
+                free_levels.discard(level_name)
+
+        total_probability = sum(probabilities.values())
+        if total_probability <= 0.0:
+            equal_prob = 1.0 / len(levels)
+            return {level_name: equal_prob for level_name in levels}
+
+        if abs(total_probability - 1.0) > 1e-9:
+            slack_level = max(levels, key=lambda level_name: base_probabilities.get(level_name, 0.0))
+            probabilities[slack_level] += max(1.0 - total_probability, 0.0)
+            total_probability = sum(probabilities.values())
+
+        return {
+            level_name: probabilities[level_name] / total_probability
+            for level_name in levels
+        }
+
+    def _sample_level(self, probabilities: dict) -> str:
+        threshold = self._rng.random()
+        cumulative = 0.0
+        ordered_levels = list(probabilities.keys())
+        fallback_level = ordered_levels[-1]
+        for level_name in ordered_levels:
+            cumulative += probabilities[level_name]
+            if threshold <= cumulative:
+                return level_name
+        return fallback_level
+
+    def get_episode_level(self, trackers: dict | None = None, global_timestep=None):
+        events = self._maybe_unlock_levels(trackers=trackers, global_timestep=global_timestep)
+
+        base_levels = self._sampling_levels()
+        probation_active = self._probation_remaining > 0 and self.hard_unlocked
+
+        general_probabilities = self._build_base_probabilities(
+            base_levels,
+            self.base_sampling_weights,
+        )
+        general_constraints = self._constraint_state(general_probabilities)
+
+        cap_pressure_now = self.hard_unlocked and (
+            general_constraints["medium_ceiling_active"]
+            or general_constraints["hard_floor_active"]
+        )
+        if cap_pressure_now and not self._cap_pressure_active:
+            self._activate_probation(
+                reason="cap_pressure",
+                global_timestep=global_timestep,
+                blocks=self.probation_blocks_after_cap_pressure,
+            )
+            events.append("probation:cap_pressure")
+            probation_active = self._probation_remaining > 0
+        self._cap_pressure_active = cap_pressure_now
+
+        if probation_active:
+            sampling_levels = [
+                level_name
+                for level_name in ("medium", "hard")
+                if level_name in base_levels
+            ]
+            base_probabilities = self._build_base_probabilities(
+                sampling_levels,
+                self.probation_sampling_weights,
+            )
+        else:
+            sampling_levels = base_levels
+            base_probabilities = general_probabilities
+
+        constraint_state = self._constraint_state(base_probabilities)
+        min_probabilities = {}
+        max_probabilities = {}
+
+        if "easy" in sampling_levels and constraint_state["easy_dynamic_ceiling"] is not None:
+            max_probabilities["easy"] = constraint_state["easy_dynamic_ceiling"]
+        if "medium" in sampling_levels and constraint_state["medium_dynamic_ceiling"] is not None:
+            max_probabilities["medium"] = constraint_state["medium_dynamic_ceiling"]
+        if "hard" in sampling_levels:
+            min_probabilities["hard"] = constraint_state["hard_dynamic_floor"]
+
+        probabilities = self._project_probabilities(
+            sampling_levels,
+            base_probabilities,
+            min_probabilities=min_probabilities,
+            max_probabilities=max_probabilities,
+        )
+
+        next_level = self._sample_level(probabilities)
+        self.current_level = next_level
+        self._sample_counts[next_level] += 1
+        self._last_probabilities = deepcopy(probabilities)
+        self._last_constraints = deepcopy(constraint_state)
+
+        if self._probation_remaining > 0:
+            self._probation_remaining -= 1
+
+        diagnostics = {
+            "events": events,
+            "probabilities": deepcopy(probabilities),
+            "constraints": deepcopy(constraint_state),
+            "probation_active": probation_active,
+            "sampling_levels": list(sampling_levels),
+        }
+        return next_level, diagnostics
 
     def summary(self) -> dict:
-        return {
-            "final_level": self.current_level,
-            "levels_completed": self.current_index,
-            "total_levels": len(self.levels),
-            "promotion_threshold": self.promotion_threshold,
-            "collision_threshold": self.collision_threshold,
-            "min_episodes": self.min_episodes,
-            "min_timesteps": self.min_timesteps,
-            "replay_ratio": self.replay_ratio,
-            "max_blocks_without_replay": self.max_blocks_without_replay,
-            "replay_trigger_delta_sr": self.replay_trigger_delta_sr,
-            "replay_trigger_delta_cr": self.replay_trigger_delta_cr,
-            "replay_warmup_blocks_after_promotion": self.replay_warmup_blocks_after_promotion,
-            "replay_candidates": self.get_replay_candidates(),
-            "promotion_history": deepcopy(self.promotion_history),
+        budget_shares = {
+            level_name: (
+                float(self._timesteps_by_level[level_name]) / float(self.total_budget_timesteps)
+            )
+            for level_name in self.levels
         }
-
+        sample_total = max(sum(self._sample_counts.values()), 1)
+        return {
+            "teacher_type": "budget_normalized_distributional",
+            "current_level": self.current_level,
+            "levels": list(self.levels),
+            "window_size": self.window_size,
+            "unlocked_levels": list(self.unlocked_levels),
+            "sampling_levels": self._sampling_levels(),
+            "excluded_levels": sorted(self._excluded_from_sampling),
+            "total_budget_timesteps": self.total_budget_timesteps,
+            "allocated_timesteps": self.total_assigned_timesteps,
+            "timesteps_by_level": dict(self._timesteps_by_level),
+            "blocks_by_level": dict(self._blocks_by_level),
+            "budget_share_by_level": budget_shares,
+            "sample_counts": dict(self._sample_counts),
+            "sample_share_by_level": {
+                level_name: float(self._sample_counts[level_name]) / float(sample_total)
+                for level_name in self.levels
+            },
+            "base_sampling_weights": deepcopy(self.base_sampling_weights),
+            "probation_sampling_weights": deepcopy(self.probation_sampling_weights),
+            "budget_constraints": {
+                "easy_max_share": self.easy_max_share,
+                "medium_max_share": self.medium_max_share,
+                "hard_min_share": self.hard_min_share,
+            },
+            "unlock_defaults": {
+                "success_rate_threshold": self.default_success_rate_threshold,
+                "collision_threshold": self.default_collision_threshold,
+                "min_episodes": self.default_min_episodes,
+            },
+            "unlock_history": deepcopy(self.unlock_history),
+            "promotion_history": deepcopy(self.unlock_history),
+            "probation_remaining": self._probation_remaining,
+            "probation_history": deepcopy(self.probation_history),
+            "last_probabilities": deepcopy(self._last_probabilities),
+            "last_constraints": deepcopy(self._last_constraints),
+        }
 
 # ====================================================================
 # BATCH LEVEL SAMPLER
