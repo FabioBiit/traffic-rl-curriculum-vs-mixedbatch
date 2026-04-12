@@ -1,5 +1,5 @@
 # Multi-agent CARLA configuration
-# Controls RL agents (vehicles + pedestrians), NPC traffic, and episode rules.
+# Controls RL agents (vehicles + pedestrians), NPC traffic, and episode rules. #
 
 simulator:
   host: "127.0.0.1"             # CARLA server host.

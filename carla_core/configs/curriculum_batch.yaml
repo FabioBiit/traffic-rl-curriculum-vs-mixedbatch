@@ -4,18 +4,29 @@
 
 curriculum:
   levels: ["easy", "medium", "hard"]
-  promotion_threshold: 0.45      # Run v4 0.48 -> 0.45 # Run v3 0.6 -> 0.48 # min window SR to promote
-  collision_threshold: 0.30      # Run v4 0.36 -> 0.30 # Run v3 0.3 -> 0.36 # max window CR to promote
-  min_episodes: 50               # min episodes on level before check
-  min_timesteps: 200000          # min timesteps on level before check
-  replay_ratio: 0.05             # fraction of episodes replaying earlier levels
-  max_blocks_without_replay: 6   # forced replay after N consecutive non-replay blocks
+  success_rate_threshold: 0.45   # default competence SR for unlock checks
+  collision_threshold: 0.30      # default competence CR ceiling for unlock checks
+  min_episodes: 50               # minimum episode support before any unlock
   window_size: 50                # episode tracker sliding window
-  level_criteria:                # per-level promotion overrides
-    easy:
-      min_timesteps: 500000      # Finetuning Run v5 100k -> 500k 
+  teacher_seed: 42               # stochastic teacher seed
+  unlock_criteria:
     medium:
-      min_timesteps: 1500000     # Finetuning Run v5 500k -> 1.5M
+      min_budget_share: 0.12     # easy share required before medium can unlock
+    hard:
+      min_budget_share: 0.18     # medium share required before hard can unlock
+  budget_constraints:
+    easy_max_share: 0.20         # easy cannot exceed 20% once medium is available
+    medium_max_share: 0.45       # medium cannot monopolize post-hard training
+    hard_min_share: 0.35         # dynamic hard floor over the total budget
+  base_sampling_weights:
+    easy: 1.00
+    medium: 1.20
+    hard: 1.40
+  probation_sampling_weights:
+    medium: 1.00
+    hard: 1.35
+  probation_blocks_after_unlock: 2
+  probation_blocks_after_cap_pressure: 1
 
 batch:
   levels: ["easy", "medium", "hard"]
