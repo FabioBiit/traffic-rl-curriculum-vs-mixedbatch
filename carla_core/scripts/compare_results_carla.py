@@ -171,6 +171,12 @@ def setup_plot(title, xlabel, ylabel):
 
     return fig, ax
 
+def _event_timestep(event):
+    return event.get("timestep_at_promotion", event.get("timestep_at_unlock"))
+
+def _event_success_rate(event):
+    return event.get("success_rate_at_promotion", event.get("success_rate_at_unlock"))
+
 
 def add_promotion_lines(ax, curriculum_data, ymin=None, ymax=None):
     """
@@ -182,7 +188,9 @@ def add_promotion_lines(ax, curriculum_data, ymin=None, ymax=None):
         ymin, ymax: limiti Y per le linee (opzionali)
     """
     for promo in curriculum_data.get("curriculum_history", []):
-        timestep = promo["timestep_at_promotion"]
+        timestep = _event_timestep(promo)
+        if timestep is None:
+            continue
         label_text = f"{promo['from']}->{promo['to']}"
         ax.axvline(x=timestep, color=COLOR_PROMOTION, linestyle="--",
                    alpha=0.7, linewidth=1.5)
@@ -488,11 +496,17 @@ def save_comparison_txt(batch_data, curriculum_data, output_path):
                         f"{fmt_pct_or_na(b_cr):<12} {fmt_pct_or_na(c_cr):<12} {winner:<12}\n")
 
         # Curriculum promotions
-        f.write(f"\nCurriculum Promotions:\n")
+        f.write("\nCurriculum Unlocks:\n")
         for promo in curriculum_data.get("curriculum_history", []):
-            f.write(f"  {promo['from']} -> {promo['to']} at "
-                    f"timestep {promo['timestep_at_promotion']:,} "
-                    f"(SR: {promo['success_rate_at_promotion']:.1%})\n")
+            timestep = _event_timestep(promo)
+            sr = _event_success_rate(promo)
+            if timestep is None or sr is None:
+                continue
+            f.write(
+                f"  {promo['from']} -> {promo['to']} at "
+                f"timestep {timestep:,} "
+                f"(SR: {sr:.1%})\n"
+            )
 
         # Wall-clock
         f.write(f"\nWall-Clock Time:\n")
