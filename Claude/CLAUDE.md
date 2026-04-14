@@ -2,21 +2,16 @@
 Role: PhD AI/ML Engineer 10+ yr R&D. Co-develop experimental master's thesis on MARL urban driving.
 Style: Surgical, empirical — every decision backed by run data or literature. No generic advice.
 
-Rules (non-negotiable):
-- Empirical data overrides literature defaults.
-- No invented citations.
-- Audit repo state before any change; surgical edits only (line numbers, not full rewrites).
-- Gate-based flow — freeze before arch changes; no fragmented diffs across messages.
-- MetaDrive results ≠ CARLA results (different sim/algo/obs space).
-- Never apply changes to repo without explicit confirmation. Always ask before generating files.
-- Token-efficient output: bullets/tables preferred, no redundant summaries.
+Rules:
+- Empirical data overrides literature defaults. No invented citations.
+- Audit repo before any change; surgical edits only (line numbers, not full rewrites).
+- Gate-based flow — freeze before arch changes.
+- MetaDrive results ≠ CARLA (different sim/algo/obs).
+- Never apply repo changes without explicit confirmation.
+- Token-efficient: tables > prose, no redundant summaries.
 </system_directives>
 
-<research_question>
-Does curriculum learning produce measurably different agent behavior than batch/mixed training in MARL urban driving? (CARLA 0.9.16, MAPPO, 3V+3P)
-</research_question>
-
----
+<research_question>Does curriculum learning produce measurably different agent behavior than batch/mixed training in MARL urban driving? (CARLA 0.9.16, MAPPO, 3V+3P)</research_question>
 
 <stack>
 
@@ -25,236 +20,185 @@ Does curriculum learning produce measurably different agent behavior than batch/
 | Sim | CARLA 0.9.16 |
 | Algo | MAPPO CTDE, Ray/RLlib 2.10.0 |
 | Policies | `vehicle_policy` 25D · `pedestrian_policy` 19D |
-| Critic | Fixed-slot 138D (3×25 + 3×19 + 6 alive_mask), PopArt=off |
-| Agents | 3V + 3P, fixed map Town03 (Design B rev v2) |
+| Critic | Fixed-slot 138D (3×25+3×19+6 alive_mask), PopArt=off |
+| Agents | 3V+3P, Town03 fixed (Design B rev v2) |
 | Framework | PyTorch 2.7+cu126, PettingZoo, Python 3.11.9 |
-| HW local | RTX 3080 Laptop 8 GB VRAM / 16 GB RAM, Windows 11 |
-| HW cloud | A100 agosto, Vast.ai/RunPod, budget 150–300 € |
-| Repo | `traffic-rl-curriculum-vs-mixedbatch` (GitHub) |
-| Target | Laurea novembre 2026 |
+| HW | RTX 3080 Laptop 8GB/16GB Win11 · A100 cloud agosto (150–300€) |
+| Repo | `traffic-rl-curriculum-vs-mixedbatch` |
+| Target | Novembre 2026 |
 
 </stack>
-
----
 
 <repo_structure>
 
 ```
 carla_core/
-  agents/centralized_critic.py           # CentralizedCriticModel + Callbacks + PopArt + NaN clamp (Bug3)
-  envs/carla_multi_agent_env.py          # PettingZoo ParallelEnv 3V+3P + set_level + F1 + Bug4 + Bug6
-  envs/route_planner.py                  # Block 5.1: CARLARoutePlanner (A* GRP)
-  training/train_carla_mappo.py          # Training loop + level wiring (5.4) + Bug5 + level_criteria
-  training/evaluate_carla_mappo.py       # Final eval via subprocess isolation per episode
-  training/curriculum_batch_manager.py   # Block 5.3: EpisodeTracker + CurriculumManager + BatchLevelSampler
-  training/mappo_runtime.py              # Shared builder (train + eval)
-  configs/train_mappo.yaml               # G2 baseline hyperparams (v8) — DO NOT MODIFY
-  configs/multi_agent.yaml
-  configs/levels.yaml                    # Design B rev v2: route-reduced (30/80/150m), Town03 fixed, test=Town05
-  configs/curriculum_batch.yaml          # promotion/replay/batch config, level_criteria per-level
-  configs/eval.yaml                      # reload_world: false, subprocess_timeout: 600s (fix applied)
-  scripts/{test_mappo_pipeline.py,compare_results_carla.py}
-metadrive_prototype/                     # Archive — results NOT comparable with CARLA runs
+  agents/centralized_critic.py           # Model + AttentionCriticEncoder(4.4) + Callbacks + PopArt + NaN clamp
+  envs/carla_multi_agent_env.py          # PettingZoo ParallelEnv + set_level + Bug4/Bug6 fixes
+  envs/route_planner.py                  # CARLARoutePlanner (A* GRP)
+  training/train_carla_mappo.py          # Training loop + --use-attention CLI
+  training/evaluate_carla_mappo.py       # Subprocess-isolated eval
+  training/curriculum_batch_manager.py   # EpisodeTracker + CurriculumManager + BatchLevelSampler
+  training/mappo_runtime.py              # Shared builder, cc_config propagation
+  configs/train_mappo.yaml               # G2 hyperparams (IMMUTABLE) + attention config
+  configs/levels.yaml                    # Design B rev v2
+  configs/curriculum_batch.yaml          # Promotion/replay/batch config
+  configs/eval.yaml                      # reload_world:false, timeout:600s
+  scripts/visualize_mappo_agent.py       # Own cc_config with attention keys
+metadrive_prototype/                     # Archive — NOT comparable
 ```
 
 </repo_structure>
 
----
+<frozen_config>
 
-<hyperparams>
-
-**G2 baseline (v8)** — `train_mappo.yaml` — IMMUTABLE (frozen at tag `g2-freeze-mlp`):
-
+**G2 baseline (v8)** — `train_mappo.yaml` — IMMUTABLE:
 ```yaml
-lr: 0.0005        entropy_coeff: 0.03   num_sgd_iter: 15    train_batch_size: 8000
-sgd_minibatch_size: 256   clip_param: 0.2   grad_clip: 0.5   vf_clip_param: 10.0
-use_kl_loss: true   kl_target: 0.02   kl_coeff: 0.3   gamma: 0.99   gae_lambda: 0.95
+lr: 0.0005  entropy_coeff: 0.03  num_sgd_iter: 15  train_batch_size: 8000
+sgd_minibatch_size: 256  clip_param: 0.2  grad_clip: 0.5  vf_clip_param: 10.0
+use_kl_loss: true  kl_target: 0.02  kl_coeff: 0.3  gamma: 0.99  gae_lambda: 0.95
 ```
 
-**Curriculum config** (v4, `curriculum_batch.yaml`):
+**Curriculum** (v4): SR≥0.45, CR≤0.30, min_ep=50, replay=0.05, window=50. Easy min_ts=500K, Medium min_ts=1.5M.
+**Batch**: K=3 stratified shuffle, seed=42.
 
-```yaml
-promotion_threshold: 0.45   collision_threshold: 0.30   min_episodes: 50
-replay_ratio: 0.05           window_size: 50
-level_criteria:
-  easy:   min_timesteps: 500000
-  medium: min_timesteps: 1500000
+**Design B rev v2** — FROZEN:
+
+| Level | Map | NPC | route_m V/P |
+|-------|-----|-----|-------------|
+| Easy | Town03 | 5V+10P | 30/15 |
+| Medium | Town03 | 15V+30P | 80/35 |
+| Hard | Town03 | 30V+60P | 150/60 |
+| Test (eval) | Town05 | 15V+30P | 120/50 |
+
+</frozen_config>
+
+<attention_critic>
+
+Block 4.4 — `AttentionCriticEncoder` in `centralized_critic.py`.
+Config: `use_attention: false` (default), `embed_dim: 64`, `heads: 4`.
+Activate via `--use-attention` CLI on `train_carla_mappo.py`.
+Propagation: `train_mappo.yaml` → `mappo_runtime.cc_config` → both policies. `visualize_mappo_agent.py` has own local cc_config.
+
+```
+138D → split [v0_25|v1_25|v2_25|p0_19|p1_19|p2_19|mask_6]
+  → per-type Linear(obs→64) → MHA(64, 4 heads, key_padding_mask=alive)
+  → masked mean-pool → Linear(64,256)+Tanh → critic_head → value
 ```
 
-**Batch config**: K=3 stratified shuffle, seed=42.
+With `false`: `critic_attention=None`, MLP path identical to G2. Zero regression.
+Ref: Iqbal & Sha 2019 (MAAC, ICML).
 
-</hyperparams>
-
----
-
-<design_freeze>
-
-**Design B revised v2** — FROZEN:
-
-| Level | Map | NPC | route_m (V) | route_m (P) |
-|-------|-----|-----|-------------|-------------|
-| Easy | Town03 | 5V+10P | 30 | 15 |
-| Medium | Town03 | 15V+30P | 80 | 35 |
-| Hard | Town03 | 30V+60P | 150 | 60 |
-| Test (eval only) | Town05 | 15V+30P | 120 | 50 |
-
-Note: test map = **Town05** (not Town02/Town10 — confirmed in `levels.yaml` and eval JSONs).
-
-**Attention critic**: secondary contribution (MLP G2 = anchor). **GNN**: optional Phase 3 agosto.
-
-</design_freeze>
-
----
+</attention_critic>
 
 <gates>
 
 | Gate | Status | Artifact |
 |------|--------|----------|
-| G1 | PASS | CARLA install, smoke test, RLlib setup |
-| G2 | PASS | Tag: `g2-freeze-mlp`, checkpoint `baseline_mlp_g2/` |
+| G1 | PASS | CARLA+RLlib setup |
+| G2 | PASS | `g2-freeze-mlp` tag, `baseline_mlp_g2/` |
 
 </gates>
-
----
 
 <completed>
 
 | Block | What |
 |-------|------|
-| 0–4.3 | Docstrings, infos side-channel, callbacks, fixed-slot 138D, PopArt stub, V=25D, P=19D |
-| Bug2 | `_terminated_agent_infos` fix — route completion underreporting |
-| G2 | Run11 1M steps PASS, checkpoint frozen |
+| 0–4.3 | Infos, callbacks, 138D critic, PopArt stub, obs spaces |
+| Bug2–Bug6 | All fixed (agent_infos, NaN clamp, path_eff, level_timesteps, stuck) |
 | 5.1–5.4 | Route planner, levels, curriculum/batch manager, training wiring |
-| Fix T1/F1 | Test agent_order, reset cleanup traffic |
-| Bug3 | NaN clamp on logits+value in `forward()` |
-| Bug4 | `reset()` path_eff fields init order |
-| Bug5 | `level_timesteps=0` root cause — zero promotions in R1 1.5M |
-| Bug6 | `path_efficiency` stuck=1.0 → `if stuck: path_eff = 0.0` |
-| Design B rev | Town03 fixed, route-reduced (30/80/150m) |
-| Finetuning v3/v4 | `level_criteria` per-level, promotion SR≥0.45 / CR≤0.30 |
-| eval.yaml fix | `reload_world: false`, `subprocess_timeout: 600s` |
-| **R3** | Curriculum 3M — COMPLETED + EVALUATED (reached Hard) |
-| **R3-batch** | Batch 3M — COMPLETED + EVALUATED |
+| Fix T1/F1 | agent_order test, reset cleanup |
+| Design B rev | Town03 fixed, routes 30/80/150m |
+| Finetuning v3/v4 | level_criteria, promotion thresholds |
+| eval.yaml fix | reload_world:false, timeout:600s |
+| Block 4.4 | Attention critic + CLI + config propagation (5 files) |
 
 </completed>
 
----
-
 <run_history>
 
-| Run | Mode | Budget | Status | Notes |
-|-----|------|--------|--------|-------|
-| R1 | Curriculum | 1.5M | Done | Bug5 blocked promotion; old routes — NOT comparable |
-| R2 | Batch | 1M | Done | Old routes — NOT comparable with R3+ |
-| **R3** | **Curriculum** | **3M** | **COMPLETED + EVALUATED** | Bug5 fixed, routes reduced; reached Hard |
-| **R3-batch** | **Batch** | **3M** | **COMPLETED + EVALUATED** | Same config as R3 |
+| Run | Mode | Budget | Status | Key |
+|-----|------|--------|--------|-----|
+| **R4** | **Curriculum** | **3M** | **DONE+EVAL** | Reached Hard |
+| **R3** | **Batch** | **3M** | **DONE+EVAL** | Same config |
+
+Prior runs (R1 curriculum 1.5M, R2 batch 1M): obsolete — Bug5/old routes, not comparable.
 
 </run_history>
 
----
-
 <eval_results>
 
-Eval protocol: 25 ep/level, subprocess isolation, `reload_world: false`, `subprocess_timeout: 600s`.
-Eval output dir: `carla_core/results/eval/`.
+Protocol: 25 ep/level, subprocess isolation, reload_world:false.
 
-**R3-batch — Batch (eval 20260410_095446)**
-
-| Level | SR | CR | Stuck | Offroad | RC | PathEff |
-|-------|----|----|-------|---------|-----|---------|
-| Easy (Town03) | **0.500** | 0.073 | 0.353 | 0.073 | 0.564 | 0.492 |
-| Medium (Town03) | **0.387** | 0.053 | 0.393 | 0.167 | 0.544 | 0.495 |
-| Hard (Town03) | **0.313** | 0.087 | 0.420 | 0.173 | 0.583 | 0.475 |
-| Test (Town05) | **0.333** | 0.107 | 0.533 | 0.013 | 0.542 | 0.424 |
-
-**R3 — Curriculum (eval 20260408_130010)**
+**Batch (R3)**
 
 | Level | SR | CR | Stuck | Offroad | RC | PathEff |
 |-------|----|----|-------|---------|-----|---------|
-| Easy (Town03) | **0.413** | 0.080 | 0.420 | 0.000 | 0.600 | 0.489 |
-| Medium (Town03) | **0.340** | 0.000 | 0.627 | 0.013 | 0.515 | 0.327 |
-| Hard (Town03) | **0.360** | 0.020 | 0.533 | 0.067 | 0.517 | 0.418 |
-| Test (Town05) | **0.007** | 0.080 | 0.820 | 0.053 | 0.424 | 0.125 |
+| Easy | 0.500 | 0.073 | 0.353 | 0.073 | 0.564 | 0.492 |
+| Medium | 0.387 | 0.053 | 0.393 | 0.167 | 0.544 | 0.495 |
+| Hard | 0.313 | 0.087 | 0.420 | 0.173 | 0.583 | 0.475 |
+| Test (Town05) | 0.333 | 0.107 | 0.533 | 0.013 | 0.542 | 0.424 |
 
-**Key observation**: Curriculum generalizes to unseen map (Town05 SR=0.333 vs Batch SR=0.007). Batch has lower CR on Medium/Hard (0.0 vs 0.053/0.087) but catastrophic test generalization failure. Aggregate reward not comparable (cross-level distribution differs).
+**Curriculum (R4)**
 
-**Eval log**:
+| Level | SR | CR | Stuck | Offroad | RC | PathEff |
+|-------|----|----|-------|---------|-----|---------|
+| Easy | 0.520 | 0.059 | 0.373 | 0.000 | 0.619 | 0.494 |
+| Medium | 0.366 | 0.093 | 0.513 | 0.020 | 0.540 | 0.420 |
+| Hard | 0.440 | 0.173 | 0.350 | 0.020 | 0.580 | 0.581 |
+| Test (Town05) | 0.333 | 0.060 | 0.546 | 0.040 | 0.490 | 0.374 |
 
-| # | Type | Budget | Mode | Result |
-|---|------|--------|------|--------|
-| 1–2 | Smoke | 36K | Both | PASS |
-| 3–4 | Test | 102K | Both | PASS |
-| 5 | R3 curriculum | 102K | Curriculum | PASS (stall ep9 fixed: non-det `reload_world` race condition) |
-| 6 | R3-batch | 102K | Batch | PASS |
+Key: Batch and Curriculum generalizes (Town05 SR=0.333 vs 0.333)
+Better General Points for Curriculum.
+Plotting Results.
+Conclusion: Validation that curriculum > batch.
 
 </eval_results>
 
----
-
 <next_steps>
 
-**Priority 1 — Block 4.4: Attention Critic** (CURRENT NEXT)
-- Inputs: G2 MLP checkpoint `baseline_mlp_g2/`, fixed-slot 138D critic, centralized_critic.py
-- Deliverable: attention-based critic replacing MLP critic; same 138D input contract
-- Gate: train short pilot run, verify no NaN, compare V-loss vs MLP G2 baseline
-- Dependency: none (G2 ✓)
+**R5/R6 — Attention Runs** (NEXT):
+```bash
+python -m carla_core.training.train_carla_mappo --mode curriculum --timesteps 3000000 --use-attention  # R5
+python -m carla_core.training.train_carla_mappo --mode batch --timesteps 3000000 --use-attention      # R6
+```
+Gate: no NaN in 50K, compare V-loss vs R3/R4.
 
-**Priority 2 — R4/R5: Attention Runs**
-- Curriculum + Batch with attention critic; same 3M budget as R3/R3-batch
-- Dep: Block 4.4 ✓
-
-**Priority 3 — Block 5.0: GNN encoder**
-- Dep: R4/R5 ✓
-
-**Priority 4 — R6/R7: GNN encoder Runs**
-- Curriculum + Batch with GNN encoder; same 3M budget as R3/R3-batch
-- Dep: Block 5.0 ✓
-
-**Pending (non-blocking)**:
-- Dockerfile (`dock`)
-- `compare_results_carla.py` — full R3 vs R3-batch comparison plots
+**Then**: GNN → R7/R8 → Dockerfile → multi-seed (≥5,cluster) → compare_results_carla.py all final plots for comparison (MLP,MLP+Attention,GNN) → Write
+thesis (Sept).
 
 </next_steps>
 
----
+<constraints>
 
-<carla_constraints>
+CARLA runtime — do not relax:
+- `terminate_on_collision: true` (false → NaN)
+- `world.tick(10.0)` (deadlock prevention)
+- `sensor.stop()` before `destroy()`
+- NO `load_world`/`reload_world` same-map (stall/SIGABRT)
+- Bug3 NaN clamp in `forward()` must remain
+- Bug5: `num_env_steps_sampled_this_iter` for `level_timesteps`
+- Bug6: stuck → `path_eff = 0.0`
 
-Critical — do not remove or relax:
-- `terminate_on_collision: true` — false → NaN in value estimates
-- `world.tick(10.0)` — timeout arg prevents sync deadlock
-- `sensor.stop()` before `sensor.destroy()`
-- **NO `load_world` / `reload_world` same-map** — non-deterministic stall/SIGABRT (CARLA 0.9.16 Windows). `env.reset()` + F1 handles cleanup.
-- `_switch_map()` for cross-map eval only, under subprocess isolation
-- Bug3: NaN clamp on logits+value MUST remain in `forward()` — distribution shift from level transitions
-- Bug5: use `num_env_steps_sampled_this_iter` (not fallback) for `level_timesteps`
-- Bug6: `if termination_reason == "stuck": path_eff = 0.0` — post-termination, pre-agent_info
-
-</carla_constraints>
-
----
+</constraints>
 
 <learnings>
 
-- **Bug5**: dominant R1 blocker was plumbing (zero promotions), not convergence failure
-- **Bug6**: degenerate path_eff=1.0 for low-displacement stuck agents → forced 0.0
-- **`reload_world` stall**: non-deterministic (~0.2–0.5% per call). 4 test runs (408 calls) passed; stalled at call ~9 of 5th run. Root cause: libcarla C++ actor teardown race. Fix: eliminate the call.
-- **Batch vs curriculum reward**: not comparable as aggregate — different level sampling distributions
-- **Route reduction**: 50m→30m critical for Easy vehicle convergence
-- **Pedestrian converges faster**: simpler dynamics; Easy pedestrian completions inflate batch aggregate reward
-- **Test generalization gap**: Curriculum SR_test=0.333 vs Batch SR_test=0.007 — largest behavioral difference observed between training modes
+- Bug5: R1 blocker was plumbing (zero promotions), not convergence
+- `reload_world`: ~0.2–0.5%/call stall, libcarla teardown race — eliminated
+- Batch vs curriculum reward not comparable as aggregate
+- Route 50→30m critical for Easy vehicle convergence
+- Pedestrian converges faster; inflates batch aggregate reward
+- Generalization gap: Batch SR_test=0.333 vs Curriculum 0.007
 
 </learnings>
-
----
 
 <audit_log>
 
 | Date | Scope | Result |
 |------|-------|--------|
-| 08 Apr | Full repo: Bug2–Bug6, F1, T1, config↔code | ALL PASS |
-| 09 Apr | Eval stall ep9/102 | Root cause: non-det `reload_world` race condition |
-| 10 Apr | R3 + R3-batch eval completed | Both PASS; eval JSONs in `carla_core/results/eval/` |
-| 11 Apr | CLAUDE.md update | Fixed Test map (Town05), replay_ratio (0.05), added eval metrics |
+| 08 Apr | Full repo Bug2–Bug6, config↔code | PASS |
+| 10 Apr | R3 + R3-batch eval | PASS |
+| 14 Apr | Block 4.4 applied, 5 files | TOTEST |
 
 </audit_log>
