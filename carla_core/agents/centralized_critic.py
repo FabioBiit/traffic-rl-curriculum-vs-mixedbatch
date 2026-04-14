@@ -25,6 +25,11 @@ PopArt (Block 4.2):
 Struttura reti:
   Actor MLP:  obs_dim → 256 → 256 → action_logits
   Critic MLP: global_obs_dim → 256 → 256 → 1 (value, PopArt-normalized)
+  Critic Attention (Block 4.4, use_attention=True):
+    global_obs → split per-agent slots → per-type linear projection (→ embed_dim)
+    → MultiHeadAttention (alive_mask as key_padding_mask) → masked mean-pool
+    → hidden → 1 (value, PopArt-normalized)
+    Reference: Iqbal & Sha 2019 (MAAC, ICML) — attention only on critic (CTDE).
 """
 
 import logging
@@ -213,6 +218,104 @@ class PopArtLayer(nn.Module):
             (old_mu - self.mu) / self.sigma.clamp(min=1e-6)
         )
 
+# ---------------------------------------------------------------------------
+# Attention Critic Encoder (Block 4.4)
+# ---------------------------------------------------------------------------
+
+class AttentionCriticEncoder(nn.Module):
+    """Encode global_obs via per-agent slot attention for centralized critic.
+
+    Splits the flat global_obs into per-agent slots using known dims,
+    projects each slot to a shared embedding space, applies multi-head
+    self-attention with alive_mask, and mean-pools attended tokens.
+
+    Reference: Iqbal & Sha 2019 (MAAC, ICML).
+
+    Args:
+        agent_order: canonical list of agent IDs (e.g. [v0, v1, v2, p0, p1, p2])
+        slot_obs_dims: dict mapping agent type prefix to obs dim
+        embed_dim: per-agent embedding dimension (default 64)
+        num_heads: number of attention heads (default 4)
+    """
+
+    def __init__(
+        self,
+        agent_order: List[str],
+        slot_obs_dims: dict,
+        embed_dim: int = 64,
+        num_heads: int = 4,
+    ):
+        super().__init__()
+        self._agent_order = list(agent_order)
+        self._slot_obs_dims = dict(slot_obs_dims)
+        self._embed_dim = embed_dim
+        self._n_agents = len(agent_order)
+
+        self._type_projectors = nn.ModuleDict()
+        for agent_id in agent_order:
+            type_key = self._type_key(agent_id)
+            if type_key not in self._type_projectors:
+                obs_dim = self._resolve_slot_dim(agent_id)
+                self._type_projectors[type_key] = nn.Linear(obs_dim, embed_dim)
+
+        self._slot_dims = [self._resolve_slot_dim(aid) for aid in agent_order]
+        self._split_sizes = self._slot_dims + [self._n_agents]
+
+        self.attention = nn.MultiheadAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            batch_first=True,
+        )
+
+        total_expected = sum(self._split_sizes)
+        logger.info(
+            f"AttentionCriticEncoder: {self._n_agents} agents, "
+            f"embed_dim={embed_dim}, heads={num_heads}, "
+            f"split_sizes={self._split_sizes}, total_input={total_expected}D"
+        )
+
+    @staticmethod
+    def _type_key(agent_id: str) -> str:
+        if agent_id.startswith("vehicle"):
+            return "vehicle"
+        elif agent_id.startswith("pedestrian"):
+            return "pedestrian"
+        return "other"
+
+    def _resolve_slot_dim(self, agent_id: str) -> int:
+        type_key = self._type_key(agent_id)
+        if type_key in self._slot_obs_dims:
+            return int(self._slot_obs_dims[type_key])
+        raise ValueError(f"No slot dim for agent type '{type_key}' (agent_id={agent_id})")
+
+    def forward(self, global_obs: torch.Tensor) -> torch.Tensor:
+        """(batch, global_obs_dim) → (batch, embed_dim) attended + mean-pooled."""
+        parts = global_obs.split(self._split_sizes, dim=-1)
+        slot_tensors = parts[:self._n_agents]
+        alive_mask_raw = parts[self._n_agents]
+
+        embeddings = []
+        for i, agent_id in enumerate(self._agent_order):
+            type_key = self._type_key(agent_id)
+            proj = self._type_projectors[type_key](slot_tensors[i])
+            embeddings.append(proj)
+
+        tokens = torch.stack(embeddings, dim=1)
+
+        key_padding_mask = (alive_mask_raw < 0.5)
+        all_masked = key_padding_mask.all(dim=1)
+        if all_masked.any():
+            key_padding_mask[all_masked] = False
+
+        attended, _ = self.attention(
+            tokens, tokens, tokens,
+            key_padding_mask=key_padding_mask,
+        )
+
+        alive_weights = (~key_padding_mask).float().unsqueeze(-1)
+        pooled = (attended * alive_weights).sum(dim=1) / alive_weights.sum(dim=1).clamp(min=1.0)
+
+        return pooled
 
 # ---------------------------------------------------------------------------
 # Model
@@ -253,6 +356,9 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         self._slot_obs_dims = dict(custom.get("slot_obs_dims", {}))
         self._use_popart = bool(custom.get("use_popart", False))
         popart_beta = float(custom.get("popart_beta", 3e-4))
+        self._use_attention = bool(custom.get("use_attention", False))
+        attention_embed_dim = int(custom.get("attention_embed_dim", 64))
+        attention_heads = int(custom.get("attention_heads", 4))
 
         local_obs_dim = int(np.prod(obs_space.shape))
 
@@ -265,13 +371,30 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         actor_layers.append(nn.Linear(in_dim, num_outputs))
         self.actor = nn.Sequential(*actor_layers)
 
-        # Critic: global obs → hidden representation
-        critic_hidden_layers = []
-        in_dim = self._global_obs_dim
-        for _ in range(n_layers):
-            critic_hidden_layers.extend([nn.Linear(in_dim, hidden), nn.Tanh()])
-            in_dim = hidden
-        self.critic_hidden = nn.Sequential(*critic_hidden_layers)
+        # Critic encoder: MLP (default) or Attention (Block 4.4)
+        if self._use_attention:
+            if not self._agent_order or not self._slot_obs_dims:
+                raise ValueError(
+                    "use_attention=True requires agent_order and slot_obs_dims"
+                )
+            self.critic_attention = AttentionCriticEncoder(
+                agent_order=self._agent_order,
+                slot_obs_dims=self._slot_obs_dims,
+                embed_dim=attention_embed_dim,
+                num_heads=attention_heads,
+            )
+            self.critic_hidden = nn.Sequential(
+                nn.Linear(attention_embed_dim, hidden),
+                nn.Tanh(),
+            )
+        else:
+            self.critic_attention = None
+            critic_hidden_layers = []
+            in_dim = self._global_obs_dim
+            for _ in range(n_layers):
+                critic_hidden_layers.extend([nn.Linear(in_dim, hidden), nn.Tanh()])
+                in_dim = hidden
+            self.critic_hidden = nn.Sequential(*critic_hidden_layers)
 
         # Critic output: either PopArt or plain Linear
         if self._use_popart:
@@ -288,6 +411,7 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
             f"critic {self._global_obs_dim}->1, "
             f"hidden={hidden}x{n_layers}, "
             f"popart={self._use_popart}, "
+            f"attention={self._use_attention}, "
             f"agent_order={len(self._agent_order) if self._agent_order else 'dynamic'}"
         )
 
@@ -319,7 +443,11 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
 
         _raise_on_nonfinite_torch("global_obs", global_obs)
 
-        critic_features = self.critic_hidden(global_obs)
+        if self.critic_attention is not None:
+            attended = self.critic_attention(global_obs)
+            critic_features = self.critic_hidden(attended)
+        else:
+            critic_features = self.critic_hidden(global_obs)
         normalized_value = self.critic_head(critic_features).squeeze(-1)
 
         # Denormalize if PopArt is enabled
@@ -350,7 +478,12 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
 
         Used by callbacks for VF recomputation (bypasses actor).
         """
-        features = self.critic_hidden(global_obs)
+        
+        if self.critic_attention is not None:
+            attended = self.critic_attention(global_obs)
+            features = self.critic_hidden(attended)
+        else:
+            features = self.critic_hidden(global_obs)
         normalized = self.critic_head(features).squeeze(-1)
         if self._use_popart and isinstance(self.critic_head, PopArtLayer):
             return self.critic_head.denormalize(normalized.unsqueeze(-1)).squeeze(-1)

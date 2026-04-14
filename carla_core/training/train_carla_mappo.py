@@ -752,6 +752,8 @@ def main():
     parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--train-config", type=str, default=None)
     parser.add_argument("--env-config", type=str, default=None)
+    parser.add_argument("--use-attention", action="store_true",
+                        help="Override model.use_attention=true (Block 4.4)")
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -760,6 +762,10 @@ def main():
     train_cfg = load_yaml(args.train_config or base / "configs" / "train_mappo.yaml")
     env_cfg = load_yaml(args.env_config or base / "configs" / "multi_agent.yaml")
     eval_cfg = load_yaml(base / "configs" / "eval.yaml")
+
+    if args.use_attention:
+        train_cfg.setdefault("model", {})["use_attention"] = True
+        logger.info("CLI override: use_attention=True (Block 4.4)")
 
     sched = train_cfg.get("schedule", {})
     res = train_cfg.get("resources", {})
