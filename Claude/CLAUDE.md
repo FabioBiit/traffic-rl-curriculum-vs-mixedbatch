@@ -91,6 +91,14 @@ Ref: Iqbal & Sha 2019 (MAAC, ICML).
 
 </attention_critic>
 
+<attention_status>
+
+The testing/finetuning branch `CARLA/MLP-AttentionCritic` has been removed.
+Its results were inconclusive.
+Do not treat attention-critic finetuning as an active thesis gate or as supporting evidence.
+
+</attention_status>
+
 <gates>
 
 | Gate | Status | Artifact |
@@ -157,15 +165,11 @@ Conclusion: Validation that curriculum > batch.
 
 <next_steps>
 
-**R5/R6 — Attention Runs** (NEXT):
-```bash
-python -m carla_core.training.train_carla_mappo --mode curriculum --timesteps 3000000 --use-attention  # R5
-python -m carla_core.training.train_carla_mappo --mode batch --timesteps 3000000 --use-attention      # R6
-```
-Gate: no NaN in 50K, compare V-loss vs R3/R4.
-
-**Then**: GNN → R7/R8 → Dockerfile → multi-seed (≥5,cluster) → compare_results_carla.py all final plots for comparison (MLP,MLP+Attention,GNN) → Write
-thesis (Sept).
+- Compare strong batch vs budget-normalized curriculum on matched budget.
+- Prioritize final eval artifacts over aggregate training reward.
+- Defer GNN/graph critic work until the MLP thesis comparison is fully closed.
+- Run multi-seed only after single-run behavior is coherent.
+- Keep plotting/reporting focused on retained experimental lines.
 
 </next_steps>
 
@@ -189,7 +193,7 @@ CARLA runtime — do not relax:
 - Batch vs curriculum reward not comparable as aggregate
 - Route 50→30m critical for Easy vehicle convergence
 - Pedestrian converges faster; inflates batch aggregate reward
-- Generalization gap: Batch SR_test=0.333 vs Curriculum 0.007
+- Attention-critic testing on deleted branch `CARLA/MLP-AttentionCritic` was inconclusive and must not be used as evidence.
 
 </learnings>
 

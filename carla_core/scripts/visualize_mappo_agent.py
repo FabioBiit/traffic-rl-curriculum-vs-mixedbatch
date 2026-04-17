@@ -453,6 +453,10 @@ def _run_visualization_worker(payload):
                 entropy_coeff=opt.get("entropy_coeff", 0.01),
                 vf_loss_coeff=opt.get("vf_loss_coeff", 0.5),
                 grad_clip=opt.get("grad_clip", 0.5),
+                vf_clip_param=opt.get("vf_clip_param", 10.0),
+                use_kl_loss=opt.get("use_kl_loss", True),
+                kl_target=opt.get("kl_target", 0.02),
+                kl_coeff=opt.get("kl_coeff", 0.3),
             )
             .framework("torch")
         )

@@ -11,7 +11,7 @@ Do not invent empirical facts, citations, or implementation details.
 </mission>
 
 ### REPO STATE
-<repo_state date="2026-04-11">
+<repo_state date="2026-04-17">
 - Branch observed during the latest curriculum evo: `evo/curriculum_logic`
 - Simulator: `CARLA 0.9.16`
 - Algorithm: `MAPPO (CTDE)` with `Ray/RLlib 2.10.0`
@@ -24,6 +24,8 @@ Do not invent empirical facts, citations, or implementation details.
   - `carla_core/training/curriculum_batch_manager.py`
   - `carla_core/training/train_carla_mappo.py`
   - `carla_core/configs/curriculum_batch.yaml`
+- The testing/finetuning branch `CARLA/MLP-AttentionCritic` has been removed.
+- Its results were inconclusive and must not be treated as current evidence or an active next gate.
 </repo_state>
 
 ### RESEARCH QUESTION
@@ -98,6 +100,7 @@ Does curriculum learning (`easy -> medium -> hard`) produce behavior measurably 
 - It is not empirically proven that `easy` was under-allocated.
 - The cumulative training `SR/CR` metric is global under the visited teacher distribution and is not a pure estimate of final hard competence or holdout performance.
 - The current share and weight defaults are implementation priors, not yet proven optimum settings.
+- Attention-critic finetuning from deleted branch `CARLA/MLP-AttentionCritic` is inconclusive and excluded from thesis claims.
 </empirical_facts>
 
 ### WORKING STYLE
@@ -178,4 +181,5 @@ Does curriculum learning (`easy -> medium -> hard`) produce behavior measurably 
   - cumulative training diagnostics
   - final eval on `easy`, `medium`, `hard`, and `test`
 - Tune shares or weights only from repo evidence, not intuition.
+- Do not prioritize attention-critic finetuning as a current research gate.
 </next_gates>

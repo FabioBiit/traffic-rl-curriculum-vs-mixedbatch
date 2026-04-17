@@ -39,7 +39,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
-from ray.rllib.evaluation.postprocessing import compute_advantages
+from ray.rllib.evaluation.postprocessing import Postprocessing, compute_advantages
 from ray.rllib.models.modelv2 import ModelV2
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.policy.sample_batch import SampleBatch
@@ -184,12 +184,20 @@ class PopArtLayer(nn.Module):
         Args:
             targets: raw (unnormalized) value targets from GAE computation.
         """
-        targets = targets.detach().float()
+        targets = targets.detach().float().reshape(-1)
+        finite_mask = torch.isfinite(targets)
+        if not finite_mask.all():
+            n_bad = (~finite_mask).sum().item()
+            logger.warning("PopArt.update skipping %d non-finite targets", n_bad)
+            targets = targets[finite_mask]
         if targets.numel() == 0:
             return
 
         new_mu = targets.mean()
-        new_sigma = targets.std().clamp(min=1e-6)
+        new_sigma = targets.std(unbiased=False).clamp(min=1e-6)
+        if not torch.isfinite(new_mu).item() or not torch.isfinite(new_sigma).item():
+            logger.warning("PopArt.update produced non-finite stats; skipping update")
+            return
 
         if self.count.item() == 0:
             # First update: initialize directly
@@ -201,10 +209,11 @@ class PopArtLayer(nn.Module):
         old_mu = self.mu.clone()
         old_sigma = self.sigma.clone()
 
-        # EMA update
-        self.mu.mul_(1 - self.beta).add_(new_mu * self.beta)
-        self.sigma.mul_(1 - self.beta).add_(new_sigma * self.beta)
-        self.count.add_(1)
+        updated_mu = old_mu * (1 - self.beta) + new_mu * self.beta
+        updated_sigma = old_sigma * (1 - self.beta) + new_sigma * self.beta
+        if not torch.isfinite(updated_mu).item() or not torch.isfinite(updated_sigma).item():
+            logger.warning("PopArt.update produced non-finite EMA stats; skipping update")
+            return
 
         # Art step: adjust W, b so that output is preserved
         # old: y = W @ x + b  → denorm: y * old_sigma + old_mu
@@ -212,11 +221,14 @@ class PopArtLayer(nn.Module):
         # We want: W' @ x * new_sigma + new_mu = W @ x * old_sigma + old_mu
         # => W' = W * (old_sigma / new_sigma)
         # => b' = (b * old_sigma + old_mu - new_mu) / new_sigma
-        ratio = old_sigma / self.sigma.clamp(min=1e-6)
+        ratio = old_sigma / updated_sigma.clamp(min=1e-6)
         self.linear.weight.data.mul_(ratio)
         self.linear.bias.data.mul_(ratio).add_(
-            (old_mu - self.mu) / self.sigma.clamp(min=1e-6)
+            (old_mu - updated_mu) / updated_sigma.clamp(min=1e-6)
         )
+        self.mu.copy_(updated_mu)
+        self.sigma.copy_(updated_sigma)
+        self.count.add_(1)
 
 # ---------------------------------------------------------------------------
 # Attention Critic Encoder (Block 4.4)
@@ -780,7 +792,7 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
 
         # --- PopArt: update statistics with value targets (Block 4.2) ---
         if model._use_popart and isinstance(model.critic_head, PopArtLayer):
-            value_targets = train_batch[SampleBatch.VALUE_TARGETS]
+            value_targets = train_batch[Postprocessing.VALUE_TARGETS]
             targets_t = torch.as_tensor(
                 value_targets, dtype=torch.float32, device=device
             )
