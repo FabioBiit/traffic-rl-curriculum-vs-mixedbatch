@@ -205,7 +205,11 @@ def _build_mappo_config(
         "popart_beta": model_cfg.get("popart_beta", 3e-4),
         "use_attention": model_cfg.get("use_attention", False),
         "attention_embed_dim": model_cfg.get("attention_embed_dim", 64),
-        "attention_heads": model_cfg.get("attention_heads", 4)
+        "attention_heads": model_cfg.get("attention_heads", 4),
+        "use_gnn": model_cfg.get("use_gnn", False),
+        "gnn_embed_dim": model_cfg.get("gnn_embed_dim", 64),
+        "gnn_heads": model_cfg.get("gnn_heads", 4),
+        "gnn_layers": model_cfg.get("gnn_layers", 2),
     }
     if enable_periodic_evaluation:
         raise NotImplementedError(
