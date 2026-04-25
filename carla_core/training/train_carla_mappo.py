@@ -801,6 +801,11 @@ def main():
     else:
         print("  Baseline mode: no level switching")
 
+    if level_manager is not None and current_training_level is not None:
+        raw_env = _unwrap_carla_env(algo)
+        if raw_env is not None:
+            raw_env.set_level(current_training_level)
+
     ts_done = 0
     iteration = 0
     t0 = time.time()
