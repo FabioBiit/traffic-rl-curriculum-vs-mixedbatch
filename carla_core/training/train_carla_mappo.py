@@ -28,7 +28,6 @@ import signal
 import subprocess
 import sys
 import time
-from collections import deque
 from copy import deepcopy
 from pathlib import Path
 
@@ -42,7 +41,6 @@ if sys.platform == "win32":
 import numpy as np
 import random
 import ray
-from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.env.wrappers.pettingzoo_env import ParallelPettingZooEnv
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
@@ -57,9 +55,9 @@ from carla_core.envs.carla_multi_agent_env import (
 )
 from carla_core.agents.centralized_critic import (
     CentralizedCriticModel,
-    CentralizedCriticCallbacks,
     compute_global_obs_dim_with_mask,
 )
+from carla_core.training.mappo_runtime import _build_mappo_config
 from carla_core.training.curriculum_batch_manager import (
     EpisodeTracker,
     CurriculumManager,
@@ -152,61 +150,6 @@ def _validate_final_eval_artifacts(*, checkpoint_path, out_dir):
     return issues
 
 
-def _append_episode_json(path, record):
-    """Append a JSON line to the episode log file.
-    With num_workers=0 (single CARLA instance), no lock is needed.
-    The file is opened/closed per-write for crash safety.
-    """
-    line = json.dumps(record, default=str) + "\n"
-    with open(path, "a") as f:
-        f.write(line)
-
-class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
-    """Extends CentralizedCriticCallbacks with episode-level JSON logging."""
-
-    def __init__(self):
-        super().__init__()
-        self._success_window = deque(maxlen=50)
-
-    def on_episode_end(self, *, worker, base_env, policies, episode,
-                       env_index=None, **kwargs):
-        # Let parent compute custom_metrics first
-        super().on_episode_end(
-            worker=worker, base_env=base_env, policies=policies,
-            episode=episode, env_index=env_index, **kwargs,
-        )
-        # Episode JSON logging
-        log_path = os.environ.get("MAPPO_EPISODE_LOG")
-        outcomes = episode.user_data.get("agent_outcomes", {})
-        if log_path:
-            for agent_id, out in outcomes.items():
-                policy_id = "vehicle_policy" if agent_id.startswith("vehicle") else "pedestrian_policy"
-                _append_episode_json(log_path, {
-                    "episode_id": episode.episode_id,
-                    "agent_id": agent_id,
-                    "policy": policy_id,
-                    "termination_reason": out["termination_reason"],
-                    "route_completion": round(out["route_completion"], 4),
-                    "path_efficiency": round(out["path_efficiency"], 4),
-                    "step_count": episode.length,
-                })
-
-        # Aggregate metrics (all agents, both policies)
-        all_reasons = [d["termination_reason"] for d in outcomes.values()]
-        n_total = len(all_reasons)
-        if n_total > 0:
-            success_rate = all_reasons.count("route_complete") / n_total
-            self._success_window.append(success_rate)
-            episode.custom_metrics["success_rate"] = success_rate
-            episode.custom_metrics["collision_rate"] = all_reasons.count("collision") / n_total
-            episode.custom_metrics["route_completion"] = float(
-                np.mean([d["route_completion"] for d in outcomes.values()])
-            )
-            episode.custom_metrics["window_success_rate"] = float(
-                np.mean(self._success_window)
-            )
-
-
 def load_yaml(path):
     p = Path(path)
     return yaml.safe_load(open(p)) if p.exists() else {}
@@ -240,15 +183,6 @@ def _unwrap_carla_env(algo):
     except Exception as e:
         logger.warning("Could not unwrap CARLA env: %s", e)
     return None
-
-
-def policy_mapping_fn(agent_id, episode=None, worker=None, **kwargs):
-    """vehicle_* -> vehicle_policy, pedestrian_* -> pedestrian_policy."""
-    if agent_id.startswith("vehicle"):
-        return "vehicle_policy"
-    elif agent_id.startswith("pedestrian"):
-        return "pedestrian_policy"
-    raise ValueError(f"Unknown agent_id: {agent_id}")
 
 
 def _sanitize_for_json(obj):
@@ -449,120 +383,6 @@ def _build_evaluation_payload(result):
         }
     }
 
-def _build_mappo_config(
-    *,
-    env_cfg,
-    train_cfg,
-    eval_cfg,
-    n_gpus,
-    n_workers,
-    exp_seed,
-    enable_periodic_evaluation,
-):
-    """Build the shared RLlib PPOConfig for training or final evaluation."""
-    import gymnasium as gym
-
-    roll = train_cfg.get("rollout", {})
-    opt = train_cfg.get("optimization", {})
-    model_cfg = train_cfg.get("model", {})
-    eval_section = eval_cfg.get("evaluation", {})
-
-    ag_cfg = env_cfg.get("agents", {})
-    n_veh = ag_cfg.get("n_vehicles_rl", 1)
-    n_ped = ag_cfg.get("n_pedestrians_rl", 1)
-    global_obs_dim = compute_global_obs_dim_with_mask(n_veh, n_ped)
-
-    veh_obs = gym.spaces.Box(-1, 1, (VEHICLE_OBS_DIM,), np.float32)
-    veh_act = gym.spaces.Box(
-        np.array([-1, -1], dtype=np.float32),
-        np.array([1, 1], dtype=np.float32),
-    )
-    ped_obs = gym.spaces.Box(-1, 1, (PEDESTRIAN_OBS_DIM,), np.float32)
-    ped_act = gym.spaces.Box(
-        np.array([0, -1], dtype=np.float32),
-        np.array([1, 1], dtype=np.float32),
-    )
-
-    hidden_size = model_cfg.get("hidden_size", 256)
-    n_hidden = model_cfg.get("n_hidden_layers", 2)
-    agent_order = [f"vehicle_{i}" for i in range(n_veh)] + [
-        f"pedestrian_{i}" for i in range(n_ped)
-    ]
-    cc_config = {
-        "hidden_size": hidden_size,
-        "n_hidden_layers": n_hidden,
-        "global_obs_dim": global_obs_dim,
-        "agent_order": agent_order,
-        "slot_obs_dims": {
-            "vehicle": VEHICLE_OBS_DIM,
-            "pedestrian": PEDESTRIAN_OBS_DIM,
-        },
-        "use_popart": model_cfg.get("use_popart", False),
-        "popart_beta": model_cfg.get("popart_beta", 3e-4),
-    }
-    if enable_periodic_evaluation:
-        raise NotImplementedError(
-            "Periodic RLlib evaluation is disabled in the CARLA multi-agent trainer. "
-            "Use the explicit final multi-scenario evaluation instead."
-        )
-    evaluation_interval = None
-
-    return (
-        PPOConfig()
-        .environment(env="CarlaMultiAgent-v0", env_config=env_cfg)
-        .debugging(seed=exp_seed)
-        .multi_agent(
-            policies={
-                "vehicle_policy": (
-                    None,
-                    veh_obs,
-                    veh_act,
-                    {"model": {"custom_model": "cc_model", "custom_model_config": cc_config}},
-                ),
-                "pedestrian_policy": (
-                    None,
-                    ped_obs,
-                    ped_act,
-                    {"model": {"custom_model": "cc_model", "custom_model_config": cc_config}},
-                ),
-            },
-            policy_mapping_fn=policy_mapping_fn,
-            policies_to_train=["vehicle_policy", "pedestrian_policy"],
-        )
-        .callbacks(MAPPOTrainingCallbacks)
-        .resources(num_gpus=n_gpus)
-        .rollouts(
-            num_rollout_workers=n_workers,
-            rollout_fragment_length=roll.get("rollout_fragment_length", 200),
-            batch_mode="complete_episodes",
-        )
-        .training(
-            train_batch_size=roll.get("train_batch_size", 4000),
-            sgd_minibatch_size=roll.get("sgd_minibatch_size", 256),
-            num_sgd_iter=roll.get("num_sgd_iter", 10),
-            lr=opt.get("lr", 3e-4),
-            gamma=opt.get("gamma", 0.99),
-            lambda_=opt.get("gae_lambda", 0.95),
-            clip_param=opt.get("clip_param", 0.2),
-            entropy_coeff=opt.get("entropy_coeff", 0.01),
-            vf_loss_coeff=opt.get("vf_loss_coeff", 0.5),
-            grad_clip=opt.get("grad_clip", 0.5),
-            vf_clip_param=opt.get("vf_clip_param", 10.0),
-            use_kl_loss=opt.get("use_kl_loss", True),
-            kl_target=opt.get("kl_target", 0.02),
-            kl_coeff=opt.get("kl_coeff", 0.3),
-        )
-        .evaluation(
-            evaluation_interval=evaluation_interval,
-            evaluation_duration=eval_section.get("episodes_per_map", 5),
-            evaluation_duration_unit="episodes",
-            evaluation_num_workers=0,
-            evaluation_config={"explore": not eval_section.get("deterministic_policy", True)},
-        )
-        .framework("torch")
-    )
-
-
 def _write_json_atomic(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -756,6 +576,9 @@ def main():
                         help="Override model.use_popart=true (Block 4.2)")
     parser.add_argument("--use-attention", action="store_true",
                         help="Override model.use_attention=true (Block 4.4)")
+    parser.add_argument("--use-gnn", action="store_true",
+                        help="Override model.use_gnn=true (Block 4.5). "
+                             "Combine with --use-attention -> GAT.")
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -771,6 +594,9 @@ def main():
     if args.use_attention:
         train_cfg.setdefault("model", {})["use_attention"] = True
         logger.info("CLI override: use_attention=True (Block 4.4)")
+    if args.use_gnn:
+        train_cfg.setdefault("model", {})["use_gnn"] = True
+        logger.info("CLI override: use_gnn=True (Block 4.5)")
 
     sched = train_cfg.get("schedule", {})
     res = train_cfg.get("resources", {})

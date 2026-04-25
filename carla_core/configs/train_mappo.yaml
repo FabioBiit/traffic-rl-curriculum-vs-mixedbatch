@@ -50,3 +50,7 @@ model:
   use_attention: false          # Enable Attention critic encoder (Block 4.4)
   attention_embed_dim: 64       # Per-agent embedding dim for attention critic
   attention_heads: 4            # Number of attention heads
+  use_gnn: false                # Enable GNN critic encoder (Block 4.5)
+  gnn_embed_dim: 64             # Per-agent embedding dim for GNN
+  gnn_heads: 4                  # Attention heads (only when use_gnn+use_attention -> GAT)
+  gnn_layers: 2                 # Number of GNN message-passing layers

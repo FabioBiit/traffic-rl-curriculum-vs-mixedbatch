@@ -330,6 +330,173 @@ class AttentionCriticEncoder(nn.Module):
         return pooled
 
 # ---------------------------------------------------------------------------
+# GNN Critic Encoder (Block 4.5)
+# ---------------------------------------------------------------------------
+
+class GraphConvLayer(nn.Module):
+    """GraphSAGE-style mean aggregation with separate self/neighbor weights.
+
+    h_i' = W_self h_i + W_neigh * mean_{j alive, j != i} h_j
+
+    Reference: Hamilton et al. 2017 (GraphSAGE, NeurIPS).
+    """
+
+    def __init__(self, in_dim: int, out_dim: int):
+        super().__init__()
+        self.w_self = nn.Linear(in_dim, out_dim)
+        self.w_neigh = nn.Linear(in_dim, out_dim)
+
+    def forward(self, x: torch.Tensor, alive: torch.Tensor) -> torch.Tensor:
+        # x: (B, N, D_in); alive: (B, N) with 1.0=alive, 0.0=dead
+        alive_exp = alive.unsqueeze(-1)
+        total = (x * alive_exp).sum(dim=1, keepdim=True)
+        neigh_sum = total - x * alive_exp
+        alive_count = alive_exp.sum(dim=1, keepdim=True) - alive_exp
+        neigh_mean = neigh_sum / alive_count.clamp(min=1.0)
+        return self.w_self(x) + self.w_neigh(neigh_mean)
+
+
+class GATLayer(nn.Module):
+    """Graph Attention layer (Veličković et al. 2018, ICLR), multi-head,
+    fully-connected graph with alive-mask over keys.
+
+    e_ij = LeakyReLU(a_src^T Wh_i + a_dst^T Wh_j)
+    alpha_ij = softmax_j(e_ij) over alive keys
+    h_i' = sum_j alpha_ij * W h_j  (concat heads when concat=True)
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        num_heads: int = 4,
+        concat: bool = True,
+    ):
+        super().__init__()
+        if concat and out_dim % num_heads != 0:
+            raise ValueError(
+                f"out_dim ({out_dim}) must be divisible by num_heads "
+                f"({num_heads}) when concat=True"
+            )
+        self.num_heads = num_heads
+        self.concat = concat
+        self.head_dim = out_dim // num_heads if concat else out_dim
+        self.w = nn.Linear(in_dim, num_heads * self.head_dim, bias=False)
+        self.a_src = nn.Parameter(torch.empty(num_heads, self.head_dim))
+        self.a_dst = nn.Parameter(torch.empty(num_heads, self.head_dim))
+        nn.init.xavier_uniform_(self.a_src)
+        nn.init.xavier_uniform_(self.a_dst)
+        self.leaky_relu = nn.LeakyReLU(0.2)
+
+    def forward(self, x: torch.Tensor, alive: torch.Tensor) -> torch.Tensor:
+        # x: (B, N, D_in); alive: (B, N)
+        B, N, _ = x.shape
+        h = self.w(x).view(B, N, self.num_heads, self.head_dim)
+        a_src = self.a_src.view(1, 1, self.num_heads, self.head_dim)
+        a_dst = self.a_dst.view(1, 1, self.num_heads, self.head_dim)
+        alpha_src = (h * a_src).sum(dim=-1)
+        alpha_dst = (h * a_dst).sum(dim=-1)
+        # e[b, i, j, head] = alpha_src[b, i, head] + alpha_dst[b, j, head]
+        e = alpha_src.unsqueeze(2) + alpha_dst.unsqueeze(1)
+        e = self.leaky_relu(e)
+        key_mask = alive.unsqueeze(1).unsqueeze(-1)
+        e = e.masked_fill(key_mask < 0.5, float("-inf"))
+        attn = torch.softmax(e, dim=2)
+        # Safety: all-masked rows produce NaN after softmax(-inf) -> zero them out.
+        attn = torch.nan_to_num(attn, nan=0.0)
+        # out[b, i, head, d] = sum_j attn[b, i, j, head] * h[b, j, head, d]
+        out = (attn.unsqueeze(-1) * h.unsqueeze(1)).sum(dim=2)
+        if self.concat:
+            return out.reshape(B, N, self.num_heads * self.head_dim)
+        return out.mean(dim=2)
+
+
+class GNNCriticEncoder(nn.Module):
+    """GNN encoder for centralized critic, parallel to AttentionCriticEncoder.
+
+    - use_attention=False → stacked GraphConvLayer (uniform mean aggregation)
+    - use_attention=True  → stacked GATLayer (learned edge attention)
+
+    Pipeline: split slots → per-type Linear(obs→embed) → L × {GraphConv|GAT}(ELU)
+              → masked mean-pool → (B, embed_dim)
+    """
+
+    def __init__(
+        self,
+        agent_order: List[str],
+        slot_obs_dims: dict,
+        embed_dim: int = 64,
+        num_heads: int = 4,
+        num_layers: int = 2,
+        use_attention: bool = False,
+    ):
+        super().__init__()
+        self._agent_order = list(agent_order)
+        self._slot_obs_dims = dict(slot_obs_dims)
+        self._embed_dim = embed_dim
+        self._n_agents = len(agent_order)
+        self._use_attention = use_attention
+
+        self._type_projectors = nn.ModuleDict()
+        for agent_id in agent_order:
+            type_key = AttentionCriticEncoder._type_key(agent_id)
+            if type_key not in self._type_projectors:
+                obs_dim = self._resolve_slot_dim(agent_id)
+                self._type_projectors[type_key] = nn.Linear(obs_dim, embed_dim)
+
+        self._slot_dims = [self._resolve_slot_dim(aid) for aid in agent_order]
+        self._split_sizes = self._slot_dims + [self._n_agents]
+
+        if use_attention:
+            self.layers = nn.ModuleList([
+                GATLayer(embed_dim, embed_dim, num_heads=num_heads, concat=True)
+                for _ in range(num_layers)
+            ])
+        else:
+            self.layers = nn.ModuleList([
+                GraphConvLayer(embed_dim, embed_dim)
+                for _ in range(num_layers)
+            ])
+        self.activation = nn.ELU()
+
+        kind = "GAT" if use_attention else "GraphConv"
+        heads_info = num_heads if use_attention else "-"
+        logger.info(
+            f"GNNCriticEncoder: {self._n_agents} agents, embed_dim={embed_dim}, "
+            f"layers={num_layers}, kind={kind}, heads={heads_info}, "
+            f"split_sizes={self._split_sizes}, total_input={sum(self._split_sizes)}D"
+        )
+
+    def _resolve_slot_dim(self, agent_id: str) -> int:
+        type_key = AttentionCriticEncoder._type_key(agent_id)
+        if type_key in self._slot_obs_dims:
+            return int(self._slot_obs_dims[type_key])
+        raise ValueError(f"No slot dim for agent type '{type_key}' (agent_id={agent_id})")
+
+    def forward(self, global_obs: torch.Tensor) -> torch.Tensor:
+        """(batch, global_obs_dim) → (batch, embed_dim) message-passed + mean-pooled."""
+        parts = global_obs.split(self._split_sizes, dim=-1)
+        slot_tensors = parts[:self._n_agents]
+        alive_raw = parts[self._n_agents]
+
+        embeddings = []
+        for i, agent_id in enumerate(self._agent_order):
+            type_key = AttentionCriticEncoder._type_key(agent_id)
+            embeddings.append(self._type_projectors[type_key](slot_tensors[i]))
+        x = torch.stack(embeddings, dim=1)
+
+        alive = (alive_raw >= 0.5).float()
+        all_dead = (alive.sum(dim=1, keepdim=True) < 0.5)
+        alive = torch.where(all_dead.expand_as(alive), torch.ones_like(alive), alive)
+
+        for layer in self.layers:
+            x = self.activation(layer(x, alive))
+
+        alive_w = alive.unsqueeze(-1)
+        pooled = (x * alive_w).sum(dim=1) / alive_w.sum(dim=1).clamp(min=1.0)
+        return pooled
+
+# ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
 
@@ -371,6 +538,10 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         self._use_attention = bool(custom.get("use_attention", False))
         attention_embed_dim = int(custom.get("attention_embed_dim", 64))
         attention_heads = int(custom.get("attention_heads", 4))
+        self._use_gnn = bool(custom.get("use_gnn", False))
+        gnn_embed_dim = int(custom.get("gnn_embed_dim", 64))
+        gnn_heads = int(custom.get("gnn_heads", 4))
+        gnn_layers = int(custom.get("gnn_layers", 2))
 
         local_obs_dim = int(np.prod(obs_space.shape))
 
@@ -383,8 +554,26 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         actor_layers.append(nn.Linear(in_dim, num_outputs))
         self.actor = nn.Sequential(*actor_layers)
 
-        # Critic encoder: MLP (default) or Attention (Block 4.4)
-        if self._use_attention:
+        # Critic encoder dispatch: GNN > Attention > MLP (Blocks 4.4 + 4.5)
+        if self._use_gnn:
+            if not self._agent_order or not self._slot_obs_dims:
+                raise ValueError(
+                    "use_gnn=True requires agent_order and slot_obs_dims"
+                )
+            self.critic_attention = None
+            self.critic_gnn = GNNCriticEncoder(
+                agent_order=self._agent_order,
+                slot_obs_dims=self._slot_obs_dims,
+                embed_dim=gnn_embed_dim,
+                num_heads=gnn_heads,
+                num_layers=gnn_layers,
+                use_attention=self._use_attention,
+            )
+            self.critic_hidden = nn.Sequential(
+                nn.Linear(gnn_embed_dim, hidden),
+                nn.Tanh(),
+            )
+        elif self._use_attention:
             if not self._agent_order or not self._slot_obs_dims:
                 raise ValueError(
                     "use_attention=True requires agent_order and slot_obs_dims"
@@ -395,12 +584,14 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
                 embed_dim=attention_embed_dim,
                 num_heads=attention_heads,
             )
+            self.critic_gnn = None
             self.critic_hidden = nn.Sequential(
                 nn.Linear(attention_embed_dim, hidden),
                 nn.Tanh(),
             )
         else:
             self.critic_attention = None
+            self.critic_gnn = None
             critic_hidden_layers = []
             in_dim = self._global_obs_dim
             for _ in range(n_layers):
@@ -417,13 +608,18 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
 
         self._cur_value = None
 
+        if self._use_gnn:
+            encoder_name = "GAT" if self._use_attention else "GNN"
+        elif self._use_attention:
+            encoder_name = "MLP+Attn"
+        else:
+            encoder_name = "MLP"
         logger.info(
             f"CentralizedCriticModel '{name}': "
             f"actor {local_obs_dim}->{num_outputs}, "
-            f"critic {self._global_obs_dim}->1, "
+            f"critic {self._global_obs_dim}->1 [{encoder_name}], "
             f"hidden={hidden}x{n_layers}, "
             f"popart={self._use_popart}, "
-            f"attention={self._use_attention}, "
             f"agent_order={len(self._agent_order) if self._agent_order else 'dynamic'}"
         )
 
@@ -455,7 +651,10 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
 
         _raise_on_nonfinite_torch("global_obs", global_obs)
 
-        if self.critic_attention is not None:
+        if self.critic_gnn is not None:
+            encoded = self.critic_gnn(global_obs)
+            critic_features = self.critic_hidden(encoded)
+        elif self.critic_attention is not None:
             attended = self.critic_attention(global_obs)
             critic_features = self.critic_hidden(attended)
         else:
@@ -491,7 +690,10 @@ class CentralizedCriticModel(TorchModelV2, nn.Module):
         Used by callbacks for VF recomputation (bypasses actor).
         """
         
-        if self.critic_attention is not None:
+        if self.critic_gnn is not None:
+            encoded = self.critic_gnn(global_obs)
+            features = self.critic_hidden(encoded)
+        elif self.critic_attention is not None:
             attended = self.critic_attention(global_obs)
             features = self.critic_hidden(attended)
         else:
