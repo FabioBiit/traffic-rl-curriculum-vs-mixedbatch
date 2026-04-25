@@ -4,20 +4,26 @@
 
 curriculum:
   levels: ["easy", "medium", "hard"]
-  success_rate_threshold: 0.45   # default competence SR for unlock checks
-  collision_threshold: 0.30      # default competence CR ceiling for unlock checks
+  # success_rate_threshold: 0.45    # default competence SR for unlock checks
+  # collision_rate_threshold: 0.20  # default competence CR ceiling for unlock checks
   min_episodes: 50               # minimum episode support before any unlock
   window_size: 50                # episode tracker sliding window
   teacher_seed: 42               # stochastic teacher seed
   unlock_criteria:
     medium:
-      min_budget_share: 0.12     # easy share required before medium can unlock
+      success_rate_threshold: 0.50          # soft medium unlocks when easy SR >= 50%
+      collision_rate_threshold: 0.20        # CR must be <= 20% for medium unlock checks
+      min_budget_share: 0.12                # easy share required before medium can unlock
+      force_unlock_global_share_cap: 0.20   # force unlock by 20% of total budget if CR stays acceptable
     hard:
-      min_budget_share: 0.18     # medium share required before hard can unlock
+      success_rate_threshold: 0.40          # soft hard unlocks when medium SR >= 40%
+      collision_rate_threshold: 0.30        # CR must be <= 30% for hard unlock checks (allow higher CR for hard unlock)
+      min_budget_share: 0.16                # medium share required before hard can unlock
+      force_unlock_global_share_cap: 0.35   # force unlock by 35% of total budget if CR stays acceptable
   budget_constraints:
-    easy_max_share: 0.20         # easy cannot exceed 20% once medium is available
-    medium_max_share: 0.45       # medium cannot monopolize post-hard training
-    hard_min_share: 0.35         # dynamic hard floor over the total budget
+    easy_max_share: 0.25         # easy cannot exceed 25% once medium is available
+    medium_max_share: 0.35       # medium cannot monopolize post-hard training
+    hard_min_share: 0.45         # dynamic hard floor over the total budget
   base_sampling_weights:
     easy: 1.00
     medium: 1.20
