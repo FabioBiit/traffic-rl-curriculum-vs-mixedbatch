@@ -4,8 +4,8 @@
 
 curriculum:
   levels: ["easy", "medium", "hard"]
-  # success_rate_threshold: 0.45    # default competence SR for unlock checks
-  # collision_rate_threshold: 0.20  # default competence CR ceiling for unlock checks
+  # success_rate_threshold: 0.45 # default competence SR for unlock checks
+  # collision_threshold: 0.20    # default competence CR ceiling for unlock checks
   min_episodes: 50               # minimum episode support before any unlock
   window_size: 50                # episode tracker sliding window
   teacher_seed: 42               # stochastic teacher seed

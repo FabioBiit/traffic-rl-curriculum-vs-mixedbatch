@@ -172,7 +172,7 @@ class CurriculumManager:
         levels=None,
         total_budget_timesteps=1_000_000,
         default_success_rate_threshold=0.45,
-        default_collision_threshold=0.30,
+        default_collision_rate_threshold=0.30,
         default_min_episodes=50,
         unlock_criteria=None,
         budget_constraints=None,
@@ -186,7 +186,7 @@ class CurriculumManager:
         self.levels = levels or ["easy", "medium", "hard"]
         self.total_budget_timesteps = max(int(total_budget_timesteps), 1)
         self.default_success_rate_threshold = float(default_success_rate_threshold)
-        self.default_collision_threshold = float(default_collision_threshold)
+        self.default_collision_rate_threshold = float(default_collision_rate_threshold)
         self.default_min_episodes = max(int(default_min_episodes), 1)
         self.unlock_criteria = unlock_criteria or {}
         self.window_size = max(int(window_size), 1)
@@ -199,8 +199,8 @@ class CurriculumManager:
             allow_none=False,
         )
         self._validate_share(
-            self.default_collision_threshold,
-            "curriculum.collision_threshold",
+            self.default_collision_rate_threshold,
+            "curriculum.collision_rate_threshold",
             allow_none=False,
         )
 
@@ -307,12 +307,12 @@ class CurriculumManager:
                 criteria.get("force_unlock_global_share_cap"),
                 f"curriculum.unlock_criteria.{target_level}.force_unlock_global_share_cap",
             )
-            collision_threshold = criteria.get(
+            collision_rate_threshold = criteria.get(
                 "collision_rate_threshold",
                 criteria.get("collision_threshold"),
             )
             self._validate_share(
-                collision_threshold,
+                collision_rate_threshold,
                 f"curriculum.unlock_criteria.{target_level}.collision_rate_threshold",
             )
             self._validate_share(
@@ -337,7 +337,7 @@ class CurriculumManager:
         )
         collision_rate_threshold = criteria.get(
             "collision_rate_threshold",
-            criteria.get("collision_threshold", self.default_collision_threshold),
+            criteria.get("collision_threshold", self.default_collision_rate_threshold),
         )
         return {
             "min_episodes": max(int(criteria.get("min_episodes", self.default_min_episodes)), 1),
@@ -740,7 +740,7 @@ class CurriculumManager:
             },
             "unlock_defaults": {
                 "success_rate_threshold": self.default_success_rate_threshold,
-                "collision_threshold": self.default_collision_threshold,
+                "collision_rate_threshold": self.default_collision_rate_threshold,
                 "min_episodes": self.default_min_episodes,
             },
             "unlock_history": deepcopy(self.unlock_history),
