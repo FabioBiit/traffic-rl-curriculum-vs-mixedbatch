@@ -172,7 +172,7 @@ class CurriculumManager:
         levels=None,
         total_budget_timesteps=1_000_000,
         default_success_rate_threshold=0.45,
-        default_collision_threshold=0.30,
+        default_collision_rate_threshold=0.30,
         default_min_episodes=50,
         unlock_criteria=None,
         budget_constraints=None,
@@ -186,13 +186,23 @@ class CurriculumManager:
         self.levels = levels or ["easy", "medium", "hard"]
         self.total_budget_timesteps = max(int(total_budget_timesteps), 1)
         self.default_success_rate_threshold = float(default_success_rate_threshold)
-        self.default_collision_threshold = float(default_collision_threshold)
+        self.default_collision_rate_threshold = float(default_collision_rate_threshold)
         self.default_min_episodes = max(int(default_min_episodes), 1)
         self.unlock_criteria = unlock_criteria or {}
         self.window_size = max(int(window_size), 1)
         self.probation_blocks_after_unlock = max(0, int(probation_blocks_after_unlock))
         self.probation_blocks_after_cap_pressure = max(0, int(probation_blocks_after_cap_pressure))
         self._rng = random.Random(teacher_seed)
+        self._validate_share(
+            self.default_success_rate_threshold,
+            "curriculum.success_rate_threshold",
+            allow_none=False,
+        )
+        self._validate_share(
+            self.default_collision_rate_threshold,
+            "curriculum.collision_rate_threshold",
+            allow_none=False,
+        )
 
         default_weights = {
             level_name: 1.0 + (0.25 * idx)
@@ -208,12 +218,25 @@ class CurriculumManager:
         )
 
         budget_constraints = budget_constraints or {}
+        self._validate_share(
+            budget_constraints.get("easy_max_share"),
+            "curriculum.budget_constraints.easy_max_share",
+        )
+        self._validate_share(
+            budget_constraints.get("medium_max_share"),
+            "curriculum.budget_constraints.medium_max_share",
+        )
+        self._validate_share(
+            budget_constraints.get("hard_min_share"),
+            "curriculum.budget_constraints.hard_min_share",
+        )
         self.easy_max_share = self._clip_share(budget_constraints.get("easy_max_share"))
         self.medium_max_share = self._clip_share(budget_constraints.get("medium_max_share"))
         self.hard_min_share = self._clip_share(
             budget_constraints.get("hard_min_share"),
             default=0.0,
         )
+        self._validate_configuration()
 
         self.current_level = self.levels[0]
         self.unlocked_levels = [self.levels[0]]
@@ -242,6 +265,61 @@ class CurriculumManager:
             return default
         return max(0.0, min(float(value), 1.0))
 
+    def _validate_share(self, value, field_name: str, *, allow_none: bool = True) -> float | None:
+        if value is None:
+            if allow_none:
+                return None
+            raise ValueError(f"{field_name} cannot be None")
+        try:
+            share = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} must be a float-compatible value") from exc
+        if not 0.0 <= share <= 1.0:
+            raise ValueError(f"{field_name} must be within [0.0, 1.0], got {share}")
+        return share
+
+    def _validate_configuration(self):
+        if len(set(self.levels)) != len(self.levels):
+            raise ValueError("curriculum.levels must contain unique level names")
+
+        if (
+            self.medium_max_share is not None
+            and self.hard_min_share is not None
+            and self.medium_max_share + self.hard_min_share > 1.0 + 1e-9
+        ):
+            raise ValueError(
+                "curriculum.budget_constraints.medium_max_share + "
+                "curriculum.budget_constraints.hard_min_share must be <= 1.0"
+            )
+
+        for target_level in self.levels[1:]:
+            criteria = self.unlock_criteria.get(target_level, {})
+            min_budget_share = criteria.get(
+                "min_budget_share",
+                criteria.get("min_timesteps_share", 0.0),
+            )
+            self._validate_share(
+                min_budget_share,
+                f"curriculum.unlock_criteria.{target_level}.min_budget_share",
+                allow_none=False,
+            )
+            self._validate_share(
+                criteria.get("force_unlock_global_share_cap"),
+                f"curriculum.unlock_criteria.{target_level}.force_unlock_global_share_cap",
+            )
+            collision_rate_threshold = criteria.get(
+                "collision_rate_threshold",
+                criteria.get("collision_threshold"),
+            )
+            self._validate_share(
+                collision_rate_threshold,
+                f"curriculum.unlock_criteria.{target_level}.collision_rate_threshold",
+            )
+            self._validate_share(
+                criteria.get("success_rate_threshold"),
+                f"curriculum.unlock_criteria.{target_level}.success_rate_threshold",
+            )
+
     def _normalize_weights(self, weights: dict, allowed_levels: list[str]) -> dict:
         normalized = {}
         for level_name in allowed_levels:
@@ -257,35 +335,50 @@ class CurriculumManager:
             "min_budget_share",
             criteria.get("min_timesteps_share", 0.0),
         )
+        collision_rate_threshold = criteria.get(
+            "collision_rate_threshold",
+            criteria.get("collision_threshold", self.default_collision_rate_threshold),
+        )
         return {
             "min_episodes": max(int(criteria.get("min_episodes", self.default_min_episodes)), 1),
             "min_budget_share": max(0.0, float(min_budget_share)),
+            "force_unlock_global_share_cap": self._clip_share(
+                criteria.get("force_unlock_global_share_cap")
+            ),
             "success_rate_threshold": float(
                 criteria.get("success_rate_threshold", self.default_success_rate_threshold)
             ),
-            "collision_rate_threshold": float(
-                criteria.get("collision_rate_threshold", self.default_collision_threshold)
-            ),
+            "collision_rate_threshold": float(collision_rate_threshold),
         }
 
-    def _meets_unlock_criteria(self, tracker: EpisodeTracker | None, target_level: str) -> bool:
+    def _unlock_reason(self, tracker: EpisodeTracker | None, target_level: str) -> tuple[str | None, dict]:
         if tracker is None:
-            return False
+            return None, {}
 
         criteria = self._criteria_for(target_level)
         required_timesteps = int(criteria["min_budget_share"] * self.total_budget_timesteps)
+        force_unlock_share_cap = criteria["force_unlock_global_share_cap"]
+        force_unlock_timesteps = None
+        if force_unlock_share_cap is not None:
+            force_unlock_timesteps = int(force_unlock_share_cap * self.total_budget_timesteps)
 
         if tracker.level_episodes < criteria["min_episodes"]:
-            return False
-        if tracker.level_timesteps < required_timesteps:
-            return False
+            return None, criteria
         if not tracker.window_full:
-            return False
-        if tracker.window_success_rate < criteria["success_rate_threshold"]:
-            return False
+            return None, criteria
         if tracker.window_collision_rate > criteria["collision_rate_threshold"]:
-            return False
-        return True
+            return None, criteria
+        if (
+            tracker.level_timesteps >= required_timesteps
+            and tracker.window_success_rate >= criteria["success_rate_threshold"]
+        ):
+            return "competence_unlocked", criteria
+        if (
+            force_unlock_timesteps is not None
+            and self.total_assigned_timesteps >= force_unlock_timesteps
+        ):
+            return "forced_global_budget_cap", criteria
+        return None, criteria
 
     def _sampling_levels(self) -> list[str]:
         return [
@@ -319,7 +412,8 @@ class CurriculumManager:
                 break
 
             tracker = trackers.get(source_level)
-            if not self._meets_unlock_criteria(tracker, target_level):
+            unlock_reason, criteria = self._unlock_reason(tracker, target_level)
+            if unlock_reason is None:
                 break
 
             unlock_event = {
@@ -330,7 +424,11 @@ class CurriculumManager:
                 "success_rate_at_unlock": tracker.window_success_rate,
                 "collision_rate_at_unlock": tracker.window_collision_rate,
                 "timestep_at_unlock": global_timestep,
-                "reason": "competence_unlocked",
+                "assigned_budget_share_at_unlock": (
+                    float(self.total_assigned_timesteps) / float(self.total_budget_timesteps)
+                ),
+                "reason": unlock_reason,
+                "criteria_snapshot": deepcopy(criteria),
             }
             self.unlocked_levels.append(target_level)
             self.unlock_history.append(unlock_event)
@@ -631,6 +729,10 @@ class CurriculumManager:
             },
             "base_sampling_weights": deepcopy(self.base_sampling_weights),
             "probation_sampling_weights": deepcopy(self.probation_sampling_weights),
+            "unlock_criteria": {
+                level_name: self._criteria_for(level_name)
+                for level_name in self.levels[1:]
+            },
             "budget_constraints": {
                 "easy_max_share": self.easy_max_share,
                 "medium_max_share": self.medium_max_share,
@@ -638,7 +740,7 @@ class CurriculumManager:
             },
             "unlock_defaults": {
                 "success_rate_threshold": self.default_success_rate_threshold,
-                "collision_threshold": self.default_collision_threshold,
+                "collision_rate_threshold": self.default_collision_rate_threshold,
                 "min_episodes": self.default_min_episodes,
             },
             "unlock_history": deepcopy(self.unlock_history),

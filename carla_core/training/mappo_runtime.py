@@ -107,6 +107,18 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
         )
         log_path = os.environ.get("MAPPO_EPISODE_LOG")
         outcomes = episode.user_data.get("agent_outcomes", {})
+        current_level = None
+        try:
+            raw_env = base_env.get_sub_environments()[0]
+            inner = getattr(raw_env, "par_env", None) or getattr(raw_env, "env", None)
+            if inner is None:
+                inner = raw_env
+            deeper = getattr(inner, "env", None)
+            if deeper is not None and hasattr(deeper, "_current_level"):
+                inner = deeper
+            current_level = getattr(inner, "_current_level", None)
+        except (AttributeError, IndexError):
+            pass
         if log_path:
             for agent_id, out in outcomes.items():
                 policy_id = (
@@ -122,6 +134,7 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
                         "route_completion": round(out["route_completion"], 4),
                         "path_efficiency": round(out["path_efficiency"], 4),
                         "step_count": episode.length,
+                        "level": current_level,
                     },
                 )
 

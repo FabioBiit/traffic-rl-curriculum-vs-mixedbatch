@@ -699,7 +699,10 @@ def main():
             levels=cc.get("levels", ["easy", "medium", "hard"]),
             total_budget_timesteps=total_ts,
             default_success_rate_threshold=cc.get("success_rate_threshold", 0.45),
-            default_collision_threshold=cc.get("collision_threshold", 0.30),
+            default_collision_rate_threshold=cc.get(
+                "collision_rate_threshold",
+                cc.get("collision_threshold", 0.30),
+            ),
             default_min_episodes=cc.get("min_episodes", 50),
             unlock_criteria=cc.get("unlock_criteria", {}),
             budget_constraints=cc.get("budget_constraints", {}),
@@ -800,6 +803,11 @@ def main():
         print(f"  Batch mode: starting at '{initial_level}' (map={initial_map})")
     else:
         print("  Baseline mode: no level switching")
+
+    if level_manager is not None and current_training_level is not None:
+        raw_env = _unwrap_carla_env(algo)
+        if raw_env is not None:
+            raw_env.set_level(current_training_level)
 
     ts_done = 0
     iteration = 0
