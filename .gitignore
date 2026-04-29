@@ -75,3 +75,5 @@ difficulty_test/
 
 # Documentazione
 docs/
+# Added by code-review-graph
+.code-review-graph/

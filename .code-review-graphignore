@@ -1,0 +1,46 @@
+# Python/cache
+__pycache__/**
+*.pyc
+.venv/**
+.venv-crg/**
+venv/**
+.env
+
+# Git/editor
+.git/**
+.vscode/**
+.idea/**
+
+# RL/CARLA outputs
+ray_results/**
+runs/**
+wandb/**
+checkpoints/**
+logs/**
+outputs/**
+videos/**
+
+# Heavy artifacts
+*.ckpt
+*.pt
+*.pth
+*.pkl
+*.mp4
+*.avi
+*.csv
+*.parquet
+*.zip
+*.tar
+*.gz
+
+# Thesis/docs generated
+*.pdf
+*.docx
+*.pptx
+
+# CodeReviewGraph local index
+.code-review-graph/**
+.crg/**
+*.sqlite
+*.sqlite3
+*.db

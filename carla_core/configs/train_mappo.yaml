@@ -5,7 +5,7 @@
 
 experiment:
   name: "carla_mappo"
-  mode: "auto"                   # Auto-resolve from run/output naming, or override with --mode
+  mode: "auto"                 # Auto-resolve from run/output naming, or override with --mode
   output_dir: "carla_core/experiments"
   seed: 42
 
@@ -43,7 +43,7 @@ runtime:
   # This avoids the CARLA/RLlib teardown path that can abort in libcarla after long runs.
 
 model:
-  hidden_size: 256              # MLP hidden layer size for actor and critic
+  hidden_size: 256              # MLP and GNN hidden layer size for actor and critic
   n_hidden_layers: 2            # Number of hidden layers
   use_popart: false             # Enable PopArt value normalization (Block 4.2)
   popart_beta: 0.0003           # EMA decay for PopArt running statistics
