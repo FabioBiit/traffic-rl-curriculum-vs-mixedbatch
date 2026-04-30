@@ -12,8 +12,9 @@ Policy mapping:
     vehicle_* -> vehicle_policy
     pedestrian_* -> pedestrian_policy
 
-Vehicle obs (25D): same as CarlaEnv v0.3
-Pedestrian obs (19D):
+Vehicle obs (45D): legacy 25D + stronger local traffic + pedestrian awareness
+                   + static occupancy + hazard anticipation.
+Pedestrian obs (25D):
     [0:3]   position (x, y, z) normalized
     [3:6]   velocity (vx, vy, vz) normalized
     [6]     speed scalar normalized
@@ -23,6 +24,7 @@ Pedestrian obs (19D):
     [11]    on_sidewalk (0 or 1)
     [12:18] nearest 2 vehicles: (rel_x, rel_y, rel_speed) x 2
     [18]    route_completion (0..1)
+    [19:25] static occupancy sectors
 
 Vehicle action (2D continuous): [throttle_brake, steer]
 Pedestrian action (2D continuous): [speed_frac, direction_delta]
@@ -65,8 +67,20 @@ if sys.platform == "win32":
 # Constants
 # ---------------------------------------------------------------------------
 
-VEHICLE_OBS_DIM = 25
-PEDESTRIAN_OBS_DIM = 19
+N_OCC_SECTORS = 6
+N_EXTRA_NEARBY_VEHICLES_FOR_VEHICLE = 2
+N_NEARBY_PEDESTRIANS_FOR_VEHICLE = 2
+
+VEHICLE_EXTRA_OBS_DIM = (
+    N_EXTRA_NEARBY_VEHICLES_FOR_VEHICLE * 3
+    + N_NEARBY_PEDESTRIANS_FOR_VEHICLE * 3
+    + N_OCC_SECTORS
+    + 2
+)
+PEDESTRIAN_EXTRA_OBS_DIM = N_OCC_SECTORS
+
+VEHICLE_OBS_DIM = 25 + VEHICLE_EXTRA_OBS_DIM
+PEDESTRIAN_OBS_DIM = 19 + PEDESTRIAN_EXTRA_OBS_DIM
 N_NEARBY_VEHICLES_FOR_VEHICLE = 3
 N_NEARBY_VEHICLES_FOR_PEDESTRIAN = 2
 PEDESTRIAN_MAX_SPEED = 5.0  # m/s (~18 km/h, running)
@@ -82,6 +96,18 @@ class _NavPoint:
 
     def __init__(self, location):
         self.transform = type("T", (), {"location": location})()
+
+
+def _lane_type_name(wp) -> str | None:
+    if wp is None:
+        return None
+    lane_type = getattr(wp, "lane_type", None)
+    if lane_type is None:
+        return None
+    name = getattr(lane_type, "name", None)
+    if name:
+        return str(name)
+    return str(lane_type)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -115,6 +141,22 @@ DEFAULT_MA_CONFIG = {
         "route_length_pedestrian": 10,
         "route_distance_m": None,              # Block 5.1: A* route by meters (None=legacy)
         "route_distance_m_pedestrian": None,   # Block 5.1: sidewalk by meters (None=legacy)
+    },
+    "observation": {
+        "vehicle_nearby_radius_m": 60.0,
+        "pedestrian_nearby_radius_m": 40.0,
+        "occupancy_radius_vehicle_m": 15.0,
+        "occupancy_radius_pedestrian_m": 8.0,
+        "n_occ_sectors": N_OCC_SECTORS,
+        "enable_vehicle_pedestrian_obs": True,
+        "enable_static_occupancy": True,
+    },
+    "safety": {
+        "enable_controlled_brake": True,
+        "ttc_trigger_s": 1.5,
+        "ttc_horizon_m": 25.0,
+        "max_brake": 0.85,
+        "steer_damping": 0.50,
     },
 }
 
@@ -259,6 +301,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         if config:
             _merge(file_cfg, config)
         self.cfg = file_cfg
+        self._validate_augmented_obs_config()
 
         ag = self.cfg["agents"]
         self._n_veh = ag["n_vehicles_rl"]
@@ -313,6 +356,34 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._current_level = None                          # Block 5.2: current level name
         self._needs_traffic_respawn = False                 # Block 5.2: flag for level switch
         self._level_configs = self._load_level_configs()    # Block 5.2
+
+    def _validate_augmented_obs_config(self):
+        obs_cfg = self.cfg.setdefault("observation", {})
+        if int(obs_cfg.get("n_occ_sectors", N_OCC_SECTORS)) != N_OCC_SECTORS:
+            raise ValueError(
+                f"observation.n_occ_sectors must stay fixed at {N_OCC_SECTORS} "
+                f"to match the compiled obs dimensions"
+            )
+
+        for key in (
+            "vehicle_nearby_radius_m",
+            "pedestrian_nearby_radius_m",
+            "occupancy_radius_vehicle_m",
+            "occupancy_radius_pedestrian_m",
+        ):
+            if float(obs_cfg.get(key, 0.0)) <= 0.0:
+                raise ValueError(f"observation.{key} must be > 0")
+
+        safety_cfg = self.cfg.setdefault("safety", {})
+        if float(safety_cfg.get("ttc_trigger_s", 0.0)) <= 0.0:
+            raise ValueError("safety.ttc_trigger_s must be > 0")
+        if float(safety_cfg.get("ttc_horizon_m", 0.0)) <= 0.0:
+            raise ValueError("safety.ttc_horizon_m must be > 0")
+
+        for key in ("max_brake", "steer_damping"):
+            value = float(safety_cfg.get(key, 0.0))
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"safety.{key} must be in [0, 1]")
 
     # ------------------------------------------------------------------
     # PettingZoo API
@@ -1077,6 +1148,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         action = self._validate_action(action, agent_id)
 
         if ad.agent_type == "vehicle":
+            action = self._apply_vehicle_safety_guard(ad, action)
             tb = float(np.clip(action[0], -1, 1))
             st = float(np.clip(action[1], -1, 1))
 
@@ -1113,7 +1185,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return self._get_pedestrian_obs(ad)
 
     def _get_vehicle_obs(self, ad: AgentData) -> np.ndarray:
-        """Same 24D obs as CarlaEnv v0.3."""
+        """Vehicle obs = legacy 25D block + appended local awareness features."""
         obs = np.zeros(VEHICLE_OBS_DIM, dtype=np.float32)
         t = ad.actor.get_transform()
         vel = ad.actor.get_velocity()
@@ -1153,16 +1225,64 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 obs[14] = 1.0 if s == carla.TrafficLightState.Red else \
                            0.5 if s == carla.TrafficLightState.Yellow else 0.0
 
+        ob_cfg = self.cfg["observation"]
+
         # Nearby vehicles
-        self._fill_nearby(obs, 15, ad, N_NEARBY_VEHICLES_FOR_VEHICLE, "vehicle.*")
+        self._fill_nearby(
+            obs,
+            15,
+            ad,
+            N_NEARBY_VEHICLES_FOR_VEHICLE,
+            "vehicle.*",
+            radius_m=float(ob_cfg["vehicle_nearby_radius_m"]),
+        )
 
         # Previous steering value (Block 4.3)
         obs[24] = np.clip(ad.prev_steer, -1.0, 1.0)
 
+        cursor = 25
+
+        self._fill_nearby_filtered(
+            obs,
+            cursor,
+            ad,
+            count=N_EXTRA_NEARBY_VEHICLES_FOR_VEHICLE,
+            patterns=("vehicle.*",),
+            radius_m=float(ob_cfg["vehicle_nearby_radius_m"]),
+            skip_first=N_NEARBY_VEHICLES_FOR_VEHICLE,
+        )
+        cursor += N_EXTRA_NEARBY_VEHICLES_FOR_VEHICLE * 3
+
+        if ob_cfg.get("enable_vehicle_pedestrian_obs", True):
+            self._fill_nearby_filtered(
+                obs,
+                cursor,
+                ad,
+                count=N_NEARBY_PEDESTRIANS_FOR_VEHICLE,
+                patterns=("walker.pedestrian.*",),
+                radius_m=float(ob_cfg["pedestrian_nearby_radius_m"]),
+            )
+        cursor += N_NEARBY_PEDESTRIANS_FOR_VEHICLE * 3
+
+        if ob_cfg.get("enable_static_occupancy", True):
+            self._fill_static_occupancy(
+                obs,
+                cursor,
+                ad,
+                radius_m=float(ob_cfg["occupancy_radius_vehicle_m"]),
+                sectors=int(ob_cfg["n_occ_sectors"]),
+                lane_mode="vehicle",
+            )
+        cursor += int(ob_cfg["n_occ_sectors"])
+
+        min_ttc, brake_hint = self._compute_vehicle_hazard_features(ad)
+        obs[cursor] = min_ttc
+        obs[cursor + 1] = brake_hint
+
         return self._sanitize_obs(obs, ad.agent_id)
 
     def _get_pedestrian_obs(self, ad: AgentData) -> np.ndarray:
-        """18D obs for pedestrian — now uses waypoint route like vehicles."""
+        """Pedestrian obs = legacy 19D block + appended static occupancy."""
         obs = np.zeros(PEDESTRIAN_OBS_DIM, dtype=np.float32)
         t = ad.actor.get_transform()
         vel = ad.actor.get_velocity()
@@ -1202,7 +1322,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # On sidewalk (approximate: check if waypoint has lane_type sidewalk)
         wp = self._map.get_waypoint(loc, project_to_road=False)
-        if wp and str(wp.lane_type) == "Sidewalk":
+        if _lane_type_name(wp) == "Sidewalk":
             obs[11] = 1.0
 
         # Nearby vehicles (danger detection)
@@ -1211,9 +1331,21 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Route completion fraction (Block 4.3)
         obs[18] = self._route_completion(ad)
 
+        cursor = 19
+        ob_cfg = self.cfg["observation"]
+        if ob_cfg.get("enable_static_occupancy", True):
+            self._fill_static_occupancy(
+                obs,
+                cursor,
+                ad,
+                radius_m=float(ob_cfg["occupancy_radius_pedestrian_m"]),
+                sectors=int(ob_cfg["n_occ_sectors"]),
+                lane_mode="pedestrian",
+            )
+
         return self._sanitize_obs(obs, ad.agent_id)
 
-    def _fill_nearby(self, obs, start_idx, ad, n, filter_str):
+    def _fill_nearby(self, obs, start_idx, ad, n, filter_str, radius_m=50.0):
         """Fill obs with relative position/speed of nearest actors."""
         e_loc = ad.actor.get_location()
         e_vel = ad.actor.get_velocity()
@@ -1226,7 +1358,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if v.id == ad.actor.id:
                 continue
             d = e_loc.distance(v.get_location())
-            if d < 50:
+            if d < radius_m:
                 dists.append((d, v))
         dists.sort(key=lambda x: x[0])
 
@@ -1234,10 +1366,174 @@ class CarlaMultiAgentEnv(ParallelEnv):
             vl = v.get_location()
             dx, dy = vl.x - e_loc.x, vl.y - e_loc.y
             idx = start_idx + i * 3
-            obs[idx] = np.clip((dx * fwd.x + dy * fwd.y) / 50, -1, 1)
-            obs[idx + 1] = np.clip((dx * rx + dy * ry) / 50, -1, 1)
+            obs[idx] = np.clip((dx * fwd.x + dy * fwd.y) / radius_m, -1, 1)
+            obs[idx + 1] = np.clip((dx * rx + dy * ry) / radius_m, -1, 1)
             vv = v.get_velocity()
             obs[idx + 2] = np.clip((math.sqrt(vv.x**2 + vv.y**2) - e_spd) / 30, -1, 1)
+
+    def _collect_nearby(self, ad: AgentData, *, patterns, radius_m: float):
+        ego_loc = ad.actor.get_location()
+        out = []
+        for pattern in patterns:
+            for actor in self._world.get_actors().filter(pattern):
+                if actor.id == ad.actor.id:
+                    continue
+                dist = ego_loc.distance(actor.get_location())
+                if dist <= radius_m:
+                    out.append((dist, actor))
+        out.sort(key=lambda item: item[0])
+        return out
+
+    def _fill_nearby_filtered(
+        self,
+        obs: np.ndarray,
+        start_idx: int,
+        ad: AgentData,
+        *,
+        count: int,
+        patterns,
+        radius_m: float,
+        skip_first: int = 0,
+    ):
+        ego_loc = ad.actor.get_location()
+        ego_vel = ad.actor.get_velocity()
+        ego_speed = math.sqrt(ego_vel.x**2 + ego_vel.y**2)
+        fwd = ad.actor.get_transform().get_forward_vector()
+        right_x, right_y = -fwd.y, fwd.x
+
+        nearby = self._collect_nearby(ad, patterns=patterns, radius_m=radius_m)
+        nearby = nearby[skip_first:skip_first + count]
+
+        for i, (_, actor) in enumerate(nearby):
+            loc = actor.get_location()
+            dx = loc.x - ego_loc.x
+            dy = loc.y - ego_loc.y
+            idx = start_idx + i * 3
+
+            obs[idx] = np.clip((dx * fwd.x + dy * fwd.y) / radius_m, -1.0, 1.0)
+            obs[idx + 1] = np.clip((dx * right_x + dy * right_y) / radius_m, -1.0, 1.0)
+
+            vel = actor.get_velocity()
+            speed = math.sqrt(vel.x**2 + vel.y**2)
+            obs[idx + 2] = np.clip((speed - ego_speed) / 30.0, -1.0, 1.0)
+
+    def _iter_static_obstacle_locations(self):
+        for actor in self._world.get_actors().filter("static.*"):
+            yield actor.get_location()
+
+    def _fill_static_occupancy(
+        self,
+        obs: np.ndarray,
+        start_idx: int,
+        ad: AgentData,
+        *,
+        radius_m: float,
+        sectors: int,
+        lane_mode: str,
+    ):
+        ego_tf = ad.actor.get_transform()
+        ego_loc = ego_tf.location
+        ego_yaw = math.radians(ego_tf.rotation.yaw)
+        static_points = list(self._iter_static_obstacle_locations())
+        values = np.zeros(sectors, dtype=np.float32)
+
+        allowed = {"Driving"} if lane_mode == "vehicle" else {"Sidewalk", "Driving"}
+
+        for sector in range(sectors):
+            center = -math.pi + (2.0 * math.pi) * (sector + 0.5) / sectors
+            theta = ego_yaw + center
+
+            for frac in (0.33, 0.66, 1.00):
+                d = radius_m * frac
+                probe = carla.Location(
+                    x=ego_loc.x + d * math.cos(theta),
+                    y=ego_loc.y + d * math.sin(theta),
+                    z=ego_loc.z,
+                )
+                wp = self._map.get_waypoint(probe, project_to_road=False)
+                if _lane_type_name(wp) not in allowed:
+                    values[sector] = 1.0
+                    break
+
+            if values[sector] > 0.0:
+                continue
+
+            for loc in static_points:
+                dx = loc.x - ego_loc.x
+                dy = loc.y - ego_loc.y
+                dist = math.sqrt(dx**2 + dy**2)
+                if dist > radius_m:
+                    continue
+
+                angle = math.atan2(dy, dx) - ego_yaw
+                angle = (angle + math.pi) % (2.0 * math.pi) - math.pi
+                sector_idx = int(((angle + math.pi) / (2.0 * math.pi)) * sectors)
+                sector_idx = min(max(sector_idx, 0), sectors - 1)
+                if sector_idx == sector:
+                    values[sector] = 1.0
+                    break
+
+        obs[start_idx:start_idx + sectors] = values
+
+    def _compute_vehicle_hazard_features(self, ad: AgentData):
+        safety_cfg = self.cfg["safety"]
+        horizon_m = float(safety_cfg["ttc_horizon_m"])
+        trigger_s = float(safety_cfg["ttc_trigger_s"])
+
+        ego_tf = ad.actor.get_transform()
+        ego_loc = ego_tf.location
+        fwd = ego_tf.get_forward_vector()
+        right_x, right_y = -fwd.y, fwd.x
+
+        ego_vel = ad.actor.get_velocity()
+        ego_vx, ego_vy = ego_vel.x, ego_vel.y
+
+        min_ttc = None
+        for _, actor in self._collect_nearby(
+            ad,
+            patterns=("vehicle.*", "walker.pedestrian.*"),
+            radius_m=horizon_m,
+        ):
+            loc = actor.get_location()
+            dx = loc.x - ego_loc.x
+            dy = loc.y - ego_loc.y
+
+            longitudinal = dx * fwd.x + dy * fwd.y
+            lateral = abs(dx * right_x + dy * right_y)
+            if longitudinal <= 0.0 or lateral > 2.5:
+                continue
+
+            vel = actor.get_velocity()
+            rel_vx = vel.x - ego_vx
+            rel_vy = vel.y - ego_vy
+            closing_speed = -(rel_vx * fwd.x + rel_vy * fwd.y)
+            if closing_speed <= 1e-3:
+                continue
+
+            ttc = longitudinal / closing_speed
+            if min_ttc is None or ttc < min_ttc:
+                min_ttc = ttc
+
+        norm_ttc = 1.0 if min_ttc is None else np.clip(min_ttc / trigger_s, 0.0, 1.0)
+        brake_hint = 0.0 if min_ttc is None else np.clip((trigger_s - min_ttc) / trigger_s, 0.0, 1.0)
+        return float(norm_ttc), float(brake_hint)
+
+    def _apply_vehicle_safety_guard(self, ad: AgentData, action: np.ndarray) -> np.ndarray:
+        safety_cfg = self.cfg["safety"]
+        if not safety_cfg.get("enable_controlled_brake", False):
+            return np.asarray(action, dtype=np.float32)
+
+        tb = float(np.clip(action[0], -1.0, 1.0))
+        st = float(np.clip(action[1], -1.0, 1.0))
+        _, brake_hint = self._compute_vehicle_hazard_features(ad)
+        if brake_hint <= 0.0:
+            return np.asarray([tb, st], dtype=np.float32)
+
+        max_brake = float(np.clip(safety_cfg["max_brake"], 0.0, 1.0))
+        steer_damping = float(np.clip(safety_cfg["steer_damping"], 0.0, 1.0))
+        safe_tb = min(tb, -max_brake * brake_hint)
+        safe_st = st * (1.0 - steer_damping * brake_hint)
+        return np.asarray([safe_tb, safe_st], dtype=np.float32)
 
     # ------------------------------------------------------------------
     # Waypoint / route tracking
@@ -1400,9 +1696,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # ---- 4. Sidewalk bonus / road penalty ----
         wp = self._map.get_waypoint(loc, project_to_road=False)
         if wp:
-            if str(wp.lane_type) == "Sidewalk":
+            lane_type = _lane_type_name(wp)
+            if lane_type == "Sidewalk":
                 reward += 0.2
-            elif str(wp.lane_type) == "Driving":
+            elif lane_type == "Driving":
                 reward -= 0.3
 
         # ---- 5. Speed target (walking pace) ----

@@ -37,3 +37,19 @@ episode:
   route_distance_m: null                    # Block 5.1: A* vehicle route by meters (null = legacy wp chain)
   route_distance_m_pedestrian: null         # Block 5.1: sidewalk route by meters (null = legacy wp count)
   levels_config: "carla_core/configs/levels.yaml" # Block 5.2: level definitions loaded from levels.yaml # Override here or pass via env_config["levels"] for programmatic use.
+
+observation:
+  vehicle_nearby_radius_m: 60.0             # Radius for appended vehicle-local awareness.
+  pedestrian_nearby_radius_m: 40.0          # Radius for vehicle -> pedestrian awareness.
+  occupancy_radius_vehicle_m: 15.0          # Front-local static occupancy radius for vehicles.
+  occupancy_radius_pedestrian_m: 8.0        # Front-local static occupancy radius for pedestrians.
+  n_occ_sectors: 6                          # Must stay aligned with compiled obs dims.
+  enable_vehicle_pedestrian_obs: true       # Append nearby pedestrian slots to vehicle obs.
+  enable_static_occupancy: true             # Append binary occupancy sectors to both agent types.
+
+safety:
+  enable_controlled_brake: true             # TTC-based brake/steer guard for vehicles.
+  ttc_trigger_s: 1.5                        # Hazard trigger threshold.
+  ttc_horizon_m: 25.0                       # Search horizon for dynamic hazard anticipation.
+  max_brake: 0.85                           # Brake cap injected by safety guard.
+  steer_damping: 0.50                       # Steer damping under hazard.

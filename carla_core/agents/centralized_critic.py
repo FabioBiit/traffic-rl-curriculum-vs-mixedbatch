@@ -2,7 +2,7 @@
 CentralizedCriticModel — MAPPO Centralized Critic per RLlib 2.10.x
 ====================================================================
 Paradigma CTDE (Centralized Training, Decentralized Execution):
-  - Actor: vede solo obs locale (25D veicolo / 19D pedone)
+  - Actor: vede solo obs locale per tipo agente
   - Critic: vede global_obs = fixed-slot concat di TUTTE le obs degli agenti
 
 Componenti:
@@ -13,8 +13,8 @@ Componenti:
   4. PopArtLayer — Adaptive value normalization (Block 4.2)
 
 Fixed-slot global_obs layout (Block 4.1):
-  [v0_25D | v1_25D | v2_25D | p0_19D | p1_19D | p2_19D | alive_mask_6D]
-  Total: 3*25 + 3*19 + 6 = 138D (for 3V+3P config)
+  [v0_VD | v1_VD | v2_VD | p0_PD | p1_PD | p2_PD | alive_mask_6D]
+  Total: 3*VEHICLE_OBS_DIM + 3*PEDESTRIAN_OBS_DIM + 6
 
 PopArt (Block 4.2):
   Wraps the critic's output layer with running mean/std normalization.
@@ -51,8 +51,8 @@ logger = logging.getLogger(__name__)
 GLOBAL_OBS = "global_obs"
 
 # Obs dimensions per agent type (must match env constants)
-_VEHICLE_OBS_DIM = 25
-_PEDESTRIAN_OBS_DIM = 19
+_VEHICLE_OBS_DIM = 45
+_PEDESTRIAN_OBS_DIM = 25
 
 
 def _raise_on_nonfinite_np(name: str, arr: np.ndarray):
