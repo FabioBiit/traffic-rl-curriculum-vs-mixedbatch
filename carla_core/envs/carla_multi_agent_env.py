@@ -139,6 +139,10 @@ DEFAULT_MA_CONFIG = {
         "terminate_on_collision": True,
         "route_length_vehicle": 10,
         "route_length_pedestrian": 10,
+        "waypoint_lookahead": 8,
+        "vehicle_waypoint_radius_m": 2.0,
+        "pedestrian_waypoint_radius_m": 2.0,
+        "skipped_waypoint_penalty": 10.0,
         "route_distance_m": None,              # Block 5.1: A* route by meters (None=legacy)
         "route_distance_m_pedestrian": None,   # Block 5.1: sidewalk by meters (None=legacy)
     },
@@ -260,6 +264,7 @@ class AgentData:
         "position_history",
         "last_wp_advance_step",
         "loop_penalty_active",
+        "skipped_waypoints",
         "route_optimal_length",     # somma distanze WP-to-WP (calcolata al reset)
         "actual_distance_traveled", # accumulata step-by-step
         "prev_location"             # per calcolo distanza incrementale
@@ -281,6 +286,7 @@ class AgentData:
         self.position_history = []
         self.last_wp_advance_step = 0
         self.loop_penalty_active = False
+        self.skipped_waypoints = 0
         self.route_optimal_length = 0.0
         self.actual_distance_traveled = 0.0
         self.prev_location = None
@@ -358,6 +364,19 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._level_configs = self._load_level_configs()    # Block 5.2
 
     def _validate_augmented_obs_config(self):
+        ep_cfg = self.cfg.setdefault("episode", {})
+        ep_cfg.setdefault("waypoint_lookahead", 8)
+        ep_cfg.setdefault("vehicle_waypoint_radius_m", 2.0)
+        ep_cfg.setdefault("pedestrian_waypoint_radius_m", 2.0)
+        ep_cfg.setdefault("skipped_waypoint_penalty", 10.0)
+        if int(ep_cfg["waypoint_lookahead"]) < 0:
+            raise ValueError("episode.waypoint_lookahead must be >= 0")
+        for key in ("vehicle_waypoint_radius_m", "pedestrian_waypoint_radius_m"):
+            if float(ep_cfg[key]) <= 0.0:
+                raise ValueError(f"episode.{key} must be > 0")
+        if float(ep_cfg["skipped_waypoint_penalty"]) < 0.0:
+            raise ValueError("episode.skipped_waypoint_penalty must be >= 0")
+
         obs_cfg = self.cfg.setdefault("observation", {})
         if int(obs_cfg.get("n_occ_sectors", N_OCC_SECTORS)) != N_OCC_SECTORS:
             raise ValueError(
@@ -593,6 +612,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 "route_completion": self._route_completion(ad),
                 "path_efficiency": path_eff,
                 "termination_reason": termination_reason,
+                "skipped_waypoints": ad.skipped_waypoints,
             }
 
             if not term and not trunc:
@@ -1539,28 +1559,37 @@ class CarlaMultiAgentEnv(ParallelEnv):
     # Waypoint / route tracking
     # ------------------------------------------------------------------
 
-    def _advance_vehicle_waypoint(self, ad: AgentData):
-        """Advance vehicle along waypoint route"""
+    def _advance_waypoint_with_lookahead(self, ad: AgentData, radius_m: float):
+        """Advance to the first reached waypoint inside the configured lookahead."""
         if ad.current_wp_idx >= len(ad.route_waypoints):
             return
         loc = ad.actor.get_location()
-        wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 2.0: # 2.0m threshold vehicle (ratio 1:1)
-            ad.current_wp_idx += 1
-            ad.prev_dist_to_wp = 0.0
+        ep_cfg = self.cfg["episode"]
+        lookahead = max(0, int(ep_cfg.get("waypoint_lookahead", 0)))
+        start_idx = ad.current_wp_idx
+        end_idx = min(len(ad.route_waypoints), start_idx + lookahead + 1)
+        for idx in range(start_idx, end_idx):
+            wp_loc = ad.route_waypoints[idx].transform.location
+            if loc.distance(wp_loc) < radius_m:
+                ad.current_wp_idx = idx + 1
+                ad.prev_dist_to_wp = 0.0
+                ad.skipped_waypoints += max(0, idx - start_idx)
+                return
+
+    def _advance_vehicle_waypoint(self, ad: AgentData):
+        """Advance vehicle along waypoint route."""
+        ep_cfg = self.cfg["episode"]
+        radius_m = float(ep_cfg.get("vehicle_waypoint_radius_m", 2.0))
+        self._advance_waypoint_with_lookahead(ad, radius_m)
 
     def _advance_pedestrian_waypoint(self, ad: AgentData):
-        """Advance pedestrian along waypoint route"""
-        if ad.current_wp_idx >= len(ad.route_waypoints):
-            return
-        loc = ad.actor.get_location()
-        wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 2.0: # 2.0m threshold for pedestrians
-            ad.current_wp_idx += 1
-            ad.prev_dist_to_wp = 0.0
-            # Update goal_location for obs fallback
-            if ad.current_wp_idx < len(ad.route_waypoints):
-                ad.goal_location = ad.route_waypoints[ad.current_wp_idx].transform.location
+        """Advance pedestrian along waypoint route."""
+        ep_cfg = self.cfg["episode"]
+        radius_m = float(ep_cfg.get("pedestrian_waypoint_radius_m", 2.0))
+        prev_idx = ad.current_wp_idx
+        self._advance_waypoint_with_lookahead(ad, radius_m)
+        if ad.current_wp_idx > prev_idx and ad.current_wp_idx < len(ad.route_waypoints):
+            ad.goal_location = ad.route_waypoints[ad.current_wp_idx].transform.location
 
     def _route_completion(self, ad: AgentData) -> float:
         """Unified route completion for both vehicles and pedestrians."""
@@ -1619,6 +1648,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
             reward += wp_delta * 50.0  # very high, must be THE reason to move
+            skipped = max(0, wp_delta - 1)
+            if skipped:
+                penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
+                reward -= skipped * penalty
         ad.prev_wp_idx = ad.current_wp_idx
 
         # ---- 2. Distance to next WP (dense guidance — gets closer = good) ----
@@ -1679,6 +1712,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
             reward += wp_delta * 50.0
+            skipped = max(0, wp_delta - 1)
+            if skipped:
+                penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
+                reward -= skipped * penalty
         ad.prev_wp_idx = ad.current_wp_idx
 
         # ---- 2. Distance to next WP (dense guidance) ----
