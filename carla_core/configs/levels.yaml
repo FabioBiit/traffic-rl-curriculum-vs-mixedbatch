@@ -3,29 +3,7 @@
 # Training levels: traffic + route difficulty on fixed map (Town03).
 # Map-based generalization tested in final eval (Town05).
 
-# Finetuning Run v3
 levels:
-  easy:
-    map: "Town03"
-    n_vehicles_npc: 5
-    n_pedestrians_npc: 10
-    route_distance_m: 30
-    route_distance_m_pedestrian: 15
-
-  medium:
-    map: "Town03"
-    n_vehicles_npc: 15
-    n_pedestrians_npc: 30
-    route_distance_m: 80
-    route_distance_m_pedestrian: 35
-
-  hard:
-    map: "Town03"
-    n_vehicles_npc: 30
-    n_pedestrians_npc: 60
-    route_distance_m: 150
-    route_distance_m_pedestrian: 60
-
   # eval only
   test:
     map: "Town05"
