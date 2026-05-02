@@ -6,7 +6,7 @@ Port from MetaDrive prototype, decoupled from simulator and framework.
 Components:
   1. EpisodeTracker   — windowed SR/CR metrics for curriculum competence checks
   2. CurriculumManager — budget-normalized distributional teacher
-  3. BatchLevelSampler — stratified shuffle w/o replacement, cap uniforme
+  3. BatchLevelSampler — i.i.d. uniform random sampling
 
 Integration:
   Caller (training loop) reads metrics, calls these classes, then
@@ -756,58 +756,21 @@ class CurriculumManager:
 # ====================================================================
 
 class BatchLevelSampler:
-    """Stratified shuffle without replacement — Design B batch training.
+    """I.i.d. uniform random sampling — Design B batch training.
 
-    Each window of K levels is a shuffled permutation of all training levels.
-    Within a window, each level appears exactly once (no replacement).
-    Across windows, a per-level counter guarantees uniform distribution
-    with max imbalance of 1 episode.
+    Each call to sample() draws a level uniformly at random with replacement.
 
     Args:
         levels: training level names (default: ["easy", "medium", "hard"]).
-        window_size: K — levels per window (default: len(levels)).
         seed: random seed for reproducibility.
     """
 
-    def __init__(self, levels=None, window_size=None, seed=42):
+    def __init__(self, levels=None, seed=42):
         self.levels = levels or ["easy", "medium", "hard"]
-        self.window_size = window_size or len(self.levels)
         self._rng = random.Random(seed)
-        self._counts = {lv: 0 for lv in self.levels}
-        self._window = []
-        self._cursor = 0
-        self._total_samples = 0
-        self._refill_window()
-
-    def _refill_window(self):
-        """Create a new shuffled window of levels."""
-        self._window = list(self.levels)
-        self._rng.shuffle(self._window)
-        self._cursor = 0
 
     def sample(self) -> str:
-        """Return next level from current window. Refill when exhausted."""
-        if self._cursor >= len(self._window):
-            self._refill_window()
-
-        level = self._window[self._cursor]
-        self._cursor += 1
-        self._counts[level] += 1
-        self._total_samples += 1
-        return level
-
-    def counts_balanced(self, max_diff: int = 1) -> bool:
-        """Check if per-level counts are within max_diff of each other."""
-        if not self._counts:
-            return True
-        vals = list(self._counts.values())
-        return (max(vals) - min(vals)) <= max_diff
+        return self._rng.choice(self.levels)
 
     def summary(self) -> dict:
-        return {
-            "levels": list(self.levels),
-            "window_size": self.window_size,
-            "total_samples": self._total_samples,
-            "counts": dict(self._counts),
-            "balanced": self.counts_balanced(),
-        }
+        return {"levels": list(self.levels)}

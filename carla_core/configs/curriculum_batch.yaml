@@ -8,7 +8,6 @@ curriculum:
   # collision_threshold: 0.20    # default competence CR ceiling for unlock checks
   min_episodes: 50               # minimum episode support before any unlock
   window_size: 50                # episode tracker sliding window
-  teacher_seed: 42               # stochastic teacher seed
   unlock_criteria:
     medium:
       success_rate_threshold: 0.50          # soft medium unlocks when easy SR >= 50%
@@ -36,8 +35,6 @@ curriculum:
 
 batch:
   levels: ["easy", "medium", "hard"]
-  window_size: 3                 # K=3 stratified window
-  seed: 42                       # shuffle seed for reproducibility
 
 # Conservative hyperparams for multi-level to prevent NaN from distribution shift
 # Aligned with train_mappo.yaml G2 values — kept for explicit multi-level control

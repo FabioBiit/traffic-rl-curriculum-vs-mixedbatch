@@ -579,6 +579,9 @@ def main():
     parser.add_argument("--use-gnn", action="store_true",
                         help="Override model.use_gnn=true (Block 4.5). "
                              "Combine with --use-attention -> GAT.")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--difficulty", type=str, choices=["path", "traffic", "mixed"],
+                        required=True)
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -615,7 +618,7 @@ def main():
         print("          Forcing num_workers = 0 (single CARLA instance).")
         n_workers = 0
 
-    exp_seed = train_cfg.get("experiment", {}).get("seed", 42)
+    exp_seed = args.seed
     env_cfg.setdefault("traffic", {})
     env_cfg["traffic"]["seed"] = exp_seed
 
@@ -682,6 +685,9 @@ def main():
                     old_val = target.get(k)
                     target[k] = v
                     logger.info("Override %s: %s -> %s (multi-level stabilization)", k, old_val, v)
+
+    lv = load_yaml(base / "configs" / "levels.yaml")
+    env_cfg["levels"] = lv[f"levels_{args.difficulty}"]
 
     build_env_cfg = deepcopy(env_cfg)
     level_manager = None

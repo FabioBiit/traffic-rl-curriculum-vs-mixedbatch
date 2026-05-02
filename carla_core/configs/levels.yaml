@@ -33,3 +33,66 @@ levels:
     n_pedestrians_npc: 32
     route_distance_m: 120
     route_distance_m_pedestrian: 50
+
+# route-only difficulty: NPC fixed at medium values, route distance varies
+levels_path:
+  easy:
+    map: "Town03"
+    n_vehicles_npc: 15
+    n_pedestrians_npc: 30
+    route_distance_m: 30
+    route_distance_m_pedestrian: 15
+  medium:
+    map: "Town03"
+    n_vehicles_npc: 15
+    n_pedestrians_npc: 30
+    route_distance_m: 80
+    route_distance_m_pedestrian: 35
+  hard:
+    map: "Town03"
+    n_vehicles_npc: 15
+    n_pedestrians_npc: 30
+    route_distance_m: 150
+    route_distance_m_pedestrian: 60
+
+# traffic-only difficulty: route fixed at medium values, NPC counts vary
+levels_traffic:
+  easy:
+    map: "Town03"
+    n_vehicles_npc: 5
+    n_pedestrians_npc: 10
+    route_distance_m: 80
+    route_distance_m_pedestrian: 35
+  medium:
+    map: "Town03"
+    n_vehicles_npc: 15
+    n_pedestrians_npc: 30
+    route_distance_m: 80
+    route_distance_m_pedestrian: 35
+  hard:
+    map: "Town03"
+    n_vehicles_npc: 30
+    n_pedestrians_npc: 60
+    route_distance_m: 80
+    route_distance_m_pedestrian: 35
+
+# mixed difficulty: both route distance and NPC counts vary (mirrors levels:)
+levels_mixed:
+  easy:
+    map: "Town03"
+    n_vehicles_npc: 5
+    n_pedestrians_npc: 10
+    route_distance_m: 30
+    route_distance_m_pedestrian: 15
+  medium:
+    map: "Town03"
+    n_vehicles_npc: 15
+    n_pedestrians_npc: 30
+    route_distance_m: 80
+    route_distance_m_pedestrian: 35
+  hard:
+    map: "Town03"
+    n_vehicles_npc: 30
+    n_pedestrians_npc: 60
+    route_distance_m: 150
+    route_distance_m_pedestrian: 60
