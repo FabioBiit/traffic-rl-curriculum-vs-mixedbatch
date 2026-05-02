@@ -48,8 +48,14 @@ observation:
   occupancy_radius_vehicle_m: 15.0          # Front-local static occupancy radius for vehicles.
   occupancy_radius_pedestrian_m: 8.0        # Front-local static occupancy radius for pedestrians.
   n_occ_sectors: 6                          # Must stay aligned with compiled obs dims.
+  route_preview_waypoints: 3                # Must stay aligned with compiled obs dims.
+  path_hazard_slots: 3                      # Must stay aligned with compiled obs dims.
+  path_hazard_radius_m: 35.0                # Forward search radius for path hazard slots.
+  path_hazard_lateral_m: 4.0                # Half-width around planned path for hazard slots.
   enable_vehicle_pedestrian_obs: true       # Append nearby pedestrian slots to vehicle obs.
   enable_static_occupancy: true             # Append binary occupancy sectors to both agent types.
+  enable_curve_preview: true                # Append future waypoint preview and curve speed hint.
+  enable_path_hazard_obs: true              # Append path hazard slots to agent obs.
 
 safety:
   enable_controlled_brake: true             # TTC-based brake/steer guard for vehicles.

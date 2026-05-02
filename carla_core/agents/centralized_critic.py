@@ -51,8 +51,8 @@ logger = logging.getLogger(__name__)
 GLOBAL_OBS = "global_obs"
 
 # Obs dimensions per agent type (must match env constants)
-_VEHICLE_OBS_DIM = 45
-_PEDESTRIAN_OBS_DIM = 25
+_VEHICLE_OBS_DIM = 65
+_PEDESTRIAN_OBS_DIM = 45
 
 
 def _raise_on_nonfinite_np(name: str, arr: np.ndarray):

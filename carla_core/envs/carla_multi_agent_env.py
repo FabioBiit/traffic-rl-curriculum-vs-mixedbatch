@@ -12,9 +12,17 @@ Policy mapping:
     vehicle_* -> vehicle_policy
     pedestrian_* -> pedestrian_policy
 
-Vehicle obs (45D): legacy 25D + stronger local traffic + pedestrian awareness
-                   + static occupancy + hazard anticipation.
-Pedestrian obs (25D):
+Vehicle obs (65D): legacy 25D + stronger local traffic + pedestrian awareness
+                   + static occupancy + hazard anticipation + route preview
+                   + curve hint + path hazard slots.
+    [25:31] extra vehicle slots: (longitudinal, lateral, rel_speed) x 2
+    [31:37] pedestrian slots: (longitudinal, lateral, rel_speed) x 2
+    [37:43] static occupancy sectors
+    [43:45] min_ttc, brake_hint
+    [45:51] future waypoint preview: (distance, angle) x 3
+    [51:53] curve_severity, curve_speed_hint
+    [53:65] path hazard slots: (longitudinal, lateral, ttc, actor_type) x 3
+Pedestrian obs (45D):
     [0:3]   position (x, y, z) normalized
     [3:6]   velocity (vx, vy, vz) normalized
     [6]     speed scalar normalized
@@ -25,6 +33,9 @@ Pedestrian obs (25D):
     [12:18] nearest 2 vehicles: (rel_x, rel_y, rel_speed) x 2
     [18]    route_completion (0..1)
     [19:25] static occupancy sectors
+    [25:31] future waypoint preview: (distance, angle) x 3
+    [31:33] curve_severity, curve_speed_hint
+    [33:45] path hazard slots: (longitudinal, lateral, ttc, actor_type) x 3
 
 Vehicle action (2D continuous): [throttle_brake, steer]
 Pedestrian action (2D continuous): [speed_frac, direction_delta]
@@ -70,14 +81,25 @@ if sys.platform == "win32":
 N_OCC_SECTORS = 6
 N_EXTRA_NEARBY_VEHICLES_FOR_VEHICLE = 2
 N_NEARBY_PEDESTRIANS_FOR_VEHICLE = 2
+N_ROUTE_PREVIEW_WAYPOINTS = 3
+N_PATH_HAZARD_SLOTS = 3
+PATH_HAZARD_SLOT_DIM = 4
 
 VEHICLE_EXTRA_OBS_DIM = (
     N_EXTRA_NEARBY_VEHICLES_FOR_VEHICLE * 3
     + N_NEARBY_PEDESTRIANS_FOR_VEHICLE * 3
     + N_OCC_SECTORS
     + 2
+    + N_ROUTE_PREVIEW_WAYPOINTS * 2
+    + 2
+    + N_PATH_HAZARD_SLOTS * PATH_HAZARD_SLOT_DIM
 )
-PEDESTRIAN_EXTRA_OBS_DIM = N_OCC_SECTORS
+PEDESTRIAN_EXTRA_OBS_DIM = (
+    N_OCC_SECTORS
+    + N_ROUTE_PREVIEW_WAYPOINTS * 2
+    + 2
+    + N_PATH_HAZARD_SLOTS * PATH_HAZARD_SLOT_DIM
+)
 
 VEHICLE_OBS_DIM = 25 + VEHICLE_EXTRA_OBS_DIM
 PEDESTRIAN_OBS_DIM = 19 + PEDESTRIAN_EXTRA_OBS_DIM
@@ -152,8 +174,14 @@ DEFAULT_MA_CONFIG = {
         "occupancy_radius_vehicle_m": 15.0,
         "occupancy_radius_pedestrian_m": 8.0,
         "n_occ_sectors": N_OCC_SECTORS,
+        "route_preview_waypoints": N_ROUTE_PREVIEW_WAYPOINTS,
+        "path_hazard_slots": N_PATH_HAZARD_SLOTS,
+        "path_hazard_radius_m": 35.0,
+        "path_hazard_lateral_m": 4.0,
         "enable_vehicle_pedestrian_obs": True,
         "enable_static_occupancy": True,
+        "enable_curve_preview": True,
+        "enable_path_hazard_obs": True,
     },
     "safety": {
         "enable_controlled_brake": True,
@@ -383,12 +411,24 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 f"observation.n_occ_sectors must stay fixed at {N_OCC_SECTORS} "
                 f"to match the compiled obs dimensions"
             )
+        if int(obs_cfg.get("route_preview_waypoints", N_ROUTE_PREVIEW_WAYPOINTS)) != N_ROUTE_PREVIEW_WAYPOINTS:
+            raise ValueError(
+                f"observation.route_preview_waypoints must stay fixed at {N_ROUTE_PREVIEW_WAYPOINTS} "
+                f"to match the compiled obs dimensions"
+            )
+        if int(obs_cfg.get("path_hazard_slots", N_PATH_HAZARD_SLOTS)) != N_PATH_HAZARD_SLOTS:
+            raise ValueError(
+                f"observation.path_hazard_slots must stay fixed at {N_PATH_HAZARD_SLOTS} "
+                f"to match the compiled obs dimensions"
+            )
 
         for key in (
             "vehicle_nearby_radius_m",
             "pedestrian_nearby_radius_m",
             "occupancy_radius_vehicle_m",
             "occupancy_radius_pedestrian_m",
+            "path_hazard_radius_m",
+            "path_hazard_lateral_m",
         ):
             if float(obs_cfg.get(key, 0.0)) <= 0.0:
                 raise ValueError(f"observation.{key} must be > 0")
@@ -605,6 +645,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if termination_reason == "stuck":
                 path_eff = 0.0
 
+            curve_severity, curve_speed_hint = self._compute_curve_features(ad)
+            min_path_ttc, hazard_actor_type = self._path_hazard_summary(ad)
+
             # Build info dict for this agent
             agent_info = {
                 "step": self._step_count,
@@ -613,6 +656,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 "path_efficiency": path_eff,
                 "termination_reason": termination_reason,
                 "skipped_waypoints": ad.skipped_waypoints,
+                "curve_severity": curve_severity,
+                "curve_speed_hint": curve_speed_hint,
+                "min_path_ttc": min_path_ttc,
+                "hazard_actor_type": hazard_actor_type,
             }
 
             if not term and not trunc:
@@ -1298,6 +1345,20 @@ class CarlaMultiAgentEnv(ParallelEnv):
         min_ttc, brake_hint = self._compute_vehicle_hazard_features(ad)
         obs[cursor] = min_ttc
         obs[cursor + 1] = brake_hint
+        cursor += 2
+
+        if ob_cfg.get("enable_curve_preview", True):
+            self._fill_route_preview(obs, cursor, ad, t)
+        cursor += N_ROUTE_PREVIEW_WAYPOINTS * 2
+
+        if ob_cfg.get("enable_curve_preview", True):
+            curve_severity, curve_speed_hint = self._compute_curve_features(ad)
+            obs[cursor] = curve_severity
+            obs[cursor + 1] = curve_speed_hint
+        cursor += 2
+
+        if ob_cfg.get("enable_path_hazard_obs", True):
+            self._fill_path_hazard_slots(obs, cursor, ad)
 
         return self._sanitize_obs(obs, ad.agent_id)
 
@@ -1362,6 +1423,20 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 sectors=int(ob_cfg["n_occ_sectors"]),
                 lane_mode="pedestrian",
             )
+        cursor += int(ob_cfg["n_occ_sectors"])
+
+        if ob_cfg.get("enable_curve_preview", True):
+            self._fill_route_preview(obs, cursor, ad, t)
+        cursor += N_ROUTE_PREVIEW_WAYPOINTS * 2
+
+        if ob_cfg.get("enable_curve_preview", True):
+            curve_severity, curve_speed_hint = self._compute_curve_features(ad)
+            obs[cursor] = curve_severity
+            obs[cursor + 1] = curve_speed_hint
+        cursor += 2
+
+        if ob_cfg.get("enable_path_hazard_obs", True):
+            self._fill_path_hazard_slots(obs, cursor, ad)
 
         return self._sanitize_obs(obs, ad.agent_id)
 
@@ -1495,11 +1570,60 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         obs[start_idx:start_idx + sectors] = values
 
-    def _compute_vehicle_hazard_features(self, ad: AgentData):
-        safety_cfg = self.cfg["safety"]
-        horizon_m = float(safety_cfg["ttc_horizon_m"])
-        trigger_s = float(safety_cfg["ttc_trigger_s"])
+    @staticmethod
+    def _wrap_angle(angle: float) -> float:
+        return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
+    def _fill_route_preview(self, obs: np.ndarray, start_idx: int, ad: AgentData, ego_tf):
+        ego_loc = ego_tf.location
+        ego_yaw = math.radians(ego_tf.rotation.yaw)
+        route_start = ad.current_wp_idx + 1
+        for slot in range(N_ROUTE_PREVIEW_WAYPOINTS):
+            route_idx = route_start + slot
+            if route_idx >= len(ad.route_waypoints):
+                break
+            wp_loc = ad.route_waypoints[route_idx].transform.location
+            dx = wp_loc.x - ego_loc.x
+            dy = wp_loc.y - ego_loc.y
+            dist = math.sqrt(dx**2 + dy**2)
+            angle = self._wrap_angle(math.atan2(dy, dx) - ego_yaw)
+            idx = start_idx + slot * 2
+            obs[idx] = np.clip(dist / 100.0, 0.0, 1.0)
+            obs[idx + 1] = np.clip(angle / math.pi, -1.0, 1.0)
+
+    def _compute_curve_features(self, ad: AgentData):
+        if ad.current_wp_idx >= len(ad.route_waypoints):
+            return 0.0, 1.0
+
+        points = [ad.actor.get_location()]
+        end_idx = min(
+            len(ad.route_waypoints),
+            ad.current_wp_idx + N_ROUTE_PREVIEW_WAYPOINTS + 1,
+        )
+        points.extend(
+            wp.transform.location for wp in ad.route_waypoints[ad.current_wp_idx:end_idx]
+        )
+
+        headings = []
+        for a, b in zip(points, points[1:]):
+            dx = b.x - a.x
+            dy = b.y - a.y
+            if math.sqrt(dx**2 + dy**2) <= 1e-3:
+                continue
+            headings.append(math.atan2(dy, dx))
+
+        if len(headings) < 2:
+            return 0.0, 1.0
+
+        max_delta = max(
+            abs(self._wrap_angle(headings[i + 1] - headings[i]))
+            for i in range(len(headings) - 1)
+        )
+        curve_severity = float(np.clip(max_delta / math.pi, 0.0, 1.0))
+        curve_speed_hint = float(np.clip(1.0 - curve_severity, 0.0, 1.0))
+        return curve_severity, curve_speed_hint
+
+    def _path_hazard_candidates(self, ad: AgentData, *, radius_m: float, lateral_m: float):
         ego_tf = ad.actor.get_transform()
         ego_loc = ego_tf.location
         fwd = ego_tf.get_forward_vector()
@@ -1507,33 +1631,93 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         ego_vel = ad.actor.get_velocity()
         ego_vx, ego_vy = ego_vel.x, ego_vel.y
+        candidates = []
 
-        min_ttc = None
         for _, actor in self._collect_nearby(
             ad,
             patterns=("vehicle.*", "walker.pedestrian.*"),
-            radius_m=horizon_m,
+            radius_m=radius_m,
         ):
             loc = actor.get_location()
             dx = loc.x - ego_loc.x
             dy = loc.y - ego_loc.y
-
             longitudinal = dx * fwd.x + dy * fwd.y
-            lateral = abs(dx * right_x + dy * right_y)
-            if longitudinal <= 0.0 or lateral > 2.5:
+            lateral = dx * right_x + dy * right_y
+            if longitudinal <= 0.0 or abs(lateral) > lateral_m:
                 continue
 
             vel = actor.get_velocity()
             rel_vx = vel.x - ego_vx
             rel_vy = vel.y - ego_vy
             closing_speed = -(rel_vx * fwd.x + rel_vy * fwd.y)
-            if closing_speed <= 1e-3:
-                continue
+            ttc_s = None if closing_speed <= 1e-3 else longitudinal / closing_speed
+            actor_type_id = str(getattr(actor, "type_id", ""))
+            if actor_type_id.startswith("walker.pedestrian"):
+                actor_type = "pedestrian"
+                actor_type_value = -1.0
+            elif actor_type_id.startswith("vehicle"):
+                actor_type = "vehicle"
+                actor_type_value = 1.0
+            else:
+                actor_type = "other"
+                actor_type_value = 0.0
 
-            ttc = longitudinal / closing_speed
-            if min_ttc is None or ttc < min_ttc:
-                min_ttc = ttc
+            candidates.append({
+                "longitudinal": longitudinal,
+                "lateral": lateral,
+                "ttc_s": ttc_s,
+                "actor_type": actor_type,
+                "actor_type_value": actor_type_value,
+            })
 
+        candidates.sort(key=lambda item: item["longitudinal"])
+        return candidates
+
+    def _path_hazard_summary(self, ad: AgentData):
+        ob_cfg = self.cfg["observation"]
+        safety_cfg = self.cfg["safety"]
+        candidates = self._path_hazard_candidates(
+            ad,
+            radius_m=float(ob_cfg.get("path_hazard_radius_m", safety_cfg["ttc_horizon_m"])),
+            lateral_m=float(ob_cfg.get("path_hazard_lateral_m", 4.0)),
+        )
+        timed = [item for item in candidates if item["ttc_s"] is not None]
+        if not timed:
+            return None, None
+        nearest = min(timed, key=lambda item: item["ttc_s"])
+        return float(nearest["ttc_s"]), nearest["actor_type"]
+
+    def _fill_path_hazard_slots(self, obs: np.ndarray, start_idx: int, ad: AgentData):
+        ob_cfg = self.cfg["observation"]
+        safety_cfg = self.cfg["safety"]
+        radius_m = float(ob_cfg.get("path_hazard_radius_m", safety_cfg["ttc_horizon_m"]))
+        lateral_m = float(ob_cfg.get("path_hazard_lateral_m", 4.0))
+        trigger_s = float(safety_cfg["ttc_trigger_s"])
+        candidates = self._path_hazard_candidates(
+            ad,
+            radius_m=radius_m,
+            lateral_m=lateral_m,
+        )
+
+        for slot, hazard in enumerate(candidates[:N_PATH_HAZARD_SLOTS]):
+            idx = start_idx + slot * PATH_HAZARD_SLOT_DIM
+            obs[idx] = np.clip(hazard["longitudinal"] / radius_m, 0.0, 1.0)
+            obs[idx + 1] = np.clip(hazard["lateral"] / lateral_m, -1.0, 1.0)
+            ttc_s = hazard["ttc_s"]
+            obs[idx + 2] = 1.0 if ttc_s is None else np.clip(ttc_s / trigger_s, 0.0, 1.0)
+            obs[idx + 3] = hazard["actor_type_value"]
+
+    def _compute_vehicle_hazard_features(self, ad: AgentData):
+        safety_cfg = self.cfg["safety"]
+        horizon_m = float(safety_cfg["ttc_horizon_m"])
+        trigger_s = float(safety_cfg["ttc_trigger_s"])
+        candidates = self._path_hazard_candidates(
+            ad,
+            radius_m=horizon_m,
+            lateral_m=2.5,
+        )
+        ttc_values = [item["ttc_s"] for item in candidates if item["ttc_s"] is not None]
+        min_ttc = None if not ttc_values else min(ttc_values)
         norm_ttc = 1.0 if min_ttc is None else np.clip(min_ttc / trigger_s, 0.0, 1.0)
         brake_hint = 0.0 if min_ttc is None else np.clip((trigger_s - min_ttc) / trigger_s, 0.0, 1.0)
         return float(norm_ttc), float(brake_hint)
