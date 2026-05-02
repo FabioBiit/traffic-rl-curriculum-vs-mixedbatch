@@ -7,7 +7,6 @@ experiment:
   name: "carla_mappo"
   mode: "auto"                 # Auto-resolve from run/output naming, or override with --mode
   output_dir: "carla_core/experiments"
-  seed: 42
 
 resources:
   num_workers: 0                # 0 = local driver only (CARLA single instance)
