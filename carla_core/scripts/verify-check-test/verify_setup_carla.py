@@ -1,7 +1,6 @@
 """
 Verify CARLA + RLlib setup and connectivity.
 Checks: CARLA server, Python API, Ray/RLlib, PyTorch GPU.
-MetaDrive check is optional (prototype phase only).
 
 Esegui con: python ./carla_core/scripts/verify_setup_carla.py
 """
@@ -48,9 +47,8 @@ def main():
     all_ok &= check("CARLA", lambda: getattr(__import__("carla"), "__version__", "installato"))
     all_ok &= check("PettingZoo", lambda: __import__("pettingzoo").__version__)
 
-    print("\n-- MetaDrive prototype (optional) --")
+    print("\n-- Experiment tracking (optional) --")
     check("Stable-Baselines3", lambda: __import__("stable_baselines3").__version__, optional=True)
-    check("MetaDrive", lambda: __import__("metadrive").__version__ if hasattr(__import__("metadrive"), "__version__") else "installato", optional=True)
     check("W&B", lambda: __import__("wandb").__version__, optional=True)
 
     print("\n-- GNN (optional, gate G5) --")

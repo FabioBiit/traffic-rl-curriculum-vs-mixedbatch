@@ -1,7 +1,7 @@
 """
 CurriculumManager & BatchLevelSampler — CARLA MAPPO (Block 5.3 + 5.3b)
 =======================================================================
-Port from MetaDrive prototype, decoupled from simulator and framework.
+Simulator-agnostic curriculum/batch scheduling for CARLA MAPPO runs.
 
 Components:
   1. EpisodeTracker   — windowed SR/CR metrics for curriculum competence checks
@@ -13,7 +13,6 @@ Integration:
   calls env.set_level(level) + env.reset(). No direct env dependency.
 
 References:
-  - MetaDrive prototype: metadrive_prototype/envs/multi_level_env.py
   - Design B: levels = map+traffic combo (levels.yaml)
 """
 
