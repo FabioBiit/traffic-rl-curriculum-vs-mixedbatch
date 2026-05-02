@@ -496,6 +496,7 @@ def _scope_output_base_by_mode(out_base_path, mode):
 def _build_results_payload(
     *,
     exp_cfg,
+    exp_seed,
     name,
     total_ts,
     ts_done,
@@ -536,7 +537,7 @@ def _build_results_payload(
             "simulator": "CARLA",
             "algorithm": "MAPPO",
             "name": name,
-            "seed": exp_cfg.get("seed", 42),
+            "seed": exp_seed,
             "total_timesteps_budget": int(total_ts),
             "total_timesteps_actual": int(ts_done),
             "total_episodes": total_episodes,
@@ -1064,6 +1065,7 @@ def main():
         try:
             results_payload = _build_results_payload(
                 exp_cfg=exp_cfg,
+                exp_seed=exp_seed,
                 name=name,
                 total_ts=total_ts,
                 ts_done=ts_done,
