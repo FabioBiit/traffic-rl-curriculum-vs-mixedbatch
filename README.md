@@ -42,32 +42,3 @@ traffic-rl-curriculum-vs-mixedbatch/
 |-- requirements.txt
 `-- README.md
 ```
-
-### MetaDrive Prototype Commands
-```bash
-python ./metadrive_prototype/scripts/verify_setup.py
-python ./metadrive_prototype/training/train_experiment.py --mode both --timesteps 1500000
-python ./metadrive_prototype/scripts/compare_results.py \
-  --batch metadrive_prototype/experiments/batch/<run>/results.json \
-  --curriculum metadrive_prototype/experiments/curriculum/<run>/results.json \
-  --output metadrive_prototype/results/plots/<name>
-```
-
-### Gate Decisions
-| Gate | Date   | Question                           | Pass ->         | Fail ->              |
-|------|--------|------------------------------------|-----------------|----------------------|
-| G1   | 31 Mar | RL loop works? CARLA installed?   | Start CARLA dev | Fix setup/runtime    |
-| G2   | 30 Apr | RLlib + CARLA communicate?        | Continue RLlib  | Switch to PettingZoo |
-| G3   | 31 May | Multi-agent trains without crash? | Scale scenarios | Reduce scope         |
-| G4   | 30 Jun | MAPPO + MLP converges on 2 maps?  | Add attention   | Stabilize baseline   |
-| G5   | 31 Jul | Attention works on 3 maps?        | Freeze design   | Freeze baseline      |
-| G6   | 31 Aug | All experiments completed?        | Start writing   | Complete by Sep 7    |
-
-### Timeline
-- March: Research and MetaDrive prototyping
-- April: CARLA wrapper and single-agent baseline
-- May: Multi-agent MAPPO loop
-- June-July: Scaling and experiments
-- August: Full experiments
-- September: Thesis writing
-- October 1-9: Final revision and submission
