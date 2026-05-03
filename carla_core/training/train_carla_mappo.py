@@ -496,6 +496,7 @@ def _scope_output_base_by_mode(out_base_path, mode):
 def _build_results_payload(
     *,
     exp_cfg,
+    exp_seed,
     name,
     total_ts,
     ts_done,
@@ -536,7 +537,7 @@ def _build_results_payload(
             "simulator": "CARLA",
             "algorithm": "MAPPO",
             "name": name,
-            "seed": exp_cfg.get("seed", 42),
+            "seed": exp_seed,
             "total_timesteps_budget": int(total_ts),
             "total_timesteps_actual": int(ts_done),
             "total_episodes": total_episodes,
@@ -579,6 +580,9 @@ def main():
     parser.add_argument("--use-gnn", action="store_true",
                         help="Override model.use_gnn=true (Block 4.5). "
                              "Combine with --use-attention -> GAT.")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--difficulty", type=str, choices=["path", "traffic", "mixed"],
+                        required=True)
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -615,7 +619,7 @@ def main():
         print("          Forcing num_workers = 0 (single CARLA instance).")
         n_workers = 0
 
-    exp_seed = train_cfg.get("experiment", {}).get("seed", 42)
+    exp_seed = args.seed
     env_cfg.setdefault("traffic", {})
     env_cfg["traffic"]["seed"] = exp_seed
 
@@ -682,6 +686,9 @@ def main():
                     old_val = target.get(k)
                     target[k] = v
                     logger.info("Override %s: %s -> %s (multi-level stabilization)", k, old_val, v)
+
+    lv = load_yaml(base / "configs" / "levels.yaml")
+    env_cfg["levels"] = lv[f"levels_{args.difficulty}"]
 
     build_env_cfg = deepcopy(env_cfg)
     level_manager = None
@@ -1058,6 +1065,7 @@ def main():
         try:
             results_payload = _build_results_payload(
                 exp_cfg=exp_cfg,
+                exp_seed=exp_seed,
                 name=name,
                 total_ts=total_ts,
                 ts_done=ts_done,

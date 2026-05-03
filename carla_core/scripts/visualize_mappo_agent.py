@@ -289,6 +289,7 @@ def _build_worker_payload(args):
         "env_config": args.env_config,
         "train_config": args.train_config,
         "level": args.level,
+        "difficulty": args.difficulty,
         "map": args.map,
         "npc_vehicles": args.npc_vehicles,
         "npc_pedestrians": args.npc_pedestrians,
@@ -327,6 +328,9 @@ def _run_visualization_worker(payload):
     env_cfg = load_yaml(payload.get("env_config") or base / "configs" / "multi_agent.yaml")
 
     env_cfg.setdefault("world", {})
+    if payload.get("difficulty"):
+        lv = load_yaml(base / "configs" / "levels.yaml")
+        env_cfg["levels"] = lv[f"levels_{payload['difficulty']}"]
     if payload.get("level"):
         apply_level_config(env_cfg, str(payload["level"]).strip().lower())
     env_cfg["world"]["no_rendering"] = False
@@ -754,8 +758,15 @@ def main():
         "--level",
         type=str,
         choices=("easy", "medium", "hard"),
-        default=None,
-        help="Apply level settings from levels.yaml before explicit map/NPC overrides",
+        default="easy",
+        help="Level to visualize within the chosen difficulty set (default: easy)",
+    )
+    parser.add_argument(
+        "--difficulty",
+        type=str,
+        choices=["path", "traffic", "mixed"],
+        required=True,
+        help="Level set to use: path (route varies), traffic (NPC varies), mixed (both vary)",
     )
     parser.add_argument("--map", type=str, default=None, help="Override CARLA map (e.g. Town05)")
     parser.add_argument("--npc-vehicles", type=int, default=None, help="Override NPC vehicles")
