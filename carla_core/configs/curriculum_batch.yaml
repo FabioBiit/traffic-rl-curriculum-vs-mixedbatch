@@ -13,15 +13,15 @@ curriculum:
       success_rate_threshold: 0.50          # soft medium unlocks when easy SR >= 50%
       collision_rate_threshold: 0.20        # CR must be <= 20% for medium unlock checks
       min_budget_share: 0.333               # easy share required before medium can unlock
-      force_unlock_global_share_cap: 0.34   # force unlock by 34% of total budget if CR stays acceptable
+      force_unlock_global_share_cap: 0.33   # force unlock by 34% of total budget if CR stays acceptable
     hard:
       success_rate_threshold: 0.40          # soft hard unlocks when medium SR >= 40%
       collision_rate_threshold: 0.30        # CR must be <= 30% for hard unlock checks (allow higher CR for hard unlock)
       min_budget_share: 0.333               # medium share required before hard can unlock
-      force_unlock_global_share_cap: 0.67   # force unlock by 67% of total budget if CR stays acceptable
+      force_unlock_global_share_cap: 0.66   # force unlock by 67% of total budget if CR stays acceptable
   budget_constraints:
     easy_max_share: 0.34                    # easy cannot exceed 34% once medium is available
-    medium_max_share: 0.34                  # medium cannot monopolize post-hard training
+    medium_max_share: 0.33                  # medium cannot monopolize post-hard training
     hard_min_share: 0.33                    # dynamic hard floor over the total budget
   base_sampling_weights:
     easy: 1.00
