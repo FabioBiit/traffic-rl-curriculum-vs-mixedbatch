@@ -40,6 +40,7 @@ Changelog v0.2:
 
 import logging
 import math
+import os
 import signal
 import sys
 from copy import deepcopy
@@ -638,7 +639,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
     def _connect(self):
         sim = self.cfg["simulator"]
-        self._client = carla.Client(sim["host"], sim["port"])
+        host = os.environ.get("CARLA_HOST", sim["host"])
+        port = int(os.environ.get("CARLA_PORT", sim["port"]))
+        self._client = carla.Client(host, port)
         self._client.set_timeout(sim["timeout_seconds"])
         tm_port = int(sim.get("traffic_manager_port", 8000))
 
