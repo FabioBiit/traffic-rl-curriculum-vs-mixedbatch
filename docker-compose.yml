@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  carla-server:
+    image: carlasim/carla:0.9.16
+    command: /bin/bash -c "cd /home/carla && ./CarlaUE4.sh -RenderOffScreen -nosound"
+    ports:
+      - "2000:2000"
+      - "2001:2001"
+      - "2002:2002"
+    shm_size: "6gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  trainer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.trainer
+    depends_on:
+      - carla-server
+    environment:
+      - CARLA_HOST=carla-server
+      - CARLA_PORT=2000
+    volumes:
+      - ./carla_core/experiments:/app/carla_core/experiments
+      - ./carla_core/results:/app/carla_core/results
+      - ./carla_core/configs:/app/carla_core/configs
+      - ./metadrive_prototype/experiments:/app/metadrive_prototype/experiments
+      - ./metadrive_prototype/results:/app/metadrive_prototype/results
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    ipc: host

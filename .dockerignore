@@ -1,0 +1,15 @@
+.git
+**/.git
+carla_core/experiments
+carla_core/results
+metadrive_prototype/experiments
+metadrive_prototype/results
+**/venv
+**/.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/checkpoint*
+**/checkpoints
+**/*.egg-info

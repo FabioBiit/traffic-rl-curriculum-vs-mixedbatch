@@ -648,8 +648,8 @@ def _launch_carla_server(command_args):
 
 def _wait_for_carla_server(env_cfg, *, timeout_seconds, poll_seconds):
     simulator_cfg = env_cfg.get("simulator", {}) or {}
-    host = simulator_cfg.get("host", "127.0.0.1")
-    port = int(simulator_cfg.get("port", 2000))
+    host = os.environ.get("CARLA_HOST", simulator_cfg.get("host", "127.0.0.1"))
+    port = int(os.environ.get("CARLA_PORT", simulator_cfg.get("port", 2000)))
     client_timeout_s = min(5.0, max(1.0, float(simulator_cfg.get("timeout_seconds", 20.0))))
     deadline = time.time() + max(5.0, float(timeout_seconds))
     poll_s = max(0.5, float(poll_seconds))
@@ -1489,7 +1489,9 @@ def _carla_prepare_world(env_cfg, *, force_reload):
     traffic-manager configuration during evaluation episodes.
     """
     sim = env_cfg["simulator"]
-    client = carla.Client(sim["host"], sim["port"])
+    host = os.environ.get("CARLA_HOST", sim["host"])
+    port = int(os.environ.get("CARLA_PORT", sim["port"]))
+    client = carla.Client(host, port)
     client.set_timeout(sim["timeout_seconds"])
 
     target_map = env_cfg["world"]["map"]

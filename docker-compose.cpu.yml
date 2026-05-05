@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  carla-server:
+    deploy:
+      resources:
+        reservations:
+          devices: []
+
+  trainer:
+    deploy:
+      resources:
+        reservations:
+          devices: []

@@ -26,6 +26,7 @@ Action space (continuous, dim=2):
 
 import logging
 import math
+import os
 import signal
 import sys
 from copy import deepcopy
@@ -248,7 +249,9 @@ class CarlaEnv(gym.Env):
 
     def _connect(self):
         sim = self.cfg["simulator"]
-        self._client = carla.Client(sim["host"], sim["port"])
+        host = os.environ.get("CARLA_HOST", sim["host"])
+        port = int(os.environ.get("CARLA_PORT", sim["port"]))
+        self._client = carla.Client(host, port)
         self._client.set_timeout(sim["timeout_seconds"])
 
         target_map = self.cfg["world"]["map"]
