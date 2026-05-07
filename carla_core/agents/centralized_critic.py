@@ -757,6 +757,8 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                     "termination_reason": tr,
                     "route_completion": info.get("route_completion", 0.0),
                     "path_efficiency": info.get("path_efficiency", 0.0),
+                    "skipped_waypoints": info.get("skipped_waypoints", 0),
+                    "last_skipped_waypoints": info.get("last_skipped_waypoints", 0),
                 }
 
         # --- Source 2: side-channel for terminated agents ---
@@ -775,6 +777,8 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                         "termination_reason": tr,
                         "route_completion": info.get("route_completion", 0.0),
                         "path_efficiency": info.get("path_efficiency", 0.0),
+                        "skipped_waypoints": info.get("skipped_waypoints", 0),
+                        "last_skipped_waypoints": info.get("last_skipped_waypoints", 0),
                     }
         except (AttributeError, IndexError):
             pass
@@ -817,6 +821,9 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             )
             episode.custom_metrics[f"{policy_id}/path_efficiency"] = float(
                 np.mean([d["path_efficiency"] for d in agent_data.values()])
+            )
+            episode.custom_metrics[f"{policy_id}/skipped_waypoints"] = float(
+                np.mean([d.get("skipped_waypoints", 0) for d in agent_data.values()])
             )
 
         # Debug: warn about agents with no captured outcome

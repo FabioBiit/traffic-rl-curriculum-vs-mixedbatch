@@ -133,6 +133,8 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
                         "termination_reason": out["termination_reason"],
                         "route_completion": round(out["route_completion"], 4),
                         "path_efficiency": round(out["path_efficiency"], 4),
+                        "skipped_waypoints": int(out.get("skipped_waypoints", 0)),
+                        "last_skipped_waypoints": int(out.get("last_skipped_waypoints", 0)),
                         "step_count": episode.length,
                         "level": current_level,
                     },
