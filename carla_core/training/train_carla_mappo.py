@@ -283,8 +283,23 @@ def _safe_rate(numerator, denominator):
     return float(numerator) / float(denominator)
 
 
+POLICY_OUTCOME_KEYS = ("vehicle_policy", "pedestrian_policy")
+
+
+def _empty_outcome_stats():
+    return {
+        "total": 0,
+        "success": 0,
+        "collision": 0,
+        "by_policy": {
+            policy_id: {"total": 0, "success": 0, "collision": 0}
+            for policy_id in POLICY_OUTCOME_KEYS
+        },
+    }
+
+
 def _read_episode_log_delta(log_path, start_offset):
-    stats = {"total": 0, "success": 0, "collision": 0}
+    stats = _empty_outcome_stats()
     if not log_path or not os.path.exists(log_path):
         return 0, stats
 
@@ -305,11 +320,19 @@ def _read_episode_log_delta(log_path, start_offset):
                 continue
 
             termination_reason = record.get("termination_reason")
+            policy_id = record.get("policy")
             stats["total"] += 1
+            policy_stats = stats["by_policy"].get(policy_id)
+            if policy_stats is not None:
+                policy_stats["total"] += 1
             if termination_reason == "route_complete":
                 stats["success"] += 1
+                if policy_stats is not None:
+                    policy_stats["success"] += 1
             if termination_reason == "collision":
                 stats["collision"] += 1
+                if policy_stats is not None:
+                    policy_stats["collision"] += 1
 
     return offset, stats
 
@@ -322,6 +345,14 @@ def _apply_delta_stats_to_tracker(tracker, delta_stats):
         collisions=delta_stats.get("collision", 0),
         total=delta_stats.get("total", 0),
     )
+
+
+def _apply_policy_delta_stats_to_trackers(policy_trackers, delta_stats):
+    if not policy_trackers:
+        return
+    by_policy = delta_stats.get("by_policy", {})
+    for policy_id, tracker in policy_trackers.items():
+        _apply_delta_stats_to_tracker(tracker, by_policy.get(policy_id, {}))
 
 
 def _extract_custom_metric(result, *names):
@@ -674,6 +705,10 @@ def main():
     episode_log_path = os.environ["MAPPO_EPISODE_LOG"]
     episode_log_offset = os.path.getsize(episode_log_path) if os.path.exists(episode_log_path) else 0
     cumulative_agent_outcomes = {"total": 0, "success": 0, "collision": 0}
+    cumulative_policy_outcomes = {
+        policy_id: {"total": 0, "success": 0, "collision": 0}
+        for policy_id in POLICY_OUTCOME_KEYS
+    }
     cb_cfg = load_yaml(base / "configs" / "curriculum_batch.yaml")
 
     # Apply conservative optimizer overrides for multi-level runs
@@ -694,6 +729,7 @@ def main():
     level_manager = None
     level_tracker = None
     executed_level_trackers = None
+    executed_level_policy_trackers = None
     current_training_level = None
     initial_level = None
     initial_map = None
@@ -717,11 +753,20 @@ def main():
             probation_sampling_weights=cc.get("probation_sampling_weights", {}),
             probation_blocks_after_unlock=cc.get("probation_blocks_after_unlock", 2),
             probation_blocks_after_cap_pressure=cc.get("probation_blocks_after_cap_pressure", 1),
+            require_policy_success=cc.get("require_policy_success", False),
+            policy_ids=cc.get("policy_ids", list(POLICY_OUTCOME_KEYS)),
             teacher_seed=cc.get("teacher_seed", exp_seed),
             window_size=window_size,
         )
         executed_level_trackers = {
             level_name: EpisodeTracker(window_size=window_size)
+            for level_name in level_manager.levels
+        }
+        executed_level_policy_trackers = {
+            level_name: {
+                policy_id: EpisodeTracker(window_size=window_size)
+                for policy_id in level_manager.policy_ids
+            }
             for level_name in level_manager.levels
         }
         level_tracker = None
@@ -797,6 +842,7 @@ def main():
         level_manager = None
         level_tracker = None
         executed_level_trackers = None
+        executed_level_policy_trackers = None
         current_training_level = None
         initial_level = None
         initial_map = None
@@ -853,8 +899,14 @@ def main():
             episode_log_offset, delta_stats = _read_episode_log_delta(
                 episode_log_path, episode_log_offset
             )
-            for key, value in delta_stats.items():
-                cumulative_agent_outcomes[key] += value
+            for key in ("total", "success", "collision"):
+                cumulative_agent_outcomes[key] += delta_stats.get(key, 0)
+            for policy_id, policy_stats in delta_stats.get("by_policy", {}).items():
+                cumulative_stats = cumulative_policy_outcomes.get(policy_id)
+                if cumulative_stats is None:
+                    continue
+                for key in ("total", "success", "collision"):
+                    cumulative_stats[key] += policy_stats.get(key, 0)
             cumulative_success_rate = _safe_rate(
                 cumulative_agent_outcomes["success"],
                 cumulative_agent_outcomes["total"],
@@ -881,12 +933,20 @@ def main():
                     if executed_tracker is not None:
                         executed_tracker.add_timesteps(iter_ts)
                         _apply_delta_stats_to_tracker(executed_tracker, delta_stats)
+                    executed_policy_trackers = None
+                    if executed_level_policy_trackers is not None:
+                        executed_policy_trackers = executed_level_policy_trackers.get(executed_level)
+                    if executed_policy_trackers is not None:
+                        for tracker in executed_policy_trackers.values():
+                            tracker.add_timesteps(iter_ts)
+                        _apply_policy_delta_stats_to_trackers(executed_policy_trackers, delta_stats)
 
                     level_manager.record_execution(executed_level, iter_ts)
 
                     if raw_env:
                         next_level, teacher_diagnostics = level_manager.get_episode_level(
                             trackers=executed_level_trackers,
+                            policy_trackers=executed_level_policy_trackers,
                             global_timestep=ts_done,
                         )
                         for teacher_event in teacher_diagnostics.get("events", []):
@@ -1099,6 +1159,30 @@ def main():
                         results_payload["level_trackers"] = {
                             level_name: tracker.summary()
                             for level_name, tracker in executed_level_trackers.items()
+                        }
+                    if executed_level_policy_trackers:
+                        results_payload["policy_level_trackers"] = {
+                            level_name: {
+                                policy_id: tracker.summary()
+                                for policy_id, tracker in policy_trackers.items()
+                            }
+                            for level_name, policy_trackers in executed_level_policy_trackers.items()
+                        }
+                        results_payload["training_summary"]["policy_outcomes"] = {
+                            policy_id: {
+                                "total": stats["total"],
+                                "success": stats["success"],
+                                "collision": stats["collision"],
+                                "cumulative_success_rate": _safe_rate(
+                                    stats["success"],
+                                    stats["total"],
+                                ),
+                                "cumulative_collision_rate": _safe_rate(
+                                    stats["collision"],
+                                    stats["total"],
+                                ),
+                            }
+                            for policy_id, stats in cumulative_policy_outcomes.items()
                         }
                 elif isinstance(level_manager, BatchLevelSampler):
                     results_payload["batch_sampling"] = level_manager.summary()
