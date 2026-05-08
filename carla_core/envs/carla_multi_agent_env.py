@@ -1576,15 +1576,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
         vel = ad.actor.get_velocity()
         speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
         el = ad.actor.get_location()
-        distance_delta = 0.0
 
         # ---- 1. Waypoint reach bonus (DOMINANT — sole positive signal) ----
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
-        made_route_progress = wp_delta > 0
         if wp_delta > 0:
             reward += wp_delta * 50.0  # very high, must be THE reason to move
         if ad.last_skipped_waypoints > 0:
-            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 25.0))
+            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
             reward -= ad.last_skipped_waypoints * penalty
         ad.prev_wp_idx = ad.current_wp_idx
 
@@ -1594,10 +1592,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
             curr_dist = el.distance(wp_loc)
             if ad.prev_dist_to_wp > 0:
                 # Positive when getting closer, negative when getting farther
-                distance_delta = ad.prev_dist_to_wp - curr_dist
-                reward += distance_delta * 2.0
+                reward += (ad.prev_dist_to_wp - curr_dist) * 2.0
             ad.prev_dist_to_wp = curr_dist
-        made_route_progress = made_route_progress or distance_delta > 0.05
 
         # ---- 3. Collision penalty (large, immediate) ----
         if ad.collision_flag and ad.collision_step == 0:
@@ -1613,16 +1609,11 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if lane_dist > 2.0:
                 reward -= lane_dist * 0.5
 
-        heading_error = abs(self._route_heading_error(ad, ad.actor.get_transform()))
-        lateral_error = abs(self._signed_lateral_error_to_route(ad, el, distance_scale=4.0))
-        reward -= 0.15 * heading_error
-        reward -= 0.15 * lateral_error
-
         # ---- 5. Speed target (moderate speed = good, too fast/slow = bad) ----
         # Target: 15-30 km/h. Below 5 = idle penalty. Above 50 = speed penalty
         if speed_kmh < 2.5:
             reward -= 0.15  # idle penalty
-        elif 15.0 <= speed_kmh <= 50.0 and made_route_progress:
+        elif 15.0 <= speed_kmh <= 50.0:
             reward += 0.3  # optimal speed bonus
         elif speed_kmh > 50.0:
             reward -= (speed_kmh - 50.0) * 0.10 # speed penalty (scaled)
@@ -1630,7 +1621,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # ---- 6. Steering smoothness ----
         ctrl = ad.actor.get_control()
         steer_delta = abs(ctrl.steer - ad.prev_steer)
-        if steer_delta < 0.1 and made_route_progress:
+        if steer_delta < 0.1:
             reward += 0.1   # smooth driving bonus
         elif steer_delta > 0.5:
             reward -= 0.3   # jerk penalty
@@ -1654,7 +1645,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         if wp_delta > 0:
             reward += wp_delta * 50.0
         if ad.last_skipped_waypoints > 0:
-            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 25.0))
+            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
             reward -= ad.last_skipped_waypoints * penalty
         ad.prev_wp_idx = ad.current_wp_idx
 
@@ -1674,8 +1665,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         wp = self._map.get_waypoint(loc, project_to_road=False)
         if wp:
             if str(wp.lane_type) == "Sidewalk":
-                if speed >= 0.15:
-                    reward += 0.2
+                reward += 0.2
             elif str(wp.lane_type) == "Driving":
                 reward -= 0.3
 

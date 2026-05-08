@@ -39,5 +39,5 @@ episode:
   waypoint_lookahead: 8                     # Evo A: recover when an agent skips intermediate waypoints
   vehicle_waypoint_radius_m: 2.0            # Radius for vehicle route progression
   pedestrian_waypoint_radius_m: 2.0         # Radius for pedestrian route progression
-  skipped_waypoint_penalty: 25.0            # Per skipped waypoint, applied only on skip recovery
+  skipped_waypoint_penalty: 10.0            # Per skipped waypoint, applied only on skip recovery
   levels_config: "carla_core/configs/levels.yaml" # Block 5.2: level definitions loaded from levels.yaml # Override here or pass via env_config["levels"] for programmatic use.
