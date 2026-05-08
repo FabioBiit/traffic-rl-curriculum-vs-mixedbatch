@@ -12,14 +12,18 @@ Policy mapping:
     vehicle_* -> vehicle_policy
     pedestrian_* -> pedestrian_policy
 
-Vehicle obs (40D):
+Vehicle obs (44D):
     [0:25]  legacy vehicle kinematics/route/traffic/nearby/steer features
     [25:31] route preview offsets [1,3,5]: (dist, angle) x 3
     [31]    route heading error
     [32]    future route turn angle / curvature proxy
     [33]    signed lateral error to route segment
     [34:40] nearest 2 pedestrians: (rel_x, rel_y, rel_speed) x 2
-Pedestrian obs (24D):
+    [40]    TTC risk for vehicles ahead/on-path
+    [41]    TTC risk for pedestrians ahead/on-path
+    [42]    occupancy risk for vehicles ahead/on-path
+    [43]    occupancy risk for pedestrians ahead/on-path
+Pedestrian obs (26D):
     [0:3]   position (x, y, z) normalized
     [3:6]   velocity (vx, vy, vz) normalized
     [6]     speed scalar normalized
@@ -31,6 +35,8 @@ Pedestrian obs (24D):
     [18]    route_completion (0..1)
     [19:23] route preview offsets [1,3]: (dist, angle) x 2
     [23]    route heading error
+    [24]    TTC risk for vehicles ahead/on-path
+    [25]    occupancy risk for vehicles ahead/on-path
 
 Vehicle action (2D continuous): [throttle_brake, steer]
 Pedestrian action (2D continuous): [speed_frac, direction_delta]
@@ -74,8 +80,8 @@ if sys.platform == "win32":
 # Constants
 # ---------------------------------------------------------------------------
 
-VEHICLE_OBS_DIM = 40
-PEDESTRIAN_OBS_DIM = 24
+VEHICLE_OBS_DIM = 44
+PEDESTRIAN_OBS_DIM = 26
 N_NEARBY_VEHICLES_FOR_VEHICLE = 3
 N_NEARBY_VEHICLES_FOR_PEDESTRIAN = 2
 N_NEARBY_PEDESTRIANS_FOR_VEHICLE = 2
@@ -1133,7 +1139,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return self._get_pedestrian_obs(ad)
 
     def _get_vehicle_obs(self, ad: AgentData) -> np.ndarray:
-        """40D vehicle obs: legacy features plus compact route/hazard preview."""
+        """44D vehicle obs: legacy features plus route and hazard preview."""
         obs = np.zeros(VEHICLE_OBS_DIM, dtype=np.float32)
         t = ad.actor.get_transform()
         vel = ad.actor.get_velocity()
@@ -1186,11 +1192,29 @@ class CarlaMultiAgentEnv(ParallelEnv):
         self._fill_nearby(
             obs, 34, ad, N_NEARBY_PEDESTRIANS_FOR_VEHICLE, "walker.pedestrian.*"
         )
+        veh_ttc, veh_occ = self._path_hazard_risk(
+            ad,
+            filter_str="vehicle.*",
+            corridor_width_m=3.5,
+            max_distance_m=40.0,
+            horizon_s=5.0,
+        )
+        ped_ttc, ped_occ = self._path_hazard_risk(
+            ad,
+            filter_str="walker.pedestrian.*",
+            corridor_width_m=3.0,
+            max_distance_m=30.0,
+            horizon_s=4.0,
+        )
+        obs[40] = veh_ttc
+        obs[41] = ped_ttc
+        obs[42] = veh_occ
+        obs[43] = ped_occ
 
         return self._sanitize_obs(obs, ad.agent_id)
 
     def _get_pedestrian_obs(self, ad: AgentData) -> np.ndarray:
-        """24D pedestrian obs: legacy waypoint features plus route preview."""
+        """26D pedestrian obs: legacy waypoint features plus hazard preview."""
         obs = np.zeros(PEDESTRIAN_OBS_DIM, dtype=np.float32)
         t = ad.actor.get_transform()
         vel = ad.actor.get_velocity()
@@ -1241,6 +1265,15 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         self._fill_route_preview(obs, 19, ad, t, offsets=(1, 3), distance_scale=100.0)
         obs[23] = self._route_heading_error(ad, t)
+        veh_ttc, veh_occ = self._path_hazard_risk(
+            ad,
+            filter_str="vehicle.*",
+            corridor_width_m=4.0,
+            max_distance_m=30.0,
+            horizon_s=4.0,
+        )
+        obs[24] = veh_ttc
+        obs[25] = veh_occ
 
         return self._sanitize_obs(obs, ad.agent_id)
 
@@ -1352,6 +1385,64 @@ class CarlaMultiAgentEnv(ParallelEnv):
         rx, ry = loc.x - start.x, loc.y - start.y
         signed = (sx * ry - sy * rx) / seg_len
         return float(np.clip(signed / max(distance_scale, 1e-6), -1.0, 1.0))
+
+    def _path_frame(self, ad: AgentData, transform) -> tuple[float, float, float, float]:
+        tangent = self._route_tangent_angle(ad)
+        if tangent is None:
+            fwd = transform.get_forward_vector()
+            norm = math.hypot(fwd.x, fwd.y)
+            if norm < 1e-6:
+                return 1.0, 0.0, 0.0, 1.0
+            fx, fy = fwd.x / norm, fwd.y / norm
+        else:
+            fx, fy = math.cos(tangent), math.sin(tangent)
+        return fx, fy, -fy, fx
+
+    def _path_hazard_risk(
+        self,
+        ad: AgentData,
+        filter_str: str,
+        corridor_width_m: float,
+        max_distance_m: float,
+        horizon_s: float,
+    ) -> tuple[float, float]:
+        """Return max TTC and occupancy risk for actors ahead in the route corridor."""
+        transform = ad.actor.get_transform()
+        e_loc = transform.location
+        e_vel = ad.actor.get_velocity()
+        fx, fy, rx, ry = self._path_frame(ad, transform)
+
+        max_ttc_risk = 0.0
+        max_occupancy_risk = 0.0
+        for actor in self._world.get_actors().filter(filter_str):
+            if actor.id == ad.actor.id:
+                continue
+
+            loc = actor.get_location()
+            dx, dy = loc.x - e_loc.x, loc.y - e_loc.y
+            longitudinal = dx * fx + dy * fy
+            lateral = abs(dx * rx + dy * ry)
+            if (
+                longitudinal <= 0.0
+                or longitudinal > max_distance_m
+                or lateral > corridor_width_m
+            ):
+                continue
+
+            occupancy = 1.0 - np.clip(longitudinal / max(max_distance_m, 1e-6), 0.0, 1.0)
+            max_occupancy_risk = max(max_occupancy_risk, float(occupancy))
+
+            vel = actor.get_velocity()
+            rel_vx = vel.x - e_vel.x
+            rel_vy = vel.y - e_vel.y
+            closing_speed = -(rel_vx * fx + rel_vy * fy)
+            if closing_speed <= 1e-6:
+                continue
+            ttc = longitudinal / closing_speed
+            ttc_risk = 1.0 - np.clip(ttc / max(horizon_s, 1e-6), 0.0, 1.0)
+            max_ttc_risk = max(max_ttc_risk, float(ttc_risk))
+
+        return max_ttc_risk, max_occupancy_risk
 
     def _fill_nearby(self, obs, start_idx, ad, n, filter_str):
         """Fill obs with relative position/speed of nearest actors."""
@@ -1485,13 +1576,15 @@ class CarlaMultiAgentEnv(ParallelEnv):
         vel = ad.actor.get_velocity()
         speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
         el = ad.actor.get_location()
+        distance_delta = 0.0
 
         # ---- 1. Waypoint reach bonus (DOMINANT — sole positive signal) ----
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
+        made_route_progress = wp_delta > 0
         if wp_delta > 0:
             reward += wp_delta * 50.0  # very high, must be THE reason to move
         if ad.last_skipped_waypoints > 0:
-            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
+            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 25.0))
             reward -= ad.last_skipped_waypoints * penalty
         ad.prev_wp_idx = ad.current_wp_idx
 
@@ -1501,8 +1594,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
             curr_dist = el.distance(wp_loc)
             if ad.prev_dist_to_wp > 0:
                 # Positive when getting closer, negative when getting farther
-                reward += (ad.prev_dist_to_wp - curr_dist) * 2.0
+                distance_delta = ad.prev_dist_to_wp - curr_dist
+                reward += distance_delta * 2.0
             ad.prev_dist_to_wp = curr_dist
+        made_route_progress = made_route_progress or distance_delta > 0.05
 
         # ---- 3. Collision penalty (large, immediate) ----
         if ad.collision_flag and ad.collision_step == 0:
@@ -1518,11 +1613,16 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if lane_dist > 2.0:
                 reward -= lane_dist * 0.5
 
+        heading_error = abs(self._route_heading_error(ad, ad.actor.get_transform()))
+        lateral_error = abs(self._signed_lateral_error_to_route(ad, el, distance_scale=4.0))
+        reward -= 0.15 * heading_error
+        reward -= 0.15 * lateral_error
+
         # ---- 5. Speed target (moderate speed = good, too fast/slow = bad) ----
         # Target: 15-30 km/h. Below 5 = idle penalty. Above 50 = speed penalty
         if speed_kmh < 2.5:
             reward -= 0.15  # idle penalty
-        elif 15.0 <= speed_kmh <= 50.0:
+        elif 15.0 <= speed_kmh <= 50.0 and made_route_progress:
             reward += 0.3  # optimal speed bonus
         elif speed_kmh > 50.0:
             reward -= (speed_kmh - 50.0) * 0.10 # speed penalty (scaled)
@@ -1530,7 +1630,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # ---- 6. Steering smoothness ----
         ctrl = ad.actor.get_control()
         steer_delta = abs(ctrl.steer - ad.prev_steer)
-        if steer_delta < 0.1:
+        if steer_delta < 0.1 and made_route_progress:
             reward += 0.1   # smooth driving bonus
         elif steer_delta > 0.5:
             reward -= 0.3   # jerk penalty
@@ -1554,7 +1654,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         if wp_delta > 0:
             reward += wp_delta * 50.0
         if ad.last_skipped_waypoints > 0:
-            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
+            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 25.0))
             reward -= ad.last_skipped_waypoints * penalty
         ad.prev_wp_idx = ad.current_wp_idx
 
@@ -1574,7 +1674,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
         wp = self._map.get_waypoint(loc, project_to_road=False)
         if wp:
             if str(wp.lane_type) == "Sidewalk":
-                reward += 0.2
+                if speed >= 0.15:
+                    reward += 0.2
             elif str(wp.lane_type) == "Driving":
                 reward -= 0.3
 
