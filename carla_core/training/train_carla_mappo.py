@@ -4,9 +4,9 @@ Train MAPPO on CarlaMultiAgentEnv - Multi-Agent via RLlib (v0.1)
 MAPPO = PPO + centralized critic (CTDE paradigm).
 
 Architecture:
-  - vehicle_policy:    actor sees 25D local obs, critic sees global_obs (138D)
-  - pedestrian_policy: actor sees 19D local obs, critic sees global_obs (138D)
-  - global_obs = fixed-slot concat [v0_25D|v1|v2|p0_19D|p1|p2|alive_mask_6D] = 138D
+  - vehicle_policy:    actor sees 40D local obs, critic sees global_obs (198D)
+  - pedestrian_policy: actor sees 24D local obs, critic sees global_obs (198D)
+  - global_obs = fixed-slot concat [v0_40D|v1|v2|p0_24D|p1|p2|alive_mask_6D] = 198D
   
 Components:
   - CarlaMultiAgentEnv (PettingZoo ParallelEnv) -> ParallelPettingZooEnv

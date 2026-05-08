@@ -5,9 +5,9 @@ Restores a trained MAPPO checkpoint and runs deterministic evaluation on
 CarlaMultiAgentEnv across multiple CARLA maps and traffic profiles.
 
 Architecture:
-  - vehicle_policy:    actor sees 25D local obs, critic sees global_obs (138D)
-  - pedestrian_policy: actor sees 19D local obs, critic sees global_obs (138D)
-  - global_obs = fixed-slot concat [v0_25D|v1|v2|p0_19D|p1|p2|alive_mask_6D] = 138D
+  - vehicle_policy:    actor sees 40D local obs, critic sees global_obs (198D)
+  - pedestrian_policy: actor sees 24D local obs, critic sees global_obs (198D)
+  - global_obs = fixed-slot concat [v0_40D|v1|v2|p0_24D|p1|p2|alive_mask_6D] = 198D
 
 Evaluation flow:
   - parent process supervises scenarios/episodes, progress, retries, and artifacts

@@ -12,8 +12,14 @@ Policy mapping:
     vehicle_* -> vehicle_policy
     pedestrian_* -> pedestrian_policy
 
-Vehicle obs (25D): same as CarlaEnv v0.3
-Pedestrian obs (19D):
+Vehicle obs (40D):
+    [0:25]  legacy vehicle kinematics/route/traffic/nearby/steer features
+    [25:31] route preview offsets [1,3,5]: (dist, angle) x 3
+    [31]    route heading error
+    [32]    future route turn angle / curvature proxy
+    [33]    signed lateral error to route segment
+    [34:40] nearest 2 pedestrians: (rel_x, rel_y, rel_speed) x 2
+Pedestrian obs (24D):
     [0:3]   position (x, y, z) normalized
     [3:6]   velocity (vx, vy, vz) normalized
     [6]     speed scalar normalized
@@ -23,6 +29,8 @@ Pedestrian obs (19D):
     [11]    on_sidewalk (0 or 1)
     [12:18] nearest 2 vehicles: (rel_x, rel_y, rel_speed) x 2
     [18]    route_completion (0..1)
+    [19:23] route preview offsets [1,3]: (dist, angle) x 2
+    [23]    route heading error
 
 Vehicle action (2D continuous): [throttle_brake, steer]
 Pedestrian action (2D continuous): [speed_frac, direction_delta]
@@ -66,10 +74,11 @@ if sys.platform == "win32":
 # Constants
 # ---------------------------------------------------------------------------
 
-VEHICLE_OBS_DIM = 25
-PEDESTRIAN_OBS_DIM = 19
+VEHICLE_OBS_DIM = 40
+PEDESTRIAN_OBS_DIM = 24
 N_NEARBY_VEHICLES_FOR_VEHICLE = 3
 N_NEARBY_VEHICLES_FOR_PEDESTRIAN = 2
+N_NEARBY_PEDESTRIANS_FOR_VEHICLE = 2
 PEDESTRIAN_MAX_SPEED = 5.0  # m/s (~18 km/h, running)
 
 # ---------------------------------------------------------------------------
@@ -1124,7 +1133,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return self._get_pedestrian_obs(ad)
 
     def _get_vehicle_obs(self, ad: AgentData) -> np.ndarray:
-        """Same 24D obs as CarlaEnv v0.3."""
+        """40D vehicle obs: legacy features plus compact route/hazard preview."""
         obs = np.zeros(VEHICLE_OBS_DIM, dtype=np.float32)
         t = ad.actor.get_transform()
         vel = ad.actor.get_velocity()
@@ -1170,10 +1179,18 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Previous steering value (Block 4.3)
         obs[24] = np.clip(ad.prev_steer, -1.0, 1.0)
 
+        self._fill_route_preview(obs, 25, ad, t, offsets=(1, 3, 5), distance_scale=50.0)
+        obs[31] = self._route_heading_error(ad, t)
+        obs[32] = self._route_turn_angle(ad)
+        obs[33] = self._signed_lateral_error_to_route(ad, t.location, distance_scale=4.0)
+        self._fill_nearby(
+            obs, 34, ad, N_NEARBY_PEDESTRIANS_FOR_VEHICLE, "walker.pedestrian.*"
+        )
+
         return self._sanitize_obs(obs, ad.agent_id)
 
     def _get_pedestrian_obs(self, ad: AgentData) -> np.ndarray:
-        """18D obs for pedestrian — now uses waypoint route like vehicles."""
+        """24D pedestrian obs: legacy waypoint features plus route preview."""
         obs = np.zeros(PEDESTRIAN_OBS_DIM, dtype=np.float32)
         t = ad.actor.get_transform()
         vel = ad.actor.get_velocity()
@@ -1222,7 +1239,119 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Route completion fraction (Block 4.3)
         obs[18] = self._route_completion(ad)
 
+        self._fill_route_preview(obs, 19, ad, t, offsets=(1, 3), distance_scale=100.0)
+        obs[23] = self._route_heading_error(ad, t)
+
         return self._sanitize_obs(obs, ad.agent_id)
+
+    @staticmethod
+    def _wrap_angle_rad(angle: float) -> float:
+        return (angle + math.pi) % (2 * math.pi) - math.pi
+
+    @staticmethod
+    def _location_xy_delta(a, b) -> tuple[float, float]:
+        return b.x - a.x, b.y - a.y
+
+    def _route_location_at(self, ad: AgentData, index: int):
+        """Return a clamped route waypoint location, or None for empty routes."""
+        if not ad.route_waypoints:
+            return None
+        idx = int(np.clip(index, 0, len(ad.route_waypoints) - 1))
+        return ad.route_waypoints[idx].transform.location
+
+    def _fill_route_preview(
+        self,
+        obs: np.ndarray,
+        start_idx: int,
+        ad: AgentData,
+        transform,
+        offsets: tuple[int, ...],
+        distance_scale: float,
+    ):
+        loc = transform.location
+        yaw = math.radians(transform.rotation.yaw)
+        for i, offset in enumerate(offsets):
+            target = self._route_location_at(ad, ad.current_wp_idx + offset)
+            if target is None:
+                continue
+            dx, dy = target.x - loc.x, target.y - loc.y
+            dist = math.sqrt(dx**2 + dy**2)
+            angle = self._wrap_angle_rad(math.atan2(dy, dx) - yaw)
+            idx = start_idx + i * 2
+            obs[idx] = np.clip(dist / max(distance_scale, 1e-6), 0.0, 1.0)
+            obs[idx + 1] = np.clip(angle / math.pi, -1.0, 1.0)
+
+    def _route_tangent_angle(self, ad: AgentData):
+        if len(ad.route_waypoints) < 2:
+            return None
+
+        last_idx = len(ad.route_waypoints) - 1
+        idx = int(np.clip(ad.current_wp_idx, 0, last_idx))
+        start_idx = max(idx - 1, 0)
+        end_idx = idx if idx > 0 else min(idx + 1, last_idx)
+        if start_idx == end_idx and end_idx < last_idx:
+            end_idx += 1
+
+        start = ad.route_waypoints[start_idx].transform.location
+        end = ad.route_waypoints[end_idx].transform.location
+        dx, dy = self._location_xy_delta(start, end)
+        if math.hypot(dx, dy) < 1e-6:
+            return None
+        return math.atan2(dy, dx)
+
+    def _route_heading_error(self, ad: AgentData, transform) -> float:
+        tangent = self._route_tangent_angle(ad)
+        if tangent is None:
+            return 0.0
+        yaw = math.radians(transform.rotation.yaw)
+        return float(np.clip(self._wrap_angle_rad(tangent - yaw) / math.pi, -1.0, 1.0))
+
+    def _route_turn_angle(self, ad: AgentData) -> float:
+        if len(ad.route_waypoints) < 3:
+            return 0.0
+
+        last_idx = len(ad.route_waypoints) - 1
+        i0 = int(np.clip(ad.current_wp_idx, 0, last_idx))
+        i1 = min(i0 + 1, last_idx)
+        i2 = min(i0 + 5, last_idx)
+        if i0 == i1 or i1 == i2:
+            return 0.0
+
+        p0 = ad.route_waypoints[i0].transform.location
+        p1 = ad.route_waypoints[i1].transform.location
+        p2 = ad.route_waypoints[i2].transform.location
+        dx1, dy1 = self._location_xy_delta(p0, p1)
+        dx2, dy2 = self._location_xy_delta(p1, p2)
+        if math.hypot(dx1, dy1) < 1e-6 or math.hypot(dx2, dy2) < 1e-6:
+            return 0.0
+
+        a1 = math.atan2(dy1, dx1)
+        a2 = math.atan2(dy2, dx2)
+        return float(np.clip(self._wrap_angle_rad(a2 - a1) / math.pi, -1.0, 1.0))
+
+    def _signed_lateral_error_to_route(
+        self, ad: AgentData, loc, distance_scale: float
+    ) -> float:
+        if len(ad.route_waypoints) < 2:
+            return 0.0
+
+        last_idx = len(ad.route_waypoints) - 1
+        idx = int(np.clip(ad.current_wp_idx, 0, last_idx))
+        start_idx = max(idx - 1, 0)
+        end_idx = idx if idx > 0 else min(idx + 1, last_idx)
+        if start_idx == end_idx and end_idx < last_idx:
+            end_idx += 1
+
+        start = ad.route_waypoints[start_idx].transform.location
+        end = ad.route_waypoints[end_idx].transform.location
+        sx, sy = self._location_xy_delta(start, end)
+        seg_len = math.hypot(sx, sy)
+        if seg_len < 1e-6:
+            return 0.0
+
+        rx, ry = loc.x - start.x, loc.y - start.y
+        signed = (sx * ry - sy * rx) / seg_len
+        return float(np.clip(signed / max(distance_scale, 1e-6), -1.0, 1.0))
 
     def _fill_nearby(self, obs, start_idx, ad, n, filter_str):
         """Fill obs with relative position/speed of nearest actors."""
