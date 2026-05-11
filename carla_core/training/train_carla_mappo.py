@@ -136,6 +136,13 @@ def _resolve_checkpoint_path(checkpoint_result, *, project_root):
     return None
 
 
+def _derive_resume_source_name(resume_from):
+    path = Path(resume_from)
+    if path.parent.name == "checkpoints":
+        return path.parent.parent.name
+    return path.name
+
+
 def _validate_final_eval_artifacts(*, checkpoint_path, out_dir):
     issues = []
     if checkpoint_path is None:
@@ -602,6 +609,8 @@ def main():
     parser.add_argument("--no-gpu", action="store_true")
     parser.add_argument("--mode", type=str, choices=["batch", "curriculum"], default=None)
     parser.add_argument("--checkpoint-dir", type=str, default=None)
+    parser.add_argument("--resume-from", type=str, default=None,
+                        help="Restore MAPPO state from an existing checkpoint/run directory.")
     parser.add_argument("--train-config", type=str, default=None)
     parser.add_argument("--env-config", type=str, default=None)
     parser.add_argument("--use-popart", action="store_true",
@@ -643,6 +652,11 @@ def main():
     eval_section = eval_cfg.get("evaluation", {})
 
     total_ts = args.timesteps or sched.get("total_timesteps", 50_000)
+    resume_from = None
+    if args.resume_from:
+        resume_from = _resolve_project_path(args.resume_from, project_root=base.parent)
+        if not resume_from.exists():
+            raise FileNotFoundError(f"--resume-from path not found: {resume_from}")
     n_workers = args.workers if args.workers is not None else res.get("num_workers", 0)
     
     if n_workers > 0:
@@ -679,6 +693,15 @@ def main():
         tentative_out_dir = str(
             _resolve_project_path(args.checkpoint_dir, project_root=project_root)
         )
+    elif resume_from is not None:
+        resume_name = _derive_resume_source_name(resume_from)
+        resume_mode_hint = _derive_mode(exp_cfg, str(resume_from))
+        tentative_out_dir = str(
+            (
+                _scope_output_base_by_mode(out_base_path, resume_mode_hint)
+                / f"{resume_name}_resume_to_{int(total_ts)}"
+            ).resolve(strict=False)
+        )
     else:
         tentative_out_dir = str((out_base_path / f"{name}_{ts_str}").resolve(strict=False))
     resolved_mode = _derive_mode(
@@ -694,6 +717,15 @@ def main():
 
     if args.checkpoint_dir:
         out_dir = tentative_out_dir
+    elif resume_from is not None:
+        out_base_path = _scope_output_base_by_mode(out_base_path, resolved_mode)
+        exp_cfg["output_dir"] = str(out_base_path)
+        out_dir = tentative_out_dir
+        if os.path.exists(out_dir) and os.listdir(out_dir):
+            raise FileExistsError(
+                "Resume output directory already exists and is not empty: "
+                f"{out_dir}. Pass --checkpoint-dir to choose an explicit output path."
+            )
     else:
         out_base_path = _scope_output_base_by_mode(out_base_path, resolved_mode)
         exp_cfg["output_dir"] = str(out_base_path)
@@ -804,6 +836,11 @@ def main():
         "rollout": roll,
         "model": model_cfg,
         "runtime": runtime_cfg,
+        "resume": {
+            "enabled": resume_from is not None,
+            "source_checkpoint": str(resume_from) if resume_from is not None else None,
+            "target_total_timesteps": int(total_ts),
+        },
         "env_config": build_env_cfg,
         "eval_config": eval_cfg,
     }
@@ -834,6 +871,10 @@ def main():
 
     # --- Build & Train ---
     algo = config.build()
+    if resume_from is not None:
+        algo.restore(str(resume_from))
+        print(f"\nCheckpoint ripristinato: {resume_from}")
+        print(f"Budget totale target: {total_ts:,} steps")
     print("\nMAPPO training avviato.\n")
 
     # --- Block 5.4: Level manager setup ---
