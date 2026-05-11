@@ -15,8 +15,8 @@ resources:
 rollout:
   rollout_fragment_length: 200
   train_batch_size: 8000        # 4000 -> 8000 Reward v6
-  sgd_minibatch_size: 512       # Finetune T1: 256 -> 512 after PLAN B OBS-only
-  num_sgd_iter: 10              # Finetune T1: 15 -> 10 to reduce PPO data reuse
+  sgd_minibatch_size: 256       # Finetune T1: 256 -> 512 after PLAN B OBS-only (NO_PASS => Revert)
+  num_sgd_iter: 15              # Finetune T1: 15 -> 10 to reduce PPO data reuse (NO_PASS => Revert)
 
 optimization:
   lr: 0.0005                    # 0.0003 -> 0.0005 Reward v8 # 0.0005 -> 0.0003 Reward v7 # 0.0003 -> 0.0005 Reward v6
