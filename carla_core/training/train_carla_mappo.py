@@ -24,6 +24,7 @@ import argparse
 import gc
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -137,10 +138,33 @@ def _resolve_checkpoint_path(checkpoint_result, *, project_root):
 
 
 def _derive_resume_source_name(resume_from):
+    return _derive_resume_run_dir(resume_from).name
+
+
+def _derive_resume_run_dir(resume_from):
     path = Path(resume_from)
     if path.parent.name == "checkpoints":
-        return path.parent.parent.name
-    return path.name
+        return path.parent.parent
+    return path
+
+
+def _copy_parent_episode_log_for_resume(*, resume_from, out_dir):
+    resume_run_dir = _derive_resume_run_dir(resume_from)
+    parent_episode_log = resume_run_dir / "episodes.jsonl"
+    child_episode_log = Path(out_dir) / "episodes.jsonl"
+
+    if not parent_episode_log.exists():
+        raise FileNotFoundError(
+            f"Parent episodes.jsonl not found for resume: {parent_episode_log}"
+        )
+    if child_episode_log.exists():
+        raise FileExistsError(
+            "Resume child episodes.jsonl already exists; refusing to append on top of "
+            f"an existing log: {child_episode_log}"
+        )
+
+    shutil.copy2(parent_episode_log, child_episode_log)
+    return parent_episode_log, child_episode_log
 
 
 def _validate_final_eval_artifacts(*, checkpoint_path, out_dir):
@@ -699,7 +723,7 @@ def main():
         tentative_out_dir = str(
             (
                 _scope_output_base_by_mode(out_base_path, resume_mode_hint)
-                / f"{resume_name}_resume_to_{int(total_ts)}"
+                / f"{resume_name}_resume_to_{int(total_ts)}_{ts_str}"
             ).resolve(strict=False)
         )
     else:
@@ -731,6 +755,15 @@ def main():
         exp_cfg["output_dir"] = str(out_base_path)
         out_dir = str((out_base_path / f"{name}_{ts_str}").resolve(strict=False))
     os.makedirs(out_dir, exist_ok=True)
+
+    resume_run_dir = _derive_resume_run_dir(resume_from) if resume_from is not None else None
+    parent_episode_log = None
+    child_episode_log = None
+    if resume_from is not None:
+        parent_episode_log, child_episode_log = _copy_parent_episode_log_for_resume(
+            resume_from=resume_from,
+            out_dir=out_dir,
+        )
 
     # Episode-level JSON log path (read by MAPPOTrainingCallbacks)
     os.environ["MAPPO_EPISODE_LOG"] = os.path.join(out_dir, "episodes.jsonl")
@@ -839,6 +872,11 @@ def main():
         "resume": {
             "enabled": resume_from is not None,
             "source_checkpoint": str(resume_from) if resume_from is not None else None,
+            "source_run_dir": str(resume_run_dir) if resume_run_dir is not None else None,
+            "source_episodes_jsonl": (
+                str(parent_episode_log) if parent_episode_log is not None else None
+            ),
+            "copied_parent_episodes": parent_episode_log is not None,
             "target_total_timesteps": int(total_ts),
         },
         "env_config": build_env_cfg,
@@ -904,6 +942,7 @@ def main():
             raw_env.set_level(current_training_level)
 
     ts_done = 0
+    session_start_ts = None
     iteration = 0
     t0 = time.time()
     best_reward = float("-inf")
@@ -925,6 +964,12 @@ def main():
             result = algo.train()
             iteration += 1
             ts_done = result.get("timesteps_total", 0)
+            iter_ts = result.get(
+                "num_env_steps_sampled_this_iter",
+                result.get("timesteps_this_iter", 0),
+            )
+            if session_start_ts is None:
+                session_start_ts = max(0, int(ts_done) - int(iter_ts or 0))
 
             if stop_on_nan:
                 _raise_on_nonfinite_result(result)
@@ -959,10 +1004,6 @@ def main():
 
             # --- Block 5.4: Level management per iteration ---
             if level_manager is not None:
-                iter_ts = result.get(
-                    "num_env_steps_sampled_this_iter",
-                    result.get("timesteps_this_iter", 0),
-                )
                 raw_env = _unwrap_carla_env(algo)
 
                 if isinstance(level_manager, CurriculumManager):
@@ -1018,7 +1059,8 @@ def main():
             if ts_done >= total_ts:
                 eta = 0.0
             else:
-                eta = (elapsed / max(ts_done, 1)) * (total_ts - ts_done)
+                session_ts_done = max(int(ts_done) - int(session_start_ts or 0), 1)
+                eta = (elapsed / session_ts_done) * (total_ts - ts_done)
 
             timeseries.append({
                 "timestep": int(ts_done),
