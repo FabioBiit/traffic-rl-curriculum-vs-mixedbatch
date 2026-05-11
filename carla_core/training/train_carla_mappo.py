@@ -1011,7 +1011,13 @@ def main():
                 best_reward = tot_r
 
             if ts_done % ckpt_freq < batch_size:
-                ckpt = algo.save(out_dir)
+                ckpt_dir = os.path.join(
+                    out_dir,
+                    "checkpoints",
+                    f"step_{int(ts_done):09d}",
+                )
+                os.makedirs(ckpt_dir, exist_ok=True)
+                ckpt = algo.save(ckpt_dir)
                 ckpt_path = _resolve_checkpoint_path(ckpt, project_root=project_root)
                 print(f"    -> Checkpoint: {ckpt_path or ckpt}")
 
