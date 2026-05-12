@@ -388,45 +388,88 @@ class CurriculumManager:
 
         return ok, details
 
+    def _balanced_policy_success_details(
+        self,
+        policy_trackers: dict | None,
+    ) -> tuple[float | None, dict]:
+        policy_trackers = policy_trackers or {}
+        details = {}
+        success_rates = []
+
+        for policy_id in self.policy_ids:
+            tracker = policy_trackers.get(policy_id)
+            if tracker is None:
+                details[policy_id] = {"available": False}
+                continue
+
+            success_rate = tracker.cumulative_success_rate
+            details[policy_id] = {
+                "available": True,
+                "total_episodes": tracker.total_episodes,
+                "total_successes": tracker.total_successes,
+                "cumulative_success_rate": success_rate,
+                "cumulative_collision_rate": tracker.cumulative_collision_rate,
+                "level_timesteps": tracker.level_timesteps,
+                "level_episodes": tracker.level_episodes,
+            }
+            success_rates.append(success_rate)
+
+        if len(success_rates) != len(self.policy_ids):
+            return None, details
+
+        return sum(success_rates) / len(success_rates), details
+
     def _unlock_reason(
         self,
         tracker: EpisodeTracker | None,
         target_level: str,
         policy_trackers: dict | None = None,
+        global_timestep=None,
     ) -> tuple[str | None, dict]:
         if tracker is None:
             return None, {}
 
         criteria = self._criteria_for(target_level)
+        balanced_sr, balanced_details = self._balanced_policy_success_details(
+            policy_trackers
+        )
         policy_ok, policy_details = self._policy_gate_details(policy_trackers, criteria)
+        criteria = deepcopy(criteria)
+        criteria["balanced_policy_success"] = {
+            "available": balanced_sr is not None,
+            "value": balanced_sr,
+            "policy_details": balanced_details,
+        }
         if policy_details:
-            criteria = deepcopy(criteria)
             criteria["policy_gate"] = policy_details
         required_timesteps = int(criteria["min_budget_share"] * self.total_budget_timesteps)
         force_unlock_share_cap = criteria["force_unlock_global_share_cap"]
         force_unlock_timesteps = None
         if force_unlock_share_cap is not None:
             force_unlock_timesteps = int(force_unlock_share_cap * self.total_budget_timesteps)
+        cap_basis_timestep = self.total_assigned_timesteps
+        if global_timestep is not None:
+            cap_basis_timestep = max(cap_basis_timestep, int(global_timestep))
+        criteria["pressure_cap"] = {
+            "basis_timestep": cap_basis_timestep,
+            "force_unlock_timesteps": force_unlock_timesteps,
+            "force_unlock_global_share_cap": force_unlock_share_cap,
+        }
 
-        if tracker.level_episodes < criteria["min_episodes"]:
-            return None, criteria
-        if not tracker.window_full:
-            return None, criteria
-        if tracker.window_collision_rate > criteria["collision_rate_threshold"]:
-            return None, criteria
         if (
-            tracker.level_timesteps >= required_timesteps
-            and tracker.window_success_rate >= criteria["success_rate_threshold"]
+            force_unlock_timesteps is not None
+            and cap_basis_timestep >= force_unlock_timesteps
+        ):
+            return "pressure_cap_unlocked", criteria
+
+        if balanced_sr is None:
+            return None, criteria
+
+        if tracker.level_timesteps >= required_timesteps and (
+            balanced_sr >= criteria["success_rate_threshold"]
             and policy_ok
         ):
             return "competence_unlocked", criteria
-        if (
-            not self.require_policy_success
-            and
-            force_unlock_timesteps is not None
-            and self.total_assigned_timesteps >= force_unlock_timesteps
-        ):
-            return "forced_global_budget_cap", criteria
         return None, criteria
 
     def _sampling_levels(self) -> list[str]:
@@ -471,6 +514,7 @@ class CurriculumManager:
                 tracker,
                 target_level,
                 policy_trackers=policy_trackers.get(source_level),
+                global_timestep=global_timestep,
             )
             if unlock_reason is None:
                 break
@@ -480,11 +524,23 @@ class CurriculumManager:
                 "to": target_level,
                 "episodes_on_level": tracker.level_episodes,
                 "timesteps_on_level": tracker.level_timesteps,
-                "success_rate_at_unlock": tracker.window_success_rate,
+                "success_rate_at_unlock": criteria.get(
+                    "balanced_policy_success", {}
+                ).get("value", tracker.cumulative_success_rate),
+                "balanced_cumulative_success_rate_at_unlock": criteria.get(
+                    "balanced_policy_success", {}
+                ).get("value"),
+                "cumulative_success_rate_at_unlock": tracker.cumulative_success_rate,
+                "window_success_rate_at_unlock": tracker.window_success_rate,
                 "collision_rate_at_unlock": tracker.window_collision_rate,
+                "cumulative_collision_rate_at_unlock": tracker.cumulative_collision_rate,
                 "timestep_at_unlock": global_timestep,
                 "assigned_budget_share_at_unlock": (
                     float(self.total_assigned_timesteps) / float(self.total_budget_timesteps)
+                ),
+                "global_budget_share_at_unlock": (
+                    float(global_timestep) / float(self.total_budget_timesteps)
+                    if global_timestep is not None else None
                 ),
                 "reason": unlock_reason,
                 "criteria_snapshot": deepcopy(criteria),
@@ -494,11 +550,11 @@ class CurriculumManager:
             events.append(f"unlock:{target_level}")
 
             logger.info(
-                "Unlocked %s from %s at timestep %s (SR=%.2f, CR=%.2f)",
+                "Unlocked %s from %s at timestep %s (balanced cumulative SR=%s, window CR=%.2f)",
                 target_level,
                 source_level,
                 global_timestep,
-                tracker.window_success_rate,
+                unlock_event["balanced_cumulative_success_rate_at_unlock"],
                 tracker.window_collision_rate,
             )
 
@@ -779,6 +835,7 @@ class CurriculumManager:
         sample_total = max(sum(self._sample_counts.values()), 1)
         return {
             "teacher_type": "budget_normalized_distributional",
+            "promotion_logic": "balanced_cumulative_sr_or_pressure_cap",
             "current_level": self.current_level,
             "levels": list(self.levels),
             "window_size": self.window_size,
