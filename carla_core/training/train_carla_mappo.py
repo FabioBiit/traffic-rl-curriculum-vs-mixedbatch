@@ -647,6 +647,12 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--difficulty", type=str, choices=["path", "traffic", "mixed"],
                         required=True)
+    parser.add_argument("--lock-curriculum-level", type=str,
+                        choices=["easy", "medium", "hard"], default=None,
+                        help=(
+                            "Exploratory curriculum override: keep training fixed on "
+                            "one level and disable promotions."
+                        ))
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -789,6 +795,15 @@ def main():
 
     lv = load_yaml(base / "configs" / "levels.yaml")
     env_cfg["levels"] = lv[f"levels_{args.difficulty}"]
+    lock_curriculum_level = args.lock_curriculum_level
+    if lock_curriculum_level is not None:
+        if resolved_mode != "curriculum":
+            raise ValueError("--lock-curriculum-level requires --mode curriculum")
+        if lock_curriculum_level not in env_cfg["levels"]:
+            raise ValueError(
+                f"--lock-curriculum-level={lock_curriculum_level!r} is not defined "
+                f"for difficulty {args.difficulty!r}"
+            )
 
     build_env_cfg = deepcopy(env_cfg)
     level_manager = None
@@ -803,8 +818,13 @@ def main():
     if resolved_mode == "curriculum":
         cc = cb_cfg.get("curriculum", {}) # Finetuning Run3
         window_size = cc.get("window_size", 50)
+        curriculum_levels = (
+            [lock_curriculum_level]
+            if lock_curriculum_level is not None
+            else cc.get("levels", ["easy", "medium", "hard"])
+        )
         level_manager = CurriculumManager(
-            levels=cc.get("levels", ["easy", "medium", "hard"]),
+            levels=curriculum_levels,
             total_budget_timesteps=total_ts,
             default_success_rate_threshold=cc.get("success_rate_threshold", 0.45),
             default_collision_rate_threshold=cc.get(
@@ -812,12 +832,26 @@ def main():
                 cc.get("collision_threshold", 0.30),
             ),
             default_min_episodes=cc.get("min_episodes", 50),
-            unlock_criteria=cc.get("unlock_criteria", {}),
-            budget_constraints=cc.get("budget_constraints", {}),
-            base_sampling_weights=cc.get("base_sampling_weights", {}),
-            probation_sampling_weights=cc.get("probation_sampling_weights", {}),
-            probation_blocks_after_unlock=cc.get("probation_blocks_after_unlock", 2),
-            probation_blocks_after_cap_pressure=cc.get("probation_blocks_after_cap_pressure", 1),
+            unlock_criteria={} if lock_curriculum_level is not None else cc.get("unlock_criteria", {}),
+            budget_constraints={} if lock_curriculum_level is not None else cc.get("budget_constraints", {}),
+            base_sampling_weights=(
+                {lock_curriculum_level: 1.0}
+                if lock_curriculum_level is not None
+                else cc.get("base_sampling_weights", {})
+            ),
+            probation_sampling_weights=(
+                {}
+                if lock_curriculum_level is not None
+                else cc.get("probation_sampling_weights", {})
+            ),
+            probation_blocks_after_unlock=(
+                0 if lock_curriculum_level is not None else cc.get("probation_blocks_after_unlock", 2)
+            ),
+            probation_blocks_after_cap_pressure=(
+                0
+                if lock_curriculum_level is not None
+                else cc.get("probation_blocks_after_cap_pressure", 1)
+            ),
             require_policy_success=cc.get("require_policy_success", False),
             policy_ids=cc.get("policy_ids", list(POLICY_OUTCOME_KEYS)),
             teacher_seed=cc.get("teacher_seed", exp_seed),
@@ -869,6 +903,10 @@ def main():
         "rollout": roll,
         "model": model_cfg,
         "runtime": runtime_cfg,
+        "curriculum_lock": {
+            "enabled": lock_curriculum_level is not None,
+            "level": lock_curriculum_level,
+        },
         "resume": {
             "enabled": resume_from is not None,
             "source_checkpoint": str(resume_from) if resume_from is not None else None,
@@ -930,6 +968,8 @@ def main():
     if isinstance(level_manager, CurriculumManager):
         current_training_level = initial_level
         print(f"  Curriculum mode: starting at '{initial_level}' (map={initial_map})")
+        if lock_curriculum_level is not None:
+            print(f"  Curriculum lock: fixed level '{lock_curriculum_level}' (promotions disabled)")
     elif isinstance(level_manager, BatchLevelSampler):
         current_training_level = initial_level
         print(f"  Batch mode: starting at '{initial_level}' (map={initial_map})")
@@ -1232,6 +1272,10 @@ def main():
                 if isinstance(level_manager, CurriculumManager):
                     results_payload["curriculum"] = level_manager.summary()
                     results_payload["curriculum"]["current_training_level"] = current_training_level
+                    results_payload["curriculum"]["lock"] = {
+                        "enabled": lock_curriculum_level is not None,
+                        "level": lock_curriculum_level,
+                    }
                     if teacher_diagnostics is not None:
                         results_payload["curriculum"]["last_decision"] = deepcopy(teacher_diagnostics)
                     results_payload["curriculum_history"] = deepcopy(

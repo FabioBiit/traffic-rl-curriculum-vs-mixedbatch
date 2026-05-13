@@ -1272,7 +1272,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Route completion fraction (Block 4.3)
         obs[18] = self._route_completion(ad)
 
-        self._fill_route_preview(obs, 19, ad, t, offsets=(1, 3), distance_scale=100.0)
+        self._fill_route_preview_legacy(obs, 19, ad, t, offsets=(1, 3), distance_scale=100.0)
         obs[23] = self._route_heading_error(ad, t)
         veh_ttc, veh_occ = self._path_hazard_risk(
             ad,
@@ -1341,6 +1341,31 @@ class CarlaMultiAgentEnv(ParallelEnv):
             idx = start_idx + i * 2
             obs[idx] = np.clip(longitudinal / max(distance_scale, 1e-6), -1.0, 1.0)
             obs[idx + 1] = np.clip(lateral / max(lateral_scale, 1e-6), -1.0, 1.0)
+
+    def _fill_route_preview_legacy(
+        self,
+        obs: np.ndarray,
+        start_idx: int,
+        ad: AgentData,
+        transform,
+        offsets: tuple[int, ...],
+        distance_scale: float,
+    ):
+        loc = transform.location
+        yaw = math.radians(transform.rotation.yaw)
+        for i, offset in enumerate(offsets):
+            if not ad.route_waypoints:
+                continue
+            target_idx = int(np.clip(
+                ad.current_wp_idx + offset, 0, len(ad.route_waypoints) - 1
+            ))
+            target = ad.route_waypoints[target_idx].transform.location
+            dx, dy = target.x - loc.x, target.y - loc.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            angle = self._wrap_angle_rad(math.atan2(dy, dx) - yaw)
+            idx = start_idx + i * 2
+            obs[idx] = np.clip(dist / max(distance_scale, 1e-6), 0.0, 1.0)
+            obs[idx + 1] = np.clip(angle / math.pi, -1.0, 1.0)
 
     def _route_tangent_angle(self, ad: AgentData):
         if len(ad.route_waypoints) < 2:
@@ -1457,6 +1482,32 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return 0.0
         vel = ad.actor.get_velocity()
         return float(3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2))
+
+    @staticmethod
+    def _vehicle_waiting_at_red_or_yellow(ad: AgentData) -> bool:
+        if ad.actor is None or not ad.actor.is_alive:
+            return False
+        if not ad.actor.is_at_traffic_light():
+            return False
+        tl = ad.actor.get_traffic_light()
+        if tl is None:
+            return False
+        state = tl.get_state()
+        return state in (carla.TrafficLightState.Red, carla.TrafficLightState.Yellow)
+
+    def _route_alignment_to_next_waypoint(self, ad: AgentData, loc, transform) -> float:
+        if not ad.route_waypoints or ad.current_wp_idx >= len(ad.route_waypoints):
+            return 0.0
+        target = ad.route_waypoints[ad.current_wp_idx].transform.location
+        dx, dy = target.x - loc.x, target.y - loc.y
+        dist = math.hypot(dx, dy)
+        if dist < 1e-6:
+            return 0.0
+        yaw = math.radians(transform.rotation.yaw)
+        forward_x = math.cos(yaw)
+        forward_y = math.sin(yaw)
+        alignment = (forward_x * dx + forward_y * dy) / dist
+        return float(np.clip(alignment, 0.0, 1.0))
 
     def _stuck_cause(self, ad: AgentData, termination_reason: str) -> str:
         if termination_reason != "stuck":
@@ -1659,12 +1710,14 @@ class CarlaMultiAgentEnv(ParallelEnv):
         reward = 0.0
         vel = ad.actor.get_velocity()
         speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
+        transform = ad.actor.get_transform()
         el = ad.actor.get_location()
+        hold_for_light = self._vehicle_waiting_at_red_or_yellow(ad)
 
-        # ---- 1. Waypoint reach bonus (DOMINANT — sole positive signal) ----
+        # ---- 1. Waypoint reach bonus (dominant sparse route signal) ----
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
-            reward += wp_delta * 50.0  # very high, must be THE reason to move
+            reward += wp_delta * 100.0
         if ad.last_skipped_waypoints > 0:
             penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
             reward -= ad.last_skipped_waypoints * penalty
@@ -1676,7 +1729,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             curr_dist = el.distance(wp_loc)
             if ad.prev_dist_to_wp > 0:
                 # Positive when getting closer, negative when getting farther
-                reward += (ad.prev_dist_to_wp - curr_dist) * 2.0
+                reward += (ad.prev_dist_to_wp - curr_dist) * 4.0
             ad.prev_dist_to_wp = curr_dist
 
         # ---- 3. Collision penalty (large, immediate) ----
@@ -1693,13 +1746,18 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if lane_dist > 2.0:
                 reward -= lane_dist * 0.5
 
-        # ---- 5. Speed target (moderate speed = good, too fast/slow = bad) ----
-        # Target: 15-30 km/h. Below 5 = idle penalty. Above 50 = speed penalty
-        if speed_kmh < 2.5:
-            reward -= 0.15  # idle penalty
-        elif 15.0 <= speed_kmh <= 50.0:
-            reward += 0.3  # optimal speed bonus
-        elif speed_kmh > 50.0:
+        # ---- 5. Route-aligned movement + no-advance pressure ----
+        if not hold_for_light:
+            if speed_kmh < 2.5:
+                reward -= 0.15  # idle penalty
+            alignment = self._route_alignment_to_next_waypoint(ad, el, transform)
+            reward += 0.3 * (min(speed_kmh, 15.0) / 15.0) * alignment
+
+            no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
+            if no_wp_steps > 200:
+                reward -= min(0.5, 0.002 * (no_wp_steps - 200))
+
+        if speed_kmh > 50.0:
             reward -= (speed_kmh - 50.0) * 0.10 # speed penalty (scaled)
 
         # ---- 6. Steering smoothness ----
