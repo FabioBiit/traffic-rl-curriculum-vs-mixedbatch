@@ -756,9 +756,16 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                 episode.user_data["agent_outcomes"][agent_id] = {
                     "termination_reason": tr,
                     "route_completion": info.get("route_completion", 0.0),
+                    "continuous_route_progress": info.get(
+                        "continuous_route_progress", 0.0
+                    ),
                     "path_efficiency": info.get("path_efficiency", 0.0),
                     "skipped_waypoints": info.get("skipped_waypoints", 0),
                     "last_skipped_waypoints": info.get("last_skipped_waypoints", 0),
+                    "no_wp_steps": info.get("no_wp_steps", 0),
+                    "stuck_cause": info.get("stuck_cause", ""),
+                    "dist_to_next_wp": info.get("dist_to_next_wp", 0.0),
+                    "speed_kmh": info.get("speed_kmh", 0.0),
                 }
 
         # --- Source 2: side-channel for terminated agents ---
@@ -776,9 +783,16 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                     episode.user_data["agent_outcomes"][agent_id] = {
                         "termination_reason": tr,
                         "route_completion": info.get("route_completion", 0.0),
+                        "continuous_route_progress": info.get(
+                            "continuous_route_progress", 0.0
+                        ),
                         "path_efficiency": info.get("path_efficiency", 0.0),
                         "skipped_waypoints": info.get("skipped_waypoints", 0),
                         "last_skipped_waypoints": info.get("last_skipped_waypoints", 0),
+                        "no_wp_steps": info.get("no_wp_steps", 0),
+                        "stuck_cause": info.get("stuck_cause", ""),
+                        "dist_to_next_wp": info.get("dist_to_next_wp", 0.0),
+                        "speed_kmh": info.get("speed_kmh", 0.0),
                     }
         except (AttributeError, IndexError):
             pass
