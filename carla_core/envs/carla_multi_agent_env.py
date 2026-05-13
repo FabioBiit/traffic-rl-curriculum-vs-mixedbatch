@@ -1713,6 +1713,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         transform = ad.actor.get_transform()
         el = ad.actor.get_location()
         hold_for_light = self._vehicle_waiting_at_red_or_yellow(ad)
+        ctrl = ad.actor.get_control()
 
         # ---- 1. Waypoint reach bonus (dominant sparse route signal) ----
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
@@ -1746,14 +1747,21 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if lane_dist > 2.0:
                 reward -= lane_dist * 0.5
 
-        # ---- 5. Route-aligned movement + no-advance pressure ----
+        # ---- 5. Start/unblock shaping + no-advance pressure ----
         if not hold_for_light:
+            alignment = self._route_alignment_to_next_waypoint(ad, el, transform)
+            route_completion = self._route_completion(ad)
+            no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
+
             if speed_kmh < 2.5:
                 reward -= 0.15  # idle penalty
-            alignment = self._route_alignment_to_next_waypoint(ad, el, transform)
-            reward += 0.3 * (min(speed_kmh, 15.0) / 15.0) * alignment
 
-            no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
+                if route_completion < 0.3 and alignment > 0.25:
+                    urgency = min(no_wp_steps / 200.0, 1.0)
+                    start_gain = 0.20 + 0.30 * urgency
+                    reward += start_gain * ctrl.throttle * alignment
+                    reward -= start_gain * ctrl.brake
+
             if no_wp_steps > 200:
                 reward -= min(0.5, 0.002 * (no_wp_steps - 200))
 
@@ -1761,7 +1769,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
             reward -= (speed_kmh - 50.0) * 0.10 # speed penalty (scaled)
 
         # ---- 6. Steering smoothness ----
-        ctrl = ad.actor.get_control()
         steer_delta = abs(ctrl.steer - ad.prev_steer)
         if steer_delta < 0.1:
             reward += 0.1   # smooth driving bonus
