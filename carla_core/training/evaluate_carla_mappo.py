@@ -59,6 +59,21 @@ from carla_core.training.mappo_runtime import (
 
 logger = logging.getLogger(__name__)
 
+EVAL_GROUPS = {
+    "all_agents": None,
+    "vehicles": "vehicle_policy",
+    "pedestrians": "pedestrian_policy",
+}
+EVAL_GROUP_METRIC_KEYS = (
+    "success_rate",
+    "collision_rate",
+    "stuck_rate",
+    "offroad_rate",
+    "timeout_rate",
+    "route_completion",
+    "path_efficiency",
+)
+
 
 class FinalEvaluationInterrupted(KeyboardInterrupt):
     """KeyboardInterrupt carrying partial final-evaluation artifacts."""
@@ -141,6 +156,35 @@ def _mean_metric_dicts(rows, keys):
         vals = [row[key] for row in rows if row.get(key) is not None]
         merged[key] = float(np.mean(vals)) if vals else None
     return merged
+
+
+def _mean_group_metric_dicts(rows, keys=EVAL_GROUP_METRIC_KEYS):
+    if not rows:
+        return {}
+    merged = {}
+    for group_name in EVAL_GROUPS:
+        group_rows = []
+        for row in rows:
+            groups = row.get("groups") if isinstance(row, dict) else None
+            group_metrics = groups.get(group_name) if isinstance(groups, dict) else None
+            if isinstance(group_metrics, dict):
+                group_rows.append(group_metrics)
+            elif group_name == "all_agents":
+                group_rows.append(row)
+        merged[group_name] = _mean_metric_dicts(group_rows, keys)
+    return merged
+
+
+def _build_summary_metric_dict(rows):
+    metrics = _mean_metric_dicts(rows, ["success_rate", "collision_rate"])
+    summary = {
+        "success_rate": metrics.get("success_rate"),
+        "collision_rate": metrics.get("collision_rate"),
+    }
+    groups = _mean_group_metric_dicts(rows)
+    if groups:
+        summary["groups"] = groups
+    return summary
 
 
 def _expand_eval_entries(scenario_cfg):
@@ -245,11 +289,7 @@ def _build_evaluation_summary(raw, train_map, scenario_entries=None):
             rows = grouped_rows.get(level_name, [])
             if not rows:
                 continue
-            metrics = _mean_metric_dicts(rows, ["success_rate", "collision_rate"])
-            summary[level_name] = {
-                "success_rate": metrics.get("success_rate"),
-                "collision_rate": metrics.get("collision_rate"),
-            }
+            summary[level_name] = _build_summary_metric_dict(rows)
         return summary
 
     summary = {}
@@ -257,10 +297,7 @@ def _build_evaluation_summary(raw, train_map, scenario_entries=None):
         for profile_name, metrics in raw[train_map].items():
             level = _profile_name_to_level(profile_name)
             if level and level not in summary:
-                summary[level] = {
-                    "success_rate": metrics.get("success_rate"),
-                    "collision_rate": metrics.get("collision_rate"),
-                }
+                summary[level] = _build_summary_metric_dict([metrics])
 
     test_rows = []
     for map_name, profiles in raw.items():
@@ -271,11 +308,7 @@ def _build_evaluation_summary(raw, train_map, scenario_entries=None):
         for profiles in raw.values():
             test_rows.extend(profiles.values())
     if test_rows:
-        test_metrics = _mean_metric_dicts(test_rows, ["success_rate", "collision_rate"])
-        summary["test"] = {
-            "success_rate": test_metrics.get("success_rate"),
-            "collision_rate": test_metrics.get("collision_rate"),
-        }
+        summary["test"] = _build_summary_metric_dict(test_rows)
     return summary
 
 
@@ -340,7 +373,12 @@ def _attach_status_timing(payload):
 
 def _aggregate_eval_metric_rows(rows, keys):
     if not rows:
-        return {key: None for key in keys}
+        merged = {key: None for key in keys}
+        merged["groups"] = {
+            group_name: {key: None for key in EVAL_GROUP_METRIC_KEYS}
+            for group_name in EVAL_GROUPS
+        }
+        return merged
 
     sum_keys = {"wall_clock_seconds", "infraction_count"}
     any_true_keys = {"wall_clock_timeout"}
@@ -355,6 +393,7 @@ def _aggregate_eval_metric_rows(rows, keys):
             merged[key] = any(bool(v) for v in vals)
         else:
             merged[key] = float(np.mean(vals))
+    merged["groups"] = _mean_group_metric_dicts(rows)
     return merged
 
 
@@ -433,6 +472,18 @@ def _extract_eval_metrics_from_result(eval_result, metric_keys):
                 return float(np.mean(prefixed_values))
         return None
 
+    def _policy_metric(policy_id, metric_key):
+        containers = _custom_metric_containers()
+        candidates = (
+            f"{policy_id}/{metric_key}_mean",
+            f"{policy_id}/{metric_key}",
+        )
+        for name in candidates:
+            for container in containers:
+                if name in container:
+                    return _coerce_float(container[name])
+        return None
+
     def _scalar_from_result(*names):
         containers = [
             eval_result,
@@ -477,7 +528,18 @@ def _extract_eval_metrics_from_result(eval_result, metric_keys):
         "wall_clock_timeout": None,
         "wall_clock_seconds": wall_clock_seconds,
     }
-    return {key: rows.get(key) for key in metric_keys}
+    selected = {key: rows.get(key) for key in metric_keys}
+    selected["groups"] = {}
+    for group_name, policy_id in EVAL_GROUPS.items():
+        if policy_id is None:
+            selected["groups"][group_name] = {
+                key: rows.get(key) for key in EVAL_GROUP_METRIC_KEYS
+            }
+        else:
+            selected["groups"][group_name] = {
+                key: _policy_metric(policy_id, key) for key in EVAL_GROUP_METRIC_KEYS
+            }
+    return selected
 
 
 def _extract_eval_episode_traces(eval_result, map_name, profile_name):
@@ -1430,14 +1492,27 @@ def _save_evaluation_artifacts(
     if outputs.get("save_csv", False):
         csv_path = out_path / f"{run_name}_evaluation.csv"
         csv_metric_keys = evaluation_metric_keys or []
+        group_csv_keys = [
+            f"{group_name}_{metric_key}"
+            for group_name in EVAL_GROUPS
+            for metric_key in EVAL_GROUP_METRIC_KEYS
+        ]
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["map", "profile", *csv_metric_keys])
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["map", "profile", *csv_metric_keys, *group_csv_keys],
+            )
             writer.writeheader()
             for map_name, profiles in evaluation_raw.items():
                 for profile_name, metrics in profiles.items():
                     row = {"map": map_name, "profile": profile_name}
                     for key in csv_metric_keys:
                         row[key] = metrics.get(key)
+                    groups = metrics.get("groups", {}) or {}
+                    for group_name in EVAL_GROUPS:
+                        group_metrics = groups.get(group_name, {}) or {}
+                        for metric_key in EVAL_GROUP_METRIC_KEYS:
+                            row[f"{group_name}_{metric_key}"] = group_metrics.get(metric_key)
                     writer.writerow(row)
 
     if outputs.get("save_per_episode_trace", False):
