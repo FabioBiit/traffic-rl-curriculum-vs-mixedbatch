@@ -1150,16 +1150,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
         vel = ad.actor.get_velocity()
         acc = ad.actor.get_acceleration()
         fwd = t.get_forward_vector()
-        route_fx, route_fy, _, _ = self._path_frame(ad, t)
-        route_aligned_speed = vel.x * route_fx + vel.y * route_fy
-        no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
 
         obs[0:3] = [
             vel.x / 30,
             vel.y / 30,
-            np.clip(route_aligned_speed / 30, -1.0, 1.0),
+            vel.z / 30,
         ]
-        obs[3:6] = [acc.x / 10, acc.y / 10, min(no_wp_steps / 300.0, 1.0)]
+        obs[3:6] = [acc.x / 10, acc.y / 10, acc.z / 10]
         speed = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
         obs[6] = min(speed / 120, 1)
         obs[7:9] = [fwd.x, fwd.y]
@@ -1742,10 +1739,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # ---- 3. Collision penalty (large, immediate) ----
         if ad.collision_flag and ad.collision_step == 0:
-            reward -= 50.0
-
-            # Future Finetuing: scale by speed at collision (normalized)
-            # reward -= (20.0 + speed_kmh * 0.5)  # range: -20 (fermo) a -45 (50 km/h)
+            reward -= 50.0 + min(25.0, speed_kmh * 0.5)
 
         # ---- 4. Off-lane penalty (stay on road) ----
         wp = self._map.get_waypoint(el, project_to_road=True)
@@ -1774,7 +1768,14 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 horizon_s=4.0,
             )
             hazard_risk = max(veh_ttc, veh_occ, ped_ttc, ped_occ)
-            safe_to_push = hazard_risk < 0.75
+            hazard_margin = max(hazard_risk - 0.55, 0.0) / 0.45
+            safe_to_push = hazard_risk < 0.55
+
+            if hazard_margin > 0.0:
+                reward -= min(0.60, 0.025 * speed_kmh * hazard_margin)
+                reward -= 0.30 * ctrl.throttle * hazard_margin
+                if speed_kmh > 2.5:
+                    reward += 0.12 * ctrl.brake * hazard_margin
 
             if speed_kmh < 2.5:
                 reward -= 0.15  # idle penalty
