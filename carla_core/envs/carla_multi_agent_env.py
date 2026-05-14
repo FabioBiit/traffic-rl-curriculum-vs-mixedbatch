@@ -1739,7 +1739,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # ---- 3. Collision penalty (large, immediate) ----
         if ad.collision_flag and ad.collision_step == 0:
-            reward -= 50.0 + min(25.0, speed_kmh * 0.5)
+            reward -= 50.0
 
         # ---- 4. Off-lane penalty (stay on road) ----
         wp = self._map.get_waypoint(el, project_to_road=True)
@@ -1768,14 +1768,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 horizon_s=4.0,
             )
             hazard_risk = max(veh_ttc, veh_occ, ped_ttc, ped_occ)
-            hazard_margin = max(hazard_risk - 0.55, 0.0) / 0.45
-            safe_to_push = hazard_risk < 0.55
-
-            if hazard_margin > 0.0:
-                reward -= min(0.60, 0.025 * speed_kmh * hazard_margin)
-                reward -= 0.30 * ctrl.throttle * hazard_margin
-                if speed_kmh > 2.5:
-                    reward += 0.12 * ctrl.brake * hazard_margin
+            safe_to_push = hazard_risk < 0.75
 
             if speed_kmh < 2.5:
                 reward -= 0.15  # idle penalty
