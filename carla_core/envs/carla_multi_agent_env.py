@@ -1150,16 +1150,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
         vel = ad.actor.get_velocity()
         acc = ad.actor.get_acceleration()
         fwd = t.get_forward_vector()
-        route_fx, route_fy, _, _ = self._path_frame(ad, t)
-        route_aligned_speed = vel.x * route_fx + vel.y * route_fy
-        no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
 
-        obs[0:3] = [
-            vel.x / 30,
-            vel.y / 30,
-            np.clip(route_aligned_speed / 30, -1.0, 1.0),
-        ]
-        obs[3:6] = [acc.x / 10, acc.y / 10, min(no_wp_steps / 300.0, 1.0)]
+        obs[0:3] = [vel.x / 30, vel.y / 30, vel.z / 30]
+        obs[3:6] = [acc.x / 10, acc.y / 10, acc.z / 10]
         speed = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
         obs[6] = min(speed / 120, 1)
         obs[7:9] = [fwd.x, fwd.y]
@@ -1759,18 +1752,41 @@ class CarlaMultiAgentEnv(ParallelEnv):
             alignment = self._route_alignment_to_next_waypoint(ad, el, transform)
             route_completion = self._route_completion(ad)
             no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
+            veh_ttc, veh_occ = self._path_hazard_risk(
+                ad,
+                filter_str="vehicle.*",
+                corridor_width_m=3.5,
+                max_distance_m=40.0,
+                horizon_s=5.0,
+            )
+            ped_ttc, ped_occ = self._path_hazard_risk(
+                ad,
+                filter_str="walker.pedestrian.*",
+                corridor_width_m=3.0,
+                max_distance_m=30.0,
+                horizon_s=4.0,
+            )
+            hazard_risk = max(veh_ttc, veh_occ, ped_ttc, ped_occ)
+            safe_to_push = hazard_risk < 0.75
 
             if speed_kmh < 2.5:
                 reward -= 0.15  # idle penalty
 
-                if route_completion < 0.3 and alignment > 0.25:
+                if safe_to_push and route_completion < 0.3 and alignment > 0.25:
                     urgency = min(no_wp_steps / 200.0, 1.0)
                     start_gain = 0.20 + 0.30 * urgency
                     reward += start_gain * ctrl.throttle * alignment
                     reward -= start_gain * ctrl.brake
 
-            if no_wp_steps > 200:
-                reward -= min(0.5, 0.002 * (no_wp_steps - 200))
+            if safe_to_push and route_completion < 0.3 and alignment > 0.25:
+                target_min_speed = 8.0
+                if speed_kmh < target_min_speed:
+                    reward -= 0.04 * (target_min_speed - speed_kmh) * alignment
+                else:
+                    reward += 0.15 * alignment
+
+            if no_wp_steps > 100:
+                reward -= min(1.0, 0.004 * (no_wp_steps - 100))
 
         if speed_kmh > 50.0:
             reward -= (speed_kmh - 50.0) * 0.10 # speed penalty (scaled)
