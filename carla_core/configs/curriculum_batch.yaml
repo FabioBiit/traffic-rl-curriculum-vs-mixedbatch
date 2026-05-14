@@ -22,16 +22,16 @@ curriculum:
       min_budget_share: 0.16                # medium share required before hard can unlock
       force_unlock_global_share_cap: 0.50   # fallback: unlock hard by 50% total budget if threshold is not met
   budget_constraints:
-    easy_max_share: 0.25                    # easy cannot exceed 25% once medium is available
-    medium_max_share: 0.35                  # medium cannot monopolize post-hard training
-    hard_min_share: 0.45                    # dynamic hard floor over the total budget
+    easy_max_share: 0.30                    # easy cannot exceed 30% once medium is available
+    medium_max_share: 0.32                  # medium cannot monopolize post-hard training
+    hard_min_share: 0.38                    # dynamic hard floor over the total budget
   base_sampling_weights:
     easy: 1.00
-    medium: 1.20
-    hard: 1.40
+    medium: 1.07
+    hard: 1.27
   probation_sampling_weights:
     medium: 1.00
-    hard: 1.35
+    hard: 1.19
   probation_blocks_after_unlock: 2
   probation_blocks_after_cap_pressure: 1
 

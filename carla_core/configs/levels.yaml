@@ -18,19 +18,19 @@ levels_path:
     map: "Town03"
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
-    route_distance_m: 30
+    route_distance_m: 15
     route_distance_m_pedestrian: 15
   medium:
     map: "Town03"
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
-    route_distance_m: 80
+    route_distance_m: 35
     route_distance_m_pedestrian: 35
   hard:
     map: "Town03"
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
-    route_distance_m: 150
+    route_distance_m: 60
     route_distance_m_pedestrian: 60
 
 # traffic-only difficulty: route fixed at medium values, NPC counts vary
