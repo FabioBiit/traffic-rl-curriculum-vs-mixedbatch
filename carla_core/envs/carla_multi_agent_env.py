@@ -1150,9 +1150,16 @@ class CarlaMultiAgentEnv(ParallelEnv):
         vel = ad.actor.get_velocity()
         acc = ad.actor.get_acceleration()
         fwd = t.get_forward_vector()
+        route_fx, route_fy, _, _ = self._path_frame(ad, t)
+        route_aligned_speed = vel.x * route_fx + vel.y * route_fy
+        no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
 
-        obs[0:3] = [vel.x / 30, vel.y / 30, vel.z / 30]
-        obs[3:6] = [acc.x / 10, acc.y / 10, acc.z / 10]
+        obs[0:3] = [
+            vel.x / 30,
+            vel.y / 30,
+            np.clip(route_aligned_speed / 30, -1.0, 1.0),
+        ]
+        obs[3:6] = [acc.x / 10, acc.y / 10, min(no_wp_steps / 300.0, 1.0)]
         speed = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
         obs[6] = min(speed / 120, 1)
         obs[7:9] = [fwd.x, fwd.y]
