@@ -127,6 +127,10 @@ DEFAULT_MA_CONFIG = {
     "episode": {
         "max_steps": 1000,
         "terminate_on_collision": True,
+        "terminate_vehicle_on_early_stuck": True,
+        "vehicle_early_stuck_no_wp_steps": 300,
+        "vehicle_early_stuck_route_completion_threshold": 0.3,
+        "vehicle_early_stuck_hazard_threshold": 0.75,
         "route_length_vehicle": 10,
         "route_length_pedestrian": 10,
         "route_distance_m": None,              # Block 5.1: A* route by meters (None=legacy)
@@ -508,11 +512,19 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     termination_reason = "route_complete"
                 elif ad.agent_type == "pedestrian" and ad.current_wp_idx >= len(ad.route_waypoints):
                     termination_reason = "route_complete"
-                elif ad.agent_type == "vehicle" and self.cfg["episode"].get("terminate_on_offroad", True):
-                    el = ad.actor.get_location()
-                    wp_check = self._map.get_waypoint(el, project_to_road=True)
-                    if wp_check is None or el.distance(wp_check.transform.location) > 5.0:
+                elif ad.agent_type == "vehicle":
+                    is_offroad = False
+                    if self.cfg["episode"].get("terminate_on_offroad", True):
+                        el = ad.actor.get_location()
+                        wp_check = self._map.get_waypoint(el, project_to_road=True)
+                        is_offroad = (
+                            wp_check is None
+                            or el.distance(wp_check.transform.location) > 5.0
+                        )
+                    if is_offroad:
                         termination_reason = "offroad"
+                    elif self._is_vehicle_early_stuck(ad):
+                        termination_reason = "stuck"
                     elif trunc:
                         # Stuck: timeout + (low route_completion OR loop_penalty)
                         rc = self._route_completion(ad)
@@ -1499,6 +1511,50 @@ class CarlaMultiAgentEnv(ParallelEnv):
         state = tl.get_state()
         return state in (carla.TrafficLightState.Red, carla.TrafficLightState.Yellow)
 
+    def _is_vehicle_early_stuck(self, ad: AgentData) -> bool:
+        if ad.agent_type != "vehicle":
+            return False
+        ep_cfg = self.cfg["episode"]
+        if not ep_cfg.get("terminate_vehicle_on_early_stuck", True):
+            return False
+        if ad.actor is None or not ad.actor.is_alive:
+            return False
+
+        threshold = int(ep_cfg.get("vehicle_early_stuck_no_wp_steps", 300))
+        if threshold <= 0:
+            return False
+        no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
+        if no_wp_steps < threshold:
+            return False
+
+        rc_threshold = float(
+            ep_cfg.get("vehicle_early_stuck_route_completion_threshold", 0.3)
+        )
+        if self._route_completion(ad) >= rc_threshold and not ad.loop_penalty_active:
+            return False
+        if self._vehicle_waiting_at_red_or_yellow(ad):
+            return False
+
+        veh_ttc, veh_occ = self._path_hazard_risk(
+            ad,
+            filter_str="vehicle.*",
+            corridor_width_m=3.5,
+            max_distance_m=40.0,
+            horizon_s=5.0,
+        )
+        ped_ttc, ped_occ = self._path_hazard_risk(
+            ad,
+            filter_str="walker.pedestrian.*",
+            corridor_width_m=3.0,
+            max_distance_m=30.0,
+            horizon_s=4.0,
+        )
+        hazard_risk = max(veh_ttc, veh_occ, ped_ttc, ped_occ)
+        hazard_threshold = float(
+            ep_cfg.get("vehicle_early_stuck_hazard_threshold", 0.75)
+        )
+        return hazard_risk < hazard_threshold
+
     def _route_alignment_to_next_waypoint(self, ad: AgentData, loc, transform) -> float:
         if not ad.route_waypoints or ad.current_wp_idx >= len(ad.route_waypoints):
             return 0.0
@@ -1881,6 +1937,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 wp = self._map.get_waypoint(el, project_to_road=True)
                 if wp is None or el.distance(wp.transform.location) > 5.0:
                     terminated = True
+
+            if self._is_vehicle_early_stuck(ad):
+                terminated = True
 
         # Pedestrian: route complete
         if ad.agent_type == "pedestrian":
