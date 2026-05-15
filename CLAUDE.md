@@ -196,10 +196,17 @@ cover the target or returns no useful result.
   - the `current_known_state` section in this file;
   - `reports/carla_finetuning_maggio_2026.docx`;
   - `AGENTS.md` when the shared project instructions also need the same state.
-- Update both `CLAUDE.md` and `AGENTS.md` if and only if there is no active
-  Codex session.
-- If there is an active Codex session, Claude Code must update only
-  `CLAUDE.md` and must not edit `AGENTS.md`.
+- Keep `CLAUDE.md` and `AGENTS.md` synchronized: any durable project-state,
+  instruction, gate, run, ablation, or experimental-decision update must be
+  reflected in both files.
+- Codex and Claude Code must not write `CLAUDE.md` or `AGENTS.md` at the same
+  time. If another agent is actively editing either file, wait until that agent
+  finishes before editing either file.
+- Before updating either file after another agent has edited them, read the
+  latest delta for both `CLAUDE.md` and `AGENTS.md`, preserve the other agent's
+  changes, and add only missing new information.
+- Do not intentionally leave one file updated and the other stale. If one file
+  cannot be updated, stop and report the synchronization blocker.
 - Record promoted, rejected, pending, and conditional candidates.
 - Include newly observed effects from metrics, logs, and diagnostics.
 - Keep claims tied to run IDs and `episodes.jsonl` evidence.

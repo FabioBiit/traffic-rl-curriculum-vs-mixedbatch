@@ -209,10 +209,17 @@ trunk intact.
 - After each evaluated run, ablation, or experimental decision, update:
   - `Current Known State`;
   - `reports/carla_finetuning_maggio_2026.docx`.
-- Update both `AGENTS.md` and `CLAUDE.md` if and only if there is no active
-  Claude Code session.
-- If there is an active Claude Code session, Codex must update only `AGENTS.md`
-  and must not edit `CLAUDE.md`.
+- Keep `AGENTS.md` and `CLAUDE.md` synchronized: any durable project-state,
+  instruction, gate, run, ablation, or experimental-decision update must be
+  reflected in both files.
+- Codex and Claude Code must not write `AGENTS.md` or `CLAUDE.md` at the same
+  time. If another agent is actively editing either file, wait until that agent
+  finishes before editing either file.
+- Before updating either file after another agent has edited them, read the
+  latest delta for both `AGENTS.md` and `CLAUDE.md`, preserve the other agent's
+  changes, and add only missing new information.
+- Do not intentionally leave one file updated and the other stale. If one file
+  cannot be updated, stop and report the synchronization blocker.
 - Record promoted, rejected, pending, and conditional candidates.
 - Include newly observed effects from metrics, logs, and diagnostics.
 - Keep claims tied to run IDs and `episodes.jsonl` evidence.
