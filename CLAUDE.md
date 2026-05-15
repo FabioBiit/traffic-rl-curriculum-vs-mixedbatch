@@ -92,6 +92,11 @@ reported separately from vehicles.
   without changing vehicle observation dimensionality.
 - `D2` reward shaping is the current useful trunk among tested reward changes.
 - `D3` early vehicle-stuck termination failed the gate and was reverted.
+- `H1+H1.1` (`vf_clip_param` 10->1e6, `vf_loss_coeff` 0.5->0.05) is
+  mechanistically confirmed (vehicle `vf_explained_var` ~0 -> 0.87, baseline
+  critic non-functional) but failed the vehicle gate (collision +3.28 pp) on
+  run `20260515_175921`; not promoted but not reverted, and `vf_clip` is kept (not reverted) as
+  the base for `H2`.
 - Current path curriculum configuration uses `difficulty=path` with route
   distances `15m / 35m / 60m` for both vehicles and pedestrians.
 - Current curriculum budget proposal is `easy=0.30`, `medium=0.32`,
@@ -116,6 +121,8 @@ reported separately from vehicles.
 | D3 | rejected/reverted | 20260514_190424 | Early vehicle-stuck termination (`no_wp_steps>=300`, `route<0.3`, `hazard<0.75`). SR -2.90 pp vs D2, stuck+timeout +7.07 pp. Reverted. |
 | Path curriculum easy-only | candidate evidence only | 20260514_211642 | Lock easy, `15m/15m`. Does not test budget or sampling weights. |
 | Full path curriculum | pending/conditional | — | `difficulty=path`, no lock, `15/35/60m`, budget `0.30/0.32/0.38`, weights `1.00/1.07/1.27`. |
+| H1+H1.1 | not promoted but not reverted / mechanism confirmed | 20260515_175921 | Critic fix: `vf_clip_param` 10->1e6 (H1) + `vf_loss_coeff` 0.5->0.05 (H1.1); obs unchanged (44D), checkpoint-comparable. Mechanism confirmed from RLlib logs: vehicle `vf_explained_var` ~0 (baseline -0.002, critic explained ~0% of return variance) -> 0.87. Vehicle gate vs `20260514_211642` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +1.51 pp (20.10->21.61), stuck+timeout -1.98 pp (54.17->52.19), collision +3.28 pp (18.33->21.61), offroad -2.81 pp (7.40->4.59). Blocker: collision regression and late-training degradation (`entropy`->5.43). Confounded (two knobs). Not promoted; `vf_clip` kept, not reverted (reverting restores a non-functional critic). |
+| H2 | pending | — | `gamma` 0.99->0.997 on the H1+H1.1 base; single-knob A/B vs `20260515_175921`. Lengthens discount horizon (~5s->~17s) so the -50 collision penalty propagates; targets the H1+H1.1 collision regression. |
 
 See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pseudocode.
 </current_known_state>
@@ -123,6 +130,12 @@ See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pse
 <current_accepted_trunk>
 - Active trunk: `C0 + C1 + D2`.
 - Reverted: `D3`.
+- `H1+H1.1` is not promoted but not reverted; `vf_clip_param=1000000.0` and
+  `vf_loss_coeff=0.05` are retained as the experimental base for `H2` because
+  the H1 critic fix is mechanistically confirmed and reverting it restores a
+  non-functional critic.
+- `H2` (`gamma=0.997`) is in progress as a single-knob A/B on the H1+H1.1
+  base.
 - Pending/conditional: full `difficulty=path` curriculum without
   `--lock-curriculum-level`, using route distances `15m / 35m / 60m`, budget
   shares `0.30 / 0.32 / 0.38`, and sampling weights `1.00 / 1.07 / 1.27`.
