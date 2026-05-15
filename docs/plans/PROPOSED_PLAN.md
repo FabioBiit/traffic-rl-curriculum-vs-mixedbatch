@@ -1,88 +1,316 @@
-# Analisi Critica Run: carla_mappo_20260514_211642
 
-## 📋 Executive Summary & Context
-**Stato della raccolta dati:** Completata (inclusa logica core per OBS/Reward/Iperparametri).
-**Integrità:** Fonti chiave verificate; 1920 record (320 ep × 6 agenti).
-**Vincoli rilevati:** * `--lock-curriculum-level`: **Easy** (rotte 15m).
-* `final_evaluation_completed`: **False**.
-* **Problema Critico:** La Success Rate (SR) aggregata dello 0.53 maschera un fallimento sistematico della policy veicoli.
+#########################################################15-05-2026##############################################################
 
----
+### PIANO CLAUDE CARLA
 
-## 📊 Analisi Metriche Disaggregate (Training)
-Il confronto tra Veicoli e Pedoni evidenzia un forte squilibrio nelle prestazioni.
+● Ho completato la raccolta dati (run + intera parte di carla_core rilevante per OBS/reward/iperparametri: carla_multi_agent_env.py,
+  route_planner.py, centralized_critic.py, mappo_runtime.py, train_carla_mappo.py, configs). Le ricerche web sono andate a rate-limit ma
+   le fonti chiave sono verificate. Ecco l'analisi critica completa.
 
-| Metrica (Training) | Veicoli (n=960) | Pedoni (n=960) |
-| :--- | :--- | :--- |
-| **Success Rate (route_complete)** | **20.1%** | **85.9%** |
-| **Stuck** | 30.5% | 11.0% |
-| **Timeout** | 23.7% | 3.0% |
-| **Stuck + Timeout (Totale non-progressione)** | **54.2%** | **14.1%** |
-| **Collision** | 18.3% | 0% |
-| **Offroad** | 7.4% | N/A |
-| **Route Completion (Media)** | 0.437 | 0.886 |
-| **Velocità Media Finale** | 9.8 km/h | N/A |
+  ---
+  Analisi run carla_mappo_20260514_211642 + codebase
 
-> **Diagnosi Sintetica:** La policy veicolo ha adottato uno stile iper-conservativo. Il problema dominante è la **non-progressione** (54.2%), non la mancanza di sicurezza. Aumentare le penalità per collisione senza correggere lo shaping peggiorerà ulteriormente il blocco dei veicoli.
+  Premessa critica sulla run
 
----
+  Tre cose vanno dette subito, perché cambiano la lettura di tutto:
 
-## Blocco 1: Analisi Osservazioni (OBS)
-**Verdetto:** Geometricamente sufficienti, ma affette da violazione della **Proprietà di Markov**.
+  1. La run è --lock-curriculum-level easy: curriculum_lock.enabled=true. Non è un esperimento di curriculum — è un run easy-only con
+  rotte path 15 m. Non dice nulla su budget/sampling/curriculum (coerente con <do_not_infer>).
+  2. final_evaluation_completed: false (final_eval_job.json → "launch manually"). evaluation: {} vuoto. Non esiste evidenza Town05.
+  Tutto ciò che segue è basato su episodi di training (episodes.jsonl, 1920 record, 320 ep × 6 agenti, 0 duplicati, integrità OK).
+  3. Lo "0.53 success_rate" in results.json è la SR congiunta veicoli+pedoni e maschera il problema. Disaggregato (episodes.jsonl,
+  ricalcolato da disco):
 
-### Lacuna Rilevata
-Esiste un evidente **State Aliasing**. La reward penalizza `no_wp_steps > 100` e `loop_penalty_active`, ma questi stati non sono mappati nell'input dell'agente (Obs 44D). L'agente non "vede" da quanto è fermo o quanto tempo rimane.
+  ┌───────────────────────────────┬─────────────────┬────────────────┐
+  │      Metrica (training)       │ Veicoli (n=960) │ Pedoni (n=960) │
+  ├───────────────────────────────┼─────────────────┼────────────────┤
+  │ Success rate (route_complete) │ 20.1 %          │ 85.9 %         │
+  ├───────────────────────────────┼─────────────────┼────────────────┤
+  │ Stuck                         │ 30.5 %          │ 11.0 %         │
+  ├───────────────────────────────┼─────────────────┼────────────────┤
+  │ Timeout                       │ 23.7 %          │ 3.0 %          │
+  ├───────────────────────────────┼─────────────────┼────────────────┤
+  │ Stuck + timeout               │ 54.2 %          │ 14.1 %         │
+  ├───────────────────────────────┼─────────────────┼────────────────┤
+  │ Collision                     │ 18.3 %          │ 0 %            │
+  ├───────────────────────────────┼─────────────────┼────────────────┤
+  │ Offroad                       │ 7.4 %           │ —              │
+  ├───────────────────────────────┼─────────────────┼────────────────┤
+  │ Route completion (media)      │ 0.437           │ 0.886          │
+  ├───────────────────────────────┼─────────────────┼────────────────┤
+  │ no_wp_steps (media)           │ 211             │ 115            │
+  ├───────────────────────────────┼─────────────────┼────────────────┤
+  │ Velocità a fine ep. (media)   │ 9.8 km/h        │ —              │
+  └───────────────────────────────┴─────────────────┴────────────────┘
 
-### Proposte di Refactoring Obs
-* **O1 (Identità di Stato):** Estensione 44D -> 46D. Aggiunta `no_wp_steps` (normalizzato) e `loop-flag`.
-* **O2 (Orizzonte Temporale):** Estensione -> 47D. Aggiunta `tempo_residuo` normalizzato: (max_steps - step_count) / max_steps.
+  Lettura empirica chiave (non ovvia):
 
----
+  - Lo stuck ha route_completion medio 0.15 e no_wp_steps medio 491: in media metà episodio senza avanzare un solo waypoint. L'87 %
+  degli stuck ha causa low_route_completion, il 62 % no_waypoint_advance, il 54 % loop_penalty.
+  - Il timeout è diverso: route_completion 0.55, velocità 14 km/h — guida, ma non finisce in tempo.
+  - Le collisioni avvengono tardi (step medio 933) e a bassa velocità (6 km/h): non sono schianti aggressivi, sono urti striscianti
+  mentre il veicolo arranca nel traffico.
+  - Anche i successi sono lentissimi: route_complete termina a step medio 862 (= 43 s) per una rotta target 15 m. Velocità media reale
+  durante l'episodio ≈ 0.7 m/s (~2.5 km/h); i 15 km/h sono solo la velocità istantanea al traguardo.
+  - La SR veicolo nella window finale (0.16) è ≤ della cumulativa (0.20): a 300k step la policy veicolo è in plateau ~16–20 %, non in
+  salita. Non è solo "poco training".
 
-## Blocco 2: Calibrazione Reward
-**Verdetto:** Mis-calibrazione dei gate e bonus inconsistenti. **Non espandere, ri-calibrare.**
+  Diagnosi sintetica: la policy veicolo ha imparato uno stile iper-conservativo e quasi immobile. Il problema dominante non è la
+  sicurezza (18 % collisioni) ma la non-progressione (54 % stuck+timeout). Qualsiasi modifica che aumenti la cautela (es. penalità
+  collisione più alta) peggiora il target primario.
 
-* **R1 - Rimozione Gate Progressione:** L'incentivo alla velocità si spegne a `route_completion >= 0.3`. Questo spiega il 23.7% di timeout (i veicoli "mollano" dopo il 30% della rotta).
-* **R2 - Condizionamento Smoothness:** Il bonus per lo sterzo fluido (+0.1) è incondizionato. Un veicolo fermo accumula punti (~100/episodio), annullando di fatto le penalità di idle.
-* **R3 - Conservazione:** Non aumentare la penalità collisione (attualmente 18.3%).
+  ---
+  1. Le OBS attuali sono sufficienti?
 
----
+  Verdetto
 
-## Blocco 3: Iperparametri e Simulatore
-**Verdetto:** Due criticità bloccanti a livello di ottimizzazione e orizzonte.
+  Geometricamente sì — l'obs 44D (con le feature route-aware di C1) copre bene il task di guida. Ma c'è una lacuna reale: una violazione
+   della proprietà di Markov. Non servono nuovi "sensori"; servono 2–3 scalari che rendano osservabile lo stato che la reward già usa.
 
-### H1: Clipping della Value Function (Priorità Max)
-Il parametro `vf_clip_param=10.0` in `mappo_runtime.py` strozza il gradiente del Critic.
-* **Problema:** Con returns O(10^2 - 10^3), l'errore quadratico supera quasi sempre sqrt(10).
-* **Fix:** Alzare `vf_clip_param` a 10^4 o riscalare la reward (/100).
+  Evidenza critica
 
-### H2: Disallineamento Orizzonte Temporale
-Frequenza 20 Hz + gamma=0.99 -> Orizzonte effettivo di 5 secondi.
-* **Problema:** Un episodio di successo dura ~43s (~862 step). L'agente è "miope".
-* **Fix A:** Incrementare gamma a ~0.997.
-* **Fix B:** Implementare `action-repeat` (frame-skipping) k=3 o k=4.
+  La _vehicle_reward (carla_multi_agent_env.py:1795-1796, 1810-1811) penalizza:
+  - no_wp_steps > 100 → fino a −1.0/step
+  - loop_penalty_active → −1.0/step
 
----
+  Ma né no_wp_steps né il loop-flag sono nell'osservazione. L'obs 44D contiene cinematica, route preview, hazard, prev_steer — ma nessun
+   segnale di "da quanto sono fermo" o "tempo residuo". Conseguenza: due stati con posizione/velocità/rotta identiche ma no_wp_steps=50
+  vs 500 sono indistinguibili in obs e ricevono reward diverse → state aliasing → il critic è costretto a predire la media → vantaggi
+  pessimi proprio nel regime stuck. È esattamente la coorte che fallisce.
 
-## Piano di Verifica (Gate Sequence)
-Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
+  Lo stesso vale per il timeout: l'episodio tronca a 1000 step ma l'agente non ha alcun "orologio". Un veicolo a route_completion=0.55
+  con 200 step residui dovrebbe accelerare; con 800 può cruise — stessa obs → aliasing.
 
-1.  **Test H1:** `vf_clip_param` 10 -> 10000. (Verifica `vf_explained_var`).
-2.  **Test H2:** gamma 0.99 -> 0.997.
-3.  **Test R1/R2:** Modifiche allo shaping (Checkpoint compatibili).
-4.  **Test Bugfix:** `route_planner.py` upper bound per lunghezze rotte.
-5.  **Test O1/O2:** Cambio architettura (Variante separata).
+  Proposte (variante separata, NON il trunk 44D)
 
----
+  O1 — Aggiungere no_wp_steps normalizzato + loop-flag (obs 44D→46D)
+  - Cosa: obs[44] = min(no_wp_steps/300, 1), obs[45] = float(loop_penalty_active).
+  - Validazione ×3: (1) Empirica — gli stuck hanno no_wp medio 491 e 54 % loop, e l'obs li nasconde; (2) Codice — la reward referenzia
+  quantità non osservate (:1795, :1810); (3) Letteratura — proprietà di Markov, lo stato deve essere funzione dell'osservazione (Sutton
+  & Barto); Pardo et al. 2018 mostra che termini dipendenti da "tempo nascosto" causano state-aliasing e instabilità.
 
-## 📚 Riferimenti Scientifici
-* **Time Limits:** Pardo et al. (ICML 2018) - Violazione Markov in env troncati.
-* **MAPPO:** Yu et al. (2022) - Importanza della Value Normalization.
-* **Reward Design:** Knox et al. (2023) - Problemi di mis-design nel driving RL.
-* **Frame-skipping:** Mnih et al. (2015) / arXiv:2102.03718.
+  O2 — Aggiungere tempo residuo normalizzato (obs +1, → 47D)
+  - Cosa: obs[46] = (max_steps − step_count)/max_steps.
+  - Validazione ×3: (1) Empirica — 23.7 % timeout, coorte distinta che "guida ma non finisce"; (2) Pardo et al. 2018, ICML — task a
+  orizzonte fisso: la time-aware observation va inclusa per non violare Markov; (3) Pratica standard in env troncati a orizzonte fisso
+  (Gymnasium TimeLimit).
 
+  Cosa NON aggiungere
 
+  - No lidar/depth/semantica/camera. L'obs è un vettore di stato dalle API CARLA — e questo è corretto: nota che il weather è fisso
+  ClearNoon ma è irrilevante perché non c'è input visivo. Aggiungere feature percettive = solo rumore e costo.
+  - No allargamenti delle slot attori (già 3 veicoli + 2 pedoni + 4 hazard TTC/occupancy): l'offroad è solo 7.4 %, non è il collo di
+  bottiglia.
 
+  Gate O1/O2
+
+  - A/B isolato vs baseline 211642 (300k, easy-lock, seed 999). Gate progetto: veicolo SR +≥2.0 pp, stuck+timeout −≥2.0 pp,
+  collision/offroad ≤+1.0 pp, no NaN, 6 record/ep.
+  - ⚠️  Avvertenza forte: cambiare la dimensione obs (44→46/47) rompe la compatibilità dei checkpoint e, per <do_not_infer>, non è
+  confrontabile direttamente col trunk 44D. Per questo O1/O2 vanno ultimi (vedi piano sotto), come variante esplicitamente etichettata.
+
+  ---
+  2. Le reward sono ben calibrate?
+
+  Verdetto
+
+  No, non del tutto — la reward v5/D2 ha 2 mis-calibrazioni concrete che alimentano direttamente stuck e timeout. Ma la risposta a "ne
+  aggiungiamo altre?" è un netto NO: ci sono già ~8 termini veicolo; aggiungerne è rumore e superficie di reward-hacking. Si ri-calibra,
+   non si espande.
+
+  Evidenza critica
+
+  Problema R1 — l'incentivo alla velocità si spegne a route_completion ≥ 0.3.
+  In _vehicle_reward:1782-1793, sia lo start shaping sia lo speed shaping (target_min_speed=8.0) sono dietro la guardia route_completion
+   < 0.3. Oltre il 30 % di rotta, l'unico segnale positivo al moto è +100/waypoint (sparso) e il termine distanza ×4. La coorte timeout
+  vive esattamente lì: route_completion medio 0.55 → ha superato la guardia → nessun incentivo a non rallentare.
+
+  Problema R2 — il bonus di sterzo fluido è incondizionato.
+  _vehicle_reward:1802-1804: steer_delta < 0.1 → +0.1 ad ogni step. Un veicolo fermo che tiene lo sterzo costante incassa +0.1/step ≈
+  +100/episodio (= un intero waypoint), che cancella in parte la penalità idle (−0.15/step). Per un'auto ferma-ma-stabile, prima che
+  scattino le penalità no_wp/loop (100–500 step dopo), il netto è ≈ −0.05/step: il bacino "non fare nulla" è troppo poco profondo
+  all'inizio dell'episodio.
+
+  Proposte
+
+  R1 — Estendere l'incentivo di passo a tutta la rotta (rimuovere/sostituire la guardia rc<0.3)
+  - Cosa: sostituire il gate route_completion < 0.3 con un termine di "passo" attivo per tutta la rotta (es. piccolo bonus/penalità su
+  speed_kmh vs target_min_speed, condizionato solo a safe_to_push e alignment, peso ridotto ~0.5× del valore attuale per non gonfiare la
+   varianza).
+  - Validazione ×3: (1) Empirica — coorte timeout rc=0.55, oltre la guardia, 23.7 %; (2) Codice — :1782, :1788 mostrano il gate
+  esplicito; (3) Teoria — uno shaping di progresso dev'essere consistente lungo lo stato-spazio (potential-based shaping, Ng, Harada &
+  Russell 1999): un incentivo che sparisce a metà task introduce un ottimo locale di "rallenta dopo il 30 %".
+
+  R2 — Condizionare il bonus di sterzo fluido alla velocità
+  - Cosa: pagare +0.1 di smoothness solo se speed_kmh > ~5 (oppure scalarlo per min(speed/5,1)). La jerk-penalty resta.
+  - Validazione ×3: (1) Empirica — 264/960 veicoli (27.5 %) finiscono a <1 km/h: il bonus li premia mentre sono fermi; (2) Codice —
+  :1802-1804, bonus incondizionato; +0.1×1000 ≈ +100 = un waypoint; (3) Letteratura — i termini di shaping additivi non vincolati creano
+   ottimi sfruttabili: principio centrale della letteratura sul reward-hacking / mis-design della reward di guida (es. Knox et al.,
+  Reward (Mis)design for Autonomous Driving).
+
+  R3 — NON aggiungere termini e NON aumentare la penalità collisione
+  - Validazione ×3: (1) Empirica — la collisione è il 18.3 %, non il fallimento dominante (54.2 % stuck+timeout); alzarla spinge verso
+  l'ottimo "auto congelata" e peggiora il gate (stuck+timeout −2pp); (2) Codice — la reward ha già 7–8 termini veicolo; ogni nuovo
+  termine è varianza extra su returns già O(10²–10³); (3) Letteratura — Knox et al. 2023 documenta che le reward di guida multi-termine
+  fatte a mano sono error-prone e che "più termini" raramente aiuta.
+
+  Nota trasversale (rimanda al Blocco 3)
+
+  La scala della reward (+100/waypoint, returns O(10²–10³), reward_std ~12000) interagisce in modo grave con vf_clip_param=10. La
+  soluzione "pulita" è riscalare tutti i termini (es. ÷100: waypoint +100→+1), ma è una modifica di reward → va testata come condizione
+  separata e va bundlata con R1/R2 o trattata insieme a H1. Vedi H1.
+
+  Gate R1/R2
+
+  A/B isolato vs 211642 (1 modifica per volta), stesso protocollo, gate progetto. R1/R2 sono checkpoint-compatibili (non cambiano
+  obs/architettura) → confrontabili col trunk.
+
+  ---
+  3. Iperparametri rete neurale e simulatore CARLA
+
+  Verdetto
+
+  Rete neurale (capacità): MLP 256×2 Tanh per attore (44→256→256→4) e critic (216→256→256→1) — adeguata, non è il collo di bottiglia,
+  non toccarla (anche <technical_constraints> lo vieta). Iperparametri di ottimizzazione/simulatore: NO, due problemi seri.
+
+### H1 — vf_clip_param=10 strozza l'apprendimento del critic (priorità massima)
+
+  mappo_runtime.py:283 usa PPOConfig stock con vf_clip_param=10.0. In RLlib (old API stack, 2.10) vf_clip_param clampa la loss del value function: vf_loss = clamp((V − V_target)², 0, vf_clip_param). Quando |V − V_target| > √10 ≈ 3.16, la loss clampata è costante → gradiente ZERO al critic.
+
+  Qui i returns sono O(10²–10³) (un successo veicolo ≈ +1200÷1500; reward_mean joint ≈ 22000). L'errore quadratico di valore è quasi sempre ≫ 10 → il critic resta a gradiente ~nullo per gran parte del training. Conseguenza: i vantaggi GAE collassano verso "returns grezzi" (stile REINFORCE, alta varianza). Combacia con l'evidenza: il sotto-task facile (pedoni) impara comunque all'86 %, quello difficile (veicoli) è limitato dalla varianza e va in plateau al 18 %.
+
+  - Validazione ×3+: (1) Sorgente RLlib — clamp(vf_loss, 0, vf_clip_param) in ppo_torch_policy; (2) Doc RLlib — vf_clip_param "sensitive to the scale of the rewards … if your expected V is large, increase this"; (3) Issue ray-project/ray#8908 "Should remove vf_clip param from PPO" + nota che il VF-clipping è "a common cause of user problems"; (4) MAPPO (Yu et al. 2022): la value normalization
+  "never hurts … critical to strong performance" — il problema che PopArt risolverebbe è esattamente questo.
+  - Fix isolato (consigliato per primo): alzare vf_clip_param a un valore che non vincoli mai (es. 1e4–1e6), mantenendo grad_clip=0.5
+  come rete di sicurezza, senza toccare obs/reward/architettura → pienamente confrontabile col trunk.
+  - Fix "proprio" (alternativo): riscalare la reward ÷~100 (vedi nota R3) e tenere vf_clip ~50–100. Più pulito numericamente ma è una modifica di reward.
+  - Gate diagnostico (mechanistic, indipendente dalla SR): misurare vf_explained_var (e vf_loss) nei log RLlib/TensorBoard. Atteso pre-fix: vf_explained_var ≈ 0 o negativo, vf_loss "incollata" vicino a 10. Post-fix: vf_explained_var deve salire (>0.3–0.5). Poi gate progetto sulla SR veicolo.
+
+### H2 — Disallineamento di orizzonte: 20 Hz + γ=0.99 → 5 s (priorità alta)
+
+  step() esegue un world.tick() per step; fixed_delta_seconds=0.05 → controllo a 20 Hz, nessun frame-skip. Con γ=0.99 l'orizzonte
+  effettivo è 1/(1−γ)=100 step = 5 s. Ma un episodio dura 50 s e una rotta di successo richiede ~862 step (43 s): la reward di
+  route-complete è scontata di 0.99^862 ≈ 2·10⁻⁴ — invisibile. L'agente ottimizza una finestra di 5 secondi → miope, esitante, lento.
+  Spiega direttamente lo stile "creep".
+
+  - Validazione ×3: (1) Aritmetica — orizzonte 1/(1−γ); empiricamente i successi sono a step ~862 ≫ 100; (2) Frame-skip è parametro
+  standard e potente (Mnih et al. 2015 DQN usa skip-4; An Analysis of Frame-skipping in RL, arXiv 2102.03718); (3) Norma in CARLA RL —
+  frequenza di decisione tipica ~10 Hz e frame_skip≈3 (rassegna CARLA-RL); il nostro 20 Hz senza skip è più fine del normale.
+  - Fix (due opzioni, testare una per volta):
+    - A — action-repeat k=3–4 in step() (ripeti l'azione, k tick): controllo 5–7 Hz, orizzonte a γ=0.99 sale a 15–20 s, e
+  raddoppia/triplica il throughput. ⚠️  cambia la dinamica del MDP (uno step = 0.2 s) → condizione separata, episodio in step più corto.
+    - B — alzare γ a ~0.997 (orizzonte ~17 s) o 0.999 (~50 s). Una riga, MDP invariato → più confrontabile. Più semplice come primo
+  test.
+  - Gate: A/B isolato, gate progetto. Per l'opzione A, ricontrollare max_steps (1000/k) per mantenere ~50 s di episodio.
+  H3 — entropy_coeff=0.03 costante (priorità bassa, ablazione attenta)
+  0.03 è alto per controllo continuo 2D con log_std stato-dipendente (MAPPO usa tipicamente ~0.01) → rumore d'azione persistente su throttle/sterzo, che litiga con il bonus di sterzo fluido. Ma serve esplorazione per uscire dal plateau stuck → non abbassarlo
+  
+  "secco": meglio uno schedule di entropia decrescente (alta presto per esplorare, bassa tardi per consolidare). Validazione: (1) norme PPO continuo; (2) conflitto empirico entropy↔smoothness; (3) Andrychowicz et al. 2021 What Matters in On-Policy RL. 
+  
+  Da fare solo dopo
+  H1/H2.
+
+  Iperparametri CARLA / curriculum — note
+
+  - Densità traffico "easy" non è easy. levels.yaml: nel curriculum path usato dalla run, easy ha 15 veicoli + 30 pedoni NPC, identici a
+   hard (varia solo la distanza rotta). Esistono già levels_traffic/levels_mixed con easy = 5/10 NPC, non usati da path. Per far
+  imparare la guida prima, una vera tappa easy a bassa densità è già nel codice. (Rilevante per la tesi: questo path non testa il
+  curriculum di traffico.)
+  - Bug route_planner.py:182-190: la docstring promette validazione lunghezza rotta in [0.5×, 2.0×], ma il codice controlla solo il
+  lower bound (route_len < target×0.5). Una rotta "easy 15 m" può quindi essere arbitrariamente lunga (A* che gira l'isolato → 100 m+).
+  Questo gonfia i timeout e decalibra la difficoltà del curriculum. Fix a basso rischio: aggiungere il reject route_len > target×2.0.
+  - Già esplorati (non riproporre): i commenti in train_mappo.yaml mostrano che num_sgd_iter 15→10 e sgd_minibatch 256→512 sono stati
+  testati e revertiti ("NO_PASS"). hidden_size, lr, clip_param, kl_*, grad_clip sono ragionevoli — lasciare. Un lr_schedule decrescente
+  è polish opzionale, non prioritario.
+  - batch_mode=complete_episodes + batch 8000 ≈ 8 episodi/update → ~40 update totali a 300k step: pochissimi. Conferma il
+  sotto-training, ma la window-SR veicolo in plateau dice che non è solo questione di step.
+
+  ---
+  Piano di verifica — scala di gate (ordine consigliato)
+
+  Ogni esperimento = una modifica isolata, protocollo identico a 211642 (300k, --lock-curriculum-level easy, difficulty path, seed 999), confronto vs baseline 211642 (veicolo: SR 20.1 %, stuck+timeout 54.2 %, collision 18.3 %, offroad 7.4 %). Gate progetto: SR +≥2 pp, stuck+timeout −≥2 pp, collision/offroad ≤+1 pp, no NaN, 6 record/ep. Se fallisce → revert solo quel candidato.
+
+  #: 1
+  Candidato: H1 vf_clip_param 10→1e4
+  Tipo: Hyperparam
+  Confrontabile col trunk?: Sì (checkpoint-compat)
+  Note: Più economico, più alto leverage, zero rischio comparabilità. Da fare per primo.
+  ────────────────────────────────────────
+  #: 2
+  Candidato: H2 γ 0.99→0.997 (o action-repeat k=3)
+  Tipo: Hyperparam / env
+  Confrontabile col trunk?: Sì (γ) / parziale (skip)
+  Note: Testare γ per primo (più semplice).
+  ────────────────────────────────────────
+  #: 3
+  Candidato: R1 rimozione gate rc<0.3
+  Tipo: Reward shaping
+  Confrontabile col trunk?: Sì
+  Note:
+  ────────────────────────────────────────
+  #: 4
+  Candidato: R2 smoothness gated su velocità
+  Tipo: Reward shaping
+  Confrontabile col trunk?: Sì
+  Note:
+  ────────────────────────────────────────
+  #: 5
+  Candidato: route-length upper bound (route_planner)
+  Tipo: Bugfix env
+  Confrontabile col trunk?: Sì
+  Note: Basso rischio.
+  ────────────────────────────────────────
+  #: 6
+  Candidato: O1+O2 obs 44D→47D
+  Tipo: Obs change
+  Confrontabile col trunk?: No (rompe checkpoint, <do_not_infer>)
+  Note: Variante separata, solo se 1–5 non chiudono il gap.
+  ────────────────────────────────────────
+  #: —
+  Candidato: H3 entropy schedule
+  Tipo: Hyperparam
+  Confrontabile col trunk?: Sì
+  Note: Solo dopo 1–2.
+
+  Raccomandazione operativa: il recap dice "next action: lanciare il full path-curriculum run 3M". Lanciare 3M step con vf_clip_param=10
+   significa bruciare ~10× il budget su un critic strozzato e cementare il bug nella baseline di curriculum. Validare almeno H1 (e
+  idealmente H2) sul protocollo 300k prima del run completo da 3M.
+
+  ---
+  Avvertenze di comparabilità
+
+  - Distinguere sempre le condizioni sperimentali: H1/H2/H3 = hyperparam; R1/R2 = reward shaping; O1/O2 = obs change (incompatibile coi
+  checkpoint, non confrontabile col trunk 44D). Non sommare candidati in un unico run.
+  - Nessun dato Town05 esiste per questa run: non inferire qualità di generalizzazione/eval finale da episodi di training.
+  - La run 211642 non può fungere da baseline di curriculum (è easy-locked).
+
+  ---
+  Riferimenti (verificati questa sessione salvo dove indicato)
+
+  - Pardo et al. 2018, Time Limits in Reinforcement Learning, ICML — proceedings.mlr.press/v80/pardo18a
+  (https://proceedings.mlr.press/v80/pardo18a.html) · arXiv:1712.00378 (https://arxiv.org/abs/1712.00378)
+  - Yu et al. 2022, The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games (MAPPO), NeurIPS D&B — arXiv:2103.01955
+  (https://arxiv.org/abs/2103.01955)
+  - RLlib PPO vf_clip_param — Ray docs / ppo.py (https://docs.ray.io/en/latest/_modules/ray/rllib/algorithms/ppo/ppo.html) · issue
+  ray-project/ray#8908 (https://github.com/ray-project/ray/issues/8908)
+  - An Analysis of Frame-skipping in Reinforcement Learning — arXiv:2102.03718 (https://arxiv.org/pdf/2102.03718)
+  - Da conoscenza consolidata (non ri-verificati via web questa sessione per rate-limit): Ng, Harada & Russell 1999, Policy Invariance
+  Under Reward Transformations, ICML (potential-based shaping); Sutton & Barto, RL: An Introduction (proprietà di Markov); Mnih et al.
+  2015, Human-level control…, Nature (frame-skip 4); Andrychowicz et al. 2021, What Matters for On-Policy RL, ICLR; Knox et al. 2023,
+  Reward (Mis)design for Autonomous Driving, Artificial Intelligence (arXiv:2104.13906).
+
+  ---
+  Posso, se vuoi, implementare l'esperimento #1 (H1) come modifica isolata di una riga in train_mappo.yaml (vf_clip_param: 10.0 →
+  10000.0) con verifica python -m compileall e annotazione del razionale, pronto per l'A/B 300k. Dimmi se procedo o se preferisci prima
+  discutere l'ordine dei gate.
+
+✻ Cooked for 7m 41s
+
+※ recap: Goal: improve the CARLA MAPPO vehicle policy (currently 20% success, 54% stuck+timeout). I finished the critical analysis of 
+  run 211642 and the codebase. Next action: implement experiment H1, raising vf_clip_param from 10 to 10000 for an isolated A/B test. (disable recaps in /config)
+  
+  
+### IMPLEMENTATION STEPS
 
 ● Piano scritto. Riepilogo delle 8 modifiche chirurgiche (7 + 1 opzionale), tutte isolate e gate-driven:
 
@@ -125,22 +353,21 @@ Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
   ID: H3
   File · riga: mappo_runtime.py ~280 + train_mappo.yaml
   Modifica: schedule entropia decrescente
+  
+  #: 9 (opz)
+  ID: R4
+  Alzare −50 (es. −500/−2000) o ridurre lo shaping denso, per rendere la collisione non trascurabile sulla scala O(10^4). È reward shaping (condizione sperimentale separata).
 
   Punti 1–5 sono checkpoint-compatibili e confrontabili col trunk; 6–7 cambiano la dimensione obs (44→47, da applicare insieme) e
-  richiedono retrain da zero. Ogni punto è un A/B isolato da verificare col gate <gate_policy> contro la baseline 211642 (veicoli: SR
-  20.1 %, stuck+timeout 54.2 %).
+  richiedono retrain da zero. Ogni punto è un A/B isolato da verificare col gate <gate_policy> contro la baseline 211642 (veicoli: SR20.1 %, stuck+timeout 54.2 %).
 
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Ready to code?
-
- Here is Claude's plan:
-╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- Piano modifiche chirurgiche — Vehicle policy CARLA MAPPO
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 
+### Piano modifiche chirurgiche — Vehicle policy CARLA MAPPO
 
  Context
 
- L'analisi della run carla_mappo_20260514_211642 (easy-locked, 300k step, 320 ep, ricalcolata da episodes.jsonl) ha mostrato che la
- policy veicolo è in plateau:
+ L'analisi della run carla_mappo_20260514_211642 (easy-locked, 300k step, 320 ep, ricalcolata da episodes.jsonl) ha mostrato che la policy veicolo è in plateau:
 
  - SR veicolo 20.1 %, stuck 30.5 % + timeout 23.7 % = 54.2 %, collision 18.3 %, offroad 7.4 %.
  - Gli stuck hanno route_completion medio 0.15 e no_wp_steps medio 491 (mezzo episodio senza avanzare un waypoint).
@@ -150,8 +377,7 @@ Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
 
  1. vf_clip_param=10 clampa la loss del value function (clamp((V−V_target)², 0, 10)): con returns O(10²–10³) il critic resta a
  gradiente ~nullo → vantaggi GAE degradati.
- 2. Orizzonte miope: controllo a 20 Hz (fixed_delta_seconds=0.05, 1 tick/step) + γ=0.99 → orizzonte effettivo ~5 s contro episodi da 50
-  s.
+ 2. Orizzonte miope: controllo a 20 Hz (fixed_delta_seconds=0.05, 1 tick/step) + γ=0.99 → orizzonte effettivo ~5 s contro episodi da 50s.
  3. Gate reward route_completion < 0.3: l'incentivo alla velocità si spegne dopo il 30 % di rotta (coorte timeout).
  4. Bonus sterzo fluido incondizionato: +0.1/step anche da fermo → cancella in parte la penalità idle.
  5. Violazione di Markov: la reward penalizza no_wp_steps e loop_penalty_active, ma nessuno dei due è nell'osservazione.
@@ -182,7 +408,7 @@ Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
  ---
  MODIFICHE (7 punti + 1 opzionale)
 
- Punto 1 — H1: alzare vf_clip_param (priorità massima)
+### Punto 1 — H1&H1.1: alzare vf_clip_param (priorità massima) + abbassare vf_loss_coeff
 
  - File: carla_core/configs/train_mappo.yaml — riga 29
  - Esperimento: H1 · confrontabile col trunk: sì (nessun cambio obs/architettura, checkpoint-compatibile)
@@ -190,19 +416,46 @@ Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
  Modifica:
  # PRIMA
    vf_clip_param: 10.0           # Value function clipping Reward v8
+   vf_loss_coeff: 0.5
  # DOPO
    vf_clip_param: 1000000.0      # H1: clamp non vincolante — il critic deve poter apprendere returns O(10^2-10^3)
+   vf_loss_coeff: 0.05			 # H1.1 ribilancia la quota della value-loss nella norma globale.
+
+> Chiarimento: per H1 a prima iterazione avevi scritto 1e4 adesso leggo 1e6 è corretto?                                                 
+
+● Sì, 1e6 (1000000.0) nel piano è voluto, non un refuso. Nell'analisi iniziale avevo scritto un range — "un valore che non vincoli mai (es. 1e4–1e6)" — e nel piano chirurgico ho fissato l'estremo alto. Il motivo è tecnico e vale la pena chiarirlo.
+
+  Perché 1e6 e non 1e4. vf_clip_param clampa l'errore di valore al quadrato: la soglia sull'errore assoluto è √(vf_clip_param).
+
+  ┌───────────────┬───────────────────────────────────────────────┐
+  │ vf_clip_param │ soglia |V − V_target| oltre cui gradiente = 0 │
+  ├───────────────┼───────────────────────────────────────────────┤
+  │ 10 (attuale)  │ 3.16                                          │
+  ├───────────────┼───────────────────────────────────────────────┤
+  │ 1e4           │ 100                                           │
+  ├───────────────┼───────────────────────────────────────────────┤
+  │ 1e6           │ 1000                                          │
+  └───────────────┴───────────────────────────────────────────────┘
+
+  I value target qui sono O(10²–10³). A inizio training il critico predice ~0 → |V − V_target| ~ centinaia. Con 1e4 (soglia 100) una grossa fetta dei sample è ancora clampata proprio nella fase iniziale → il fix è solo parziale. Con 1e6 (soglia 1000) il clamp diventa praticamente non vincolante. Quindi 1e6 è il valore che davvero sblocca il critico; 1e4 era il fondo, troppo conservativo, del range.
+
+  Caveat onesto — vf_clip da solo è un compromesso. grad_clip=0.5 clippa la norma globale del gradiente (attore + critico insieme, anche se sono reti separate: clip_grad_norm_ scala tutto con lo stesso fattore). Con vf_clip alto la value-loss è grande → il suo gradiente domina la norma globale → l'update dell'attore viene scalato giù. In pratica 1e6 scambia "critico congelato" con "policy rallentata". Nessun valore singolo di vf_clip risolve entrambi: il problema vero è la scala della reward (returns O(10³) invece di O(1–10)).
+
+  Cosa ne consegue operativamente:
+  - H1 con 1e6 resta valido come diagnostico: vf_explained_var (da ~0 → atteso >0.3) ti dirà inequivocabilmente se il critico era il collo di bottiglia — informazione utile a prescindere.
+  - Monitora anche il progresso della policy (entropy, miglioramento SR). Se vf_explained_var sale ma la SR veicolo non passa il gate → è la firma della policy starvation → passa al fallback già nel piano: riscalare la reward ÷~100 e tenere vf_clip ~50 (value target O(1), nessun gradiente domina). È il fix pulito.
+  - Alternativa per restare un test puramente hyperparametro (2 righe, niente reward/architettura): vf_clip 1e6 + abbassare
+  vf_loss_coeff 0.5 → ~0.05, che ribilancia la quota della value-loss nella norma globale.
+
+  Vuoi che aggiorni il piano — es. aggiungo la nota vf_loss_coeff come co-leva al Punto 1, oppure cambio il valore? Per come è scritto ora (1e6, isolato, con fallback reward-rescale) è coerente e va bene come primo A/B.
 
  Razionale: in RLlib (old API stack) vf_clip_param clampa la value-loss quadratica; con vf_clip=10 e returns nelle centinaia il
- gradiente al critic è ~zero. Un valore grande rende il clamp non vincolante. Sicurezza già presente: grad_clip=0.5 (norma globale) +
- vf_loss_coeff=0.5 + stop_on_nan=true.
+ gradiente al critic è ~zero. Un valore grande rende il clamp non vincolante. Sicurezza già presente: grad_clip=0.5 (norma globale) + vf_loss_coeff=0.5 + stop_on_nan=true.
 
- Verifica diagnostica aggiuntiva: controllare nei log RLlib/TensorBoard vf_explained_var (atteso: da ~0/negativo a >0.3) e vf_loss. Se
- compare instabilità/grad esplosivi → fallback: riscalare la reward ÷~100 (waypoint +100→+1) e tenere vf_clip_param ~50, ma è una
- modifica di reward (condizione separata).
+ Verifica diagnostica aggiuntiva: controllare nei log RLlib/TensorBoard vf_explained_var (atteso: da ~0/negativo a >0.3) e vf_loss. Se compare instabilità/grad esplosivi → fallback: riscalare la reward ÷~100 (waypoint +100→+1) e tenere vf_clip_param ~50, ma è una modifica di reward (condizione separata).
 
  ---
- Punto 2 — H2: allungare l'orizzonte di sconto
+### Punto 2 — H2: allungare l'orizzonte di sconto
 
  - File: carla_core/configs/train_mappo.yaml — riga 23
  - Esperimento: H2 · confrontabile col trunk: sì
@@ -213,12 +466,63 @@ Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
  # DOPO
    gamma: 0.997   # H2: orizzonte effettivo ~5s -> ~17s (1/(1-gamma) step x 0.05s)
 
- Razionale: a 20 Hz, γ=0.99 → orizzonte 1/(1−γ)=100 step = 5 s; un successo richiede ~862 step. γ=0.997 → ~333 step ≈ 17 s. Alternativa
-  più profonda se γ da sola non basta (test successivo, non in questo punto): action-repeat k=3 in CarlaMultiAgentEnv.step()
- (carla_multi_agent_env.py:424), che porta il controllo a ~7 Hz e va accompagnato da max_steps ridotto.
+ Razionale: a 20 Hz, γ=0.99 → orizzonte 1/(1−γ)=100 step = 5 s; un successo richiede ~862 step. γ=0.997 → ~333 step ≈ 17 s. Alternativa più profonda se γ da sola non basta (test successivo, non in questo punto): action-repeat k=3 in CarlaMultiAgentEnv.step() (carla_multi_agent_env.py:424), che porta il controllo a ~7 Hz e va accompagnato da max_steps ridotto.
+
+
+● H2 confermato. Per darti l'istruzione chirurgica esatta verifico lo stato attuale di train_mappo.yaml (deve ancora contenere i valori
+  H1+H1.1, o vanno ri-applicati):
+
+  Read 1 file (ctrl+o to expand)
+
+● train_mappo.yaml contiene ancora i valori H1+H1.1 (vf_clip_param: 1000000.0, vf_loss_coeff: 0.05) — non li hai revertiti. Quindi per H2 serve una sola modifica.
+
+  Modifica chirurgica — H2
+
+  File: carla_core/configs/train_mappo.yaml — riga 23
+
+  # PRIMA
+    gamma: 0.99
+  # DOPO
+    gamma: 0.997   # H2: orizzonte effettivo ~5s -> ~17s (1/(1-gamma) step x 0.05s)
+
+  Nient'altro. vf_clip_param e vf_loss_coeff restano come sono (1e6 / 0.05): il razionale di H2 — propagare la penalità collisione −50 sull'avvicinamento — funziona solo con il critic operativo di H1. Revertirli renderebbe H2 inutile (critic a varianza 0%, l'orizzonte lungo non avrebbe nulla da propagare).
+
+  Disegno sperimentale — A/B isolato
+
+  La run H2 differirà da 175921 per un solo knob (gamma). Quindi:
+
+  - Confronto di isolamento H2: H2-run vs 175921 (non vs 211642). È l'A/B a variabile singola che misura l'effetto di gamma.
+  - Verifica finale di pacchetto: quando H2 chiude, il blocco H1+H1.1+H2 va anche confrontato col trunk reale 211642, perché è quella la
+   decisione di promozione per la tesi.
+
+  Gate H2 (vs baseline 175921: SR 21.61 · stuck+TO 52.19 · coll 21.61 · off 4.59)
+
+  ┌────────────────────┬──────────────────┬────────────────────────────────────────────────────────────────┐
+  │  Metrica veicolo   │   soglia gate    │                              nota                              │
+  ├────────────────────┼──────────────────┼────────────────────────────────────────────────────────────────┤
+  │ SR                 │ ≥ 23.61 % (+2.0) │ —                                                              │
+  ├────────────────────┼──────────────────┼────────────────────────────────────────────────────────────────┤
+  │ stuck+timeout      │ ≤ 50.19 % (−2.0) │ —                                                              │
+  ├────────────────────┼──────────────────┼────────────────────────────────────────────────────────────────┤
+  │ collision          │ ≤ 22.61 % (+1.0) │ è l'ipotesi: H2 deve farla scendere, non solo "non peggiorare" │
+  ├────────────────────┼──────────────────┼────────────────────────────────────────────────────────────────┤
+  │ offroad            │ ≤ 5.59 % (+1.0)  │ —                                                              │
+  ├────────────────────┼──────────────────┼────────────────────────────────────────────────────────────────┤
+  │ NaN/Inf · 6 rec/ep │ 0 · ok           │ —                                                              │
+  └────────────────────┴──────────────────┴────────────────────────────────────────────────────────────────┘
+
+  Diagnostica da osservare
+
+  - collision rate — il test vero di H2. Se non scende, l'orizzonte da solo non basta → il follow-up sarà ricalibrare la penalità −50 (troppo piccola sulla scala O(10⁴). 
+  
+	-> Alzare −50 (es. −500/−2000) o ridurre lo shaping denso, per rendere la collisione non trascurabile sulla scala O(10^4). È reward shaping (condizione sperimentale separata).
+  
+  - step_count dei successi — atteso più basso (guida meno esitante con orizzonte lungo).
+  - vf_explained_var — deve restare alta (~≥0.8). Caveat: γ=0.997 gonfia i target di valore ~2-3× → vf_loss crescerà ben oltre i ~25k attuali e vf_clip=1e6 potrebbe ri-vincolare il clamp. Se vf_explained_var cala sensibilmente, servirà alzare vf_clip (→1e8) — ma è una modifica separata, non aggiungerla in questo run.
 
  ---
- Punto 3 — R1: rimuovere il gate route_completion < 0.3
+ 
+### Punto 3 — R1: rimuovere il gate route_completion < 0.3
 
  - File: carla_core/envs/carla_multi_agent_env.py — funzione _vehicle_reward (righe ~1760, ~1782, ~1788)
  - Esperimento: R1 (reward shaping) · confrontabile col trunk: sì
@@ -358,9 +662,9 @@ Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
  Razionale: episodio troncato a 1000 step ma l'agente non ha "orologio" → due stati con tempo residuo diverso sono indistinguibili
  (state aliasing sulla coorte timeout). Indice 46 libero. global_obs_dim si auto-ricalcola (→225 con O1+O2).
 
- ▎ Raccomandazione esecutiva O1/O2: applicare O1 e O2 insieme come unica variante 47D in un solo retrain. Ogni cambio di dimensione obs
- ▎  rompe già la compatibilità dei checkpoint ed è non confrontabile col trunk 44D (<do_not_infer>): farne due retrain separati spreca
- ▎ compute senza guadagno di comparabilità. Punti 6 e 7 sono distinti come punti di codice ma vanno trattati come un solo esperimento.
+ > Raccomandazione esecutiva O1/O2: applicare O1 e O2 insieme come unica variante 47D in un solo retrain. Ogni cambio di dimensione obs
+ > rompe già la compatibilità dei checkpoint ed è non confrontabile col trunk 44D (<do_not_infer>): farne due retrain separati spreca
+ > compute senza guadagno di comparabilità. Punti 6 e 7 sono distinti come punti di codice ma vanno trattati come un solo esperimento.
 
  ---
  Punto 8 (OPZIONALE) — H3: schedule di entropia decrescente
@@ -412,7 +716,7 @@ Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
 
  Ordine consigliato
 
- 1 (H1) → 2 (H2) → 3 (R1) → 4 (R2) → 5 (route-len) → 6+7 (O1+O2 insieme); 8 (H3) opzionale dopo H1/H2.
+ 1 (H1+H1.1) → 2 (H2) → 3 (R1) → 4 (R2) → 5 (route-len) → 6+7 (O1+O2 insieme); 8 (H3) opzionale dopo H1/H2.
  Validare almeno H1 sul protocollo 300k prima di lanciare il run completo da 3M, per non cementare il bug del critic nella baseline di
  curriculum.
 
@@ -440,7 +744,7 @@ Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
  ├──────────────────────────────────────────┼────────────┤
  │ carla_core/training/mappo_runtime.py     │ 8          │
  └──────────────────────────────────────────┴────────────┘
-╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
 
 ● TensorBoard (TensorFlow è il framework; TensorBoard è la dashboard). E sì, è lo strumento giusto
   — anzi, per H1/H1.1 è di fatto l'unico: vf_explained_var, vf_loss, grad_gnorm, policy_loss sono learner-stats di RLlib che il
@@ -490,3 +794,63 @@ Eseguire test isolati mantenendo il seed 999 e il protocollo 300k step.
   - Opzionale (fuori dal piano): il timeseries di results.json non include vf_explained_var — il dato c'è già nel result dict
   (result["info"]["learner"]…, vedi train_carla_mappo.py:284). Aggiungere una riga al timeseries.append (train_carla_mappo.py:1105) lo
   porterebbe nella pipeline del progetto, così compare_results_carla.py può usarlo senza TB. Dimmi se vuoi che lo aggiunga al piano come punto extra.
+  
+  
+### Q&A
+  
+  > Domanda: Avrebbe senso aumentare il tempo totale degli episodi (tipo da 1000 a 1500) al fine di recuperare tutti quei veicoli che  vanno in timeout e di conseguenza implementare una logica mirata che vada a troncare l'episodio nel momento in cui il veicolo è stuck (ad esempio se continuous_route_progress < 0.1 e no_wp_steps > 150, o altri valori in combo [ma senza inserire troppo rumore o rigidità]) intercettandolo in tempo così da non aggravare il train? -rispondi criticamente ed in modo empirico in base ai dati che abbiamo a disposizione su episode.jsonl 
+
+
+  ● Ho ricalcolato dalla baseline completa 211642 (960 record veicolo, deduplicati). Il dato che ribalta l'impostazione della domanda è questo:
+
+  ┌────────────────┬─────┬────────────────────────┬─────────────────────────┬─────────────────┬─────────────┐
+  │ Coorte veicolo │  n  │ route_compl. (mediana) │ no_wp_steps (med / p90) │ speed_kmh (med) │ step_count  │
+  ├────────────────┼─────┼────────────────────────┼─────────────────────────┼─────────────────┼─────────────┤
+  │ timeout        │ 227 │ 0.53                   │ 5 / 197                 │ 16.2            │ 1000        │
+  ├────────────────┼─────┼────────────────────────┼─────────────────────────┼─────────────────┼─────────────┤
+  │ stuck          │ 293 │ 0.07                   │ 439 / 1000              │ 0.25            │ 1000        │
+  ├────────────────┼─────┼────────────────────────┼─────────────────────────┼─────────────────┼─────────────┤
+  │ route_complete │ 193 │ 1.00                   │ 0                       │ 15.7            │ 862 (media) │
+  └────────────────┴─────┴────────────────────────┴─────────────────────────┴─────────────────┴─────────────┘
+
+  La coorte timeout NON è una coorte di veicoli "stuck". no_wp_steps mediana = 5 (avanzano un waypoint 0.25 s prima che scada il clock),83 % sotto 100, velocità terminale mediana 16 km/h ≈ identica ai successi (15.7). Il rilevatore di stuck del simulatore già separa i due gruppi: i 293 "stuck" sono i veri fermi, i 227 timeout sono il residuo che si stava muovendo. Questo cambia la risposta a entrambe le domande.
+
+  Q1 — Alzare max_steps 1000 → 1500: criticamente NO (o solo condizionato)
+
+  Tetto meccanico, onesto: solo 47/227 timeout (≈21 %) hanno route_completion ≥ 0.667 e no_wp_steps < 100 → realisticamente recuperabili entro 1500 step. È ~+5 pp SR, e pure ottimistico (assume che mantengano il rate medio per altri 500 step).
+
+  Perché comunque non farlo:
+
+  1. È un cambio di metro di misura, non un miglioramento di policy. Con max_steps=1500 la SR sale a policy identica byte-per-byte.
+  CLAUDE.md <do_not_infer>: «non trattare miglioramenti di tooling/misura come miglioramenti di policy». Passerebbe pure il gate
+  numerico (+SR, −timeout) → un pass di Potemkin.
+  2. Rompe la comparabilità di tutto il track record. Il timeout è definito da max_steps. C0/C1/D2/D3 e la baseline curriculum sono
+  tutti misurati a 1000. Per una tesi che confronta comportamento curriculum vs mixed-batch, cambiare il clock a metà studio invalida i confronti.
+  3. 1000 step NON sono il vincolo per una rotta easy vera. 15 m a 15 km/h ≈ 70 step; anche a 5 km/h ≈ 216. Se il successo mediano
+  impiega 1000 step per "15 m", o le rotte non sono 15 m (bug route planner — Punto 5 del piano) o la policy striscia (R1/H2). Estendere il clock cura il sintomo.
+  4. Anche i 47 "recuperati" sono successi di bassa qualità: un veicolo che serve 1500 step per 15 m si comporta male. Gonfi la SR
+  mascherando il comportamento lento — proprio ciò che la tesi deve misurare.
+
+  Gate decisionale: rivalutare max_steps solo dopo Punto 5 (cap lunghezza rotta) + R1 + H2, rimisurando la coorte timeout su rotte a
+  lunghezza verificata. Se lì i timeout persistono con no_wp<100 e rc alto → allora un cambio documentato e con baseline ri-basata è
+  giustificato. Adesso il numero 47 è confuso dal bug delle rotte.
+
+  Q2 — Troncamento anticipato stuck (continuous_route_progress<0.1 & no_wp_steps>150): NO, è D3
+
+  Questo è D3, già rigettato empiricamente. D3 (run 20260514_190424, trigger no_wp_steps>=300 & route<0.3 & hazard<0.75): SR −2.90 pp,
+  stuck+timeout +7.07 pp, gate fallito, reverted (registro CLAUDE.md). La tua predicato con no_wp_steps>150 scatta prima di >=300 → più aggressivo di D3, atteso peggiore.
+
+  Scan empirico del tuo predicato sulla baseline: matcha 183 veicoli = 135 stuck + 27 offroad + 21 collision, ZERO timeout. Cioè:
+  - Non tocca affatto la coorte timeout che vuoi recuperare (i timeout hanno continuous_route_progress mediana 0.53, mai < 0.1). Il tuo Q2, per costruzione, non interseca il tuo Q1.
+  - Accorcia solo episodi già persi, e ri-etichetterebbe 21 collisioni + 27 offroad come "stuck" → distorce collision/offroad rate.
+
+  Perché non può aiutare (meccanismo): troncare non recupera nulla — converte un episodio lungo in uno "stuck" corto, rimuove la coda
+  dell'episodio dal training, e azzera la possibilità che il rumore di esplorazione campioni un recupero. Sposta la distribuzione dati
+  verso stati facili/iniziali → la policy peggiora proprio sugli stati difficili: è esattamente l'impronta del +7.07 pp stuck+timeout di D3. Non è un problema di soglie o "rumore" da tarare — il danno è strutturale (bias di distribuzione), nessun valore di soglia lo
+  risolve.
+
+  L'alternativa Markov-corretta è già nel piano: Punto 6 (O1) rende no_wp_steps e loop_flag osservabili → l'agente impara a reagire allo stuck, invece che far amputare l'episodio dall'env.
+
+  In sintesi
+
+  Tieni max_steps=1000 e non aggiungere il candidato Q1/Q2: sono un cambio di misura + un candidato già rigettato, e nel piano combinato si contraddicono (Q1 allunga +50 % di step sprecati anche sui 293 veri stuck, Q2 serve a recuperarne una parte). Il piano già attacca timeout/stuck alla causa: Punto 5 (bug rotte — de-confonde l'interpretazione del timeout), R1 (incentivo velocità oltre il 30 %), H2 (orizzonte), O1 (osservabilità). La run H1 175921 è ancora in corso — rimisura la coorte timeout dopo che H1/Punto 5/R1/H2 sono atterrati, prima di toccare il clock.
