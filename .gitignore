@@ -73,7 +73,5 @@ metadrive_prototype/results/**/*.png
 # Difficulty test
 difficulty_test/
 
-# Documentazione
-docs/
 # Added by code-review-graph
 .code-review-graph/

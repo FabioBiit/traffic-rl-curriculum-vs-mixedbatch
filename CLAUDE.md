@@ -48,6 +48,7 @@ reported separately from vehicles.
 </current_goal>
 
 <current_known_state>
+- Vehicle obs: `44D`, pedestrian obs: `26D`, global obs: `216D`.
 - `C0` and `C1` are implemented: diagnostics plus geometric observations
   without changing vehicle observation dimensionality.
 - `D2` reward shaping is the current useful trunk among tested reward changes.
@@ -61,6 +62,23 @@ reported separately from vehicles.
 - `carla_mappo_20260514_211642` was an easy-only locked exploratory run. It
   tested `path` easy `15m/15m`, but it did not test budget constraints or
   sampling weights because `--lock-curriculum-level easy` disables those.
+
+### Candidate Registry Summary
+
+| Sigla | Status | Run ID | Description |
+|-------|--------|--------|-------------|
+| C0 | accepted/supporting | — | Diagnostic logging: `continuous_route_progress`, `no_wp_steps`, `stuck_cause`, `dist_to_next_wp`, `speed_kmh`. Measurement only, no policy change. |
+| C1 | accepted/trunk | — | Geometric route-aware vehicle obs (preview longitudinal/lateral, heading error, curvature, lateral error). Obs remain 44D. |
+| C2v2-A | not promoted | 20260514_001215 | Movement reward. Vehicle SR up vs baseline but stuck+timeout worsened. |
+| D1 | rejected | 20260514_073353 | Observation/reward candidate. SR down, stuck+timeout up. |
+| D2 | accepted/trunk | 20260514_095921 | Reward shaping: `target_min_speed=8.0`, start/unblock shaping, `no_wp_steps>100` penalty, `safe_to_push=hazard_risk<0.75`, collision `reward-=50.0`. Reduces stuck+timeout, raises speed; safety remains weak. |
+| D1+D2 | rejected | 20260514_133823 | Combined D1+D2. Worsened primary targets vs D2 alone. |
+| D2-Safety | rejected/reverted | 20260514_155151 | D2 safety variant. SR down, no safety improvement. Reverted. |
+| D3 | rejected/reverted | 20260514_190424 | Early vehicle-stuck termination (`no_wp_steps>=300`, `route<0.3`, `hazard<0.75`). SR -2.90 pp vs D2, stuck+timeout +7.07 pp. Reverted. |
+| Path curriculum easy-only | candidate evidence only | 20260514_211642 | Lock easy, `15m/15m`. Does not test budget or sampling weights. |
+| Full path curriculum | pending/conditional | — | `difficulty=path`, no lock, `15/35/60m`, budget `0.30/0.32/0.38`, weights `1.00/1.07/1.27`. |
+
+See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pseudocode.
 </current_known_state>
 
 <current_accepted_trunk>
