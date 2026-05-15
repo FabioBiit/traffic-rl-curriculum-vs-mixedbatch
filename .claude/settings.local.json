@@ -5,7 +5,11 @@
       "mcp__code-review-graph__list_graph_stats_tool",
       "mcp__code-review-graph__get_architecture_overview_tool",
       "mcp__code-review-graph__semantic_search_nodes_tool",
-      "mcp__code-review-graph__get_architecture_overview_tool"
+      "mcp__code-review-graph__get_architecture_overview_tool",
+      "PowerShell(Get-Item *)",
+      "mcp__code-review-graph__query_graph_tool",
+      "WebSearch",
+      "WebFetch(domain:github.com)"
     ]
   },
   "enableAllProjectMcpServers": true,
