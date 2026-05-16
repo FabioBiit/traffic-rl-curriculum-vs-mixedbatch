@@ -1,6 +1,6 @@
 # Experiment Registry
 
-Last updated: 2026-05-15
+Last updated: 2026-05-17
 Branch: EVO/new-main
 Trunk at time of writing: C0 + C1 + D2
 
@@ -25,6 +25,10 @@ per candidate.
 | D3 | rejected/reverted | 20260514_190424 | Early vehicle-stuck termination (`no_wp_steps>=300`, `route<0.3`, `hazard<0.75`). SR -2.90 pp vs D2, stuck+timeout +7.07 pp. Reverted. |
 | Path curriculum easy-only | candidate evidence only | 20260514_211642 | Lock easy, `15m/15m`. Does not test budget or sampling weights. |
 | Full path curriculum | pending/conditional | — | `difficulty=path`, no lock, `15/35/60m`, budget `0.30/0.32/0.38`, weights `1.00/1.07/1.27`. |
+| H1+H1.1 | not promoted / not reverted | 20260515_175921 | Critic fix: `vf_clip_param` 10->1e6 + `vf_loss_coeff` 0.5->0.05. Mechanism confirmed (vehicle `vf_explained_var` ~0->0.87) but vehicle gate FAILS 3 of 4. Not promoted; kept as base for H2 (reverting restores a non-functional critic). |
+| H2 | not promoted / not reverted | 20260515_211055 | `gamma` 0.99->0.997 on the H1+H1.1 base. Hypothesis (longer horizon propagates the -50 collision penalty) falsified; vehicle gate FAILS 3 of 4. Not promoted; `gamma=0.997` kept as base for H3. |
+| H3 | not promoted / not reverted | 20260516_144007 | `entropy_coeff` schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base. Mechanism confirmed (vehicle final `entropy` 4.78->3.25) but vehicle gate FAILS 3 of 4; all deltas within run-to-run noise. Not promoted; schedule kept as base for R3. |
+| R3 | applied / A/B run in progress | 20260516_200545 | Vehicle collision penalty `carla_multi_agent_env.py:1748` `-50.0`->`-500.0` (vehicle only; pedestrian `:1841` unchanged). Applied on the H3 base; single-knob A/B vs `20260516_144007`. |
 
 ---
 
@@ -274,3 +278,130 @@ python -m carla_core.training.train_carla_mappo \
 
 **Gate to promote:** vehicle SR +2.0 pp, stuck+timeout -2.0 pp vs D2 trunk baseline.
 Collision and offroad must not worsen by more than +1.0 pp.
+
+---
+
+## H1+H1.1 — Critic Fix: vf_clip_param + vf_loss_coeff
+
+**Type:** Optimizer / bug fix (checkpoint-comparable, vehicle obs unchanged 44D)
+**Status:** Not promoted / not reverted (mechanism confirmed)
+**Run:** `20260515_175921`
+**Files:** `carla_core/configs/train_mappo.yaml`, `carla_core/training/mappo_runtime.py`
+
+**Change:**
+
+```
+vf_clip_param:  10   -> 1000000.0   # H1
+vf_loss_coeff:  0.5  -> 0.05        # H1.1
+```
+
+**Rationale:** With `vf_clip_param=10` the value target was clipped far below
+the true return scale, leaving the vehicle critic non-functional
+(`vf_explained_var` ~0; baseline -0.002 — the critic explained ~0% of return
+variance).
+
+**Mechanism:** Confirmed from RLlib logs — vehicle `vf_explained_var` ~0 -> 0.87.
+
+**Gate result:** Vehicle gate vs `20260514_211642` (cumulative, from
+`episodes.jsonl`) FAILS 3 of 4: SR +1.51 pp, stuck+timeout -1.98 pp,
+collision +3.28 pp, offroad -2.81 pp. Confounded (two knobs). Not promoted;
+`vf_clip_param` / `vf_loss_coeff` kept (reverting restores a non-functional
+critic). Base for H2.
+
+---
+
+## H2 — Discount Factor gamma
+
+**Type:** Optimizer / horizon
+**Status:** Not promoted / not reverted (hypothesis falsified)
+**Run:** `20260515_211055`
+**Files:** `carla_core/configs/train_mappo.yaml`, `carla_core/training/mappo_runtime.py`
+
+**Change:** `gamma: 0.99 -> 0.997` on the H1+H1.1 base.
+
+**Hypothesis:** A longer effective horizon would propagate the -50 collision
+penalty further back and reduce the H1 collision regression.
+
+**Gate result:** Vehicle gate vs `20260515_175921` (cumulative, from
+`episodes.jsonl`) FAILS 3 of 4: SR +0.14 pp, stuck+timeout -7.48 pp,
+collision +5.18 pp, offroad +2.16 pp. The longer horizon amplified the
+dominant route-completion incentive and converted passive failure (timeout)
+into active failure (collision/offroad) ~1:1; SR flat. Hypothesis falsified.
+`gamma=0.997` kept as base for H3 (user decision).
+
+---
+
+## H3 — entropy_coeff Schedule
+
+**Type:** Optimizer / exploration
+**Status:** Not promoted / not reverted (mechanism confirmed)
+**Run:** `20260516_144007`
+**Files:** `carla_core/configs/train_mappo.yaml`, `carla_core/training/mappo_runtime.py`
+
+**Change:** add `entropy_coeff_schedule: [[0, 0.03], [250000, 0.005]]` (was a
+constant `entropy_coeff=0.03`) on the H1+H1.1+H2 base. Single-knob A/B vs
+`20260515_211055`.
+
+**Hypothesis:** Decaying the entropy coefficient late in training suppresses
+the late-training `entropy` blow-up (`175921`->5.43, `211055`->4.78) and
+recovers the chunk-4->chunk-6 vehicle SR decay.
+
+**Mechanism:** Confirmed — vehicle final `entropy` 4.78 -> 3.25 (`entropy_coeff`
+reached 0.005), `vf_explained_var` 0.92 (critic healthy).
+
+**Gate result:** Vehicle gate vs `20260515_211055` (cumulative, from
+`episodes.jsonl`) FAILS 3 of 4: SR -0.32 pp (21.75->21.43), stuck+timeout
+-0.37 pp (44.71->44.35), collision -0.99 pp (26.79->25.79), offroad +1.69 pp
+(6.75->8.43). Vehicle route-completions identical in absolute count (216 vs
+216) — the SR delta is denominator-only. All deltas within the run-to-run
+noise visible in the pre-250k chunks (H2 and H3 share an identical config
+there). Late-training SR decay only slightly softened (chunk-6 vehicle SR
+22.62 vs 19.64); chunk-4 peak unchanged. Integrity OK (2016 records, 0 dups,
+0 NaN/inf). Not promoted; schedule retained as base for R3.
+
+---
+
+## R3 — Vehicle Collision Penalty Magnitude
+
+**Type:** Reward shaping
+**Status:** Applied / A/B run in progress (`20260516_200545`)
+**Run:** `20260516_200545` (A/B run in progress; not yet evaluable)
+**Files:** `carla_core/envs/carla_multi_agent_env.py` (line 1748, `_vehicle_reward()`)
+**Base:** H3 config `20260516_144007` (`gamma=0.997` + entropy schedule +
+`vf_clip_param=1e6` + `vf_loss_coeff=0.05` retained)
+
+**Change:**
+
+```python
+# _vehicle_reward(), Section 3 — Collision penalty
+# before: reward -= 50.0
+reward -= 500.0   # vehicle only; pedestrian collision (:1841) stays -50.0
+```
+
+**Rationale (verified from `episodes.jsonl`, run `20260516_144007`):**
+- The waypoint bonus is `+100/wp` and is the dominant route signal.
+- The 260 H3 vehicle collision episodes have mean `route_completion` 0.29 and
+  run ~800 steps — a typical crash episode already earned ~+200-290 in
+  `+100/wp` bonuses before crashing. The old `-50` penalty (half a waypoint)
+  cancels ~1/5 of that, so a crash is strongly net-positive.
+- `-500` (= 5 waypoints) exceeds the route bonus of essentially all crash
+  episodes; the expected value of an aggressive push flips negative.
+- A fully-stuck episode (1000 steps) already costs ~ -600/-900 via idle
+  (`-0.15/step`), no-advance (up to `-1.0/step`) and loop (`-1.0/step`)
+  penalties. `-500` brings a crash to ~parity with a freeze, removing the
+  cheap escape; it does not create a new freeze incentive because freezing is
+  already that expensive.
+- `-200` was rejected: it leaves an aggressive push at positive EV and a crash
+  cheaper than a freeze.
+
+**Adapted gate (user-approved; deviates from the generic vehicle gate):**
+- PRIMARY: vehicle SR >= +2.0 pp AND vehicle collision drops >= -3.0 pp.
+- CANARY (must not worsen by more than +1.0 pp): stuck+timeout, offroad.
+- Integrity: 6 records/episode; no NaN/inf.
+- Deviation rationale: R3 targets the collision axis, so the generic gate's
+  "stuck+timeout improves by >= -2.0 pp" would reject a clean
+  collision->completion conversion. For R3, stuck+timeout is an
+  overcorrection canary, not a required improvement.
+
+**Verification:** `python -m compileall carla_core/envs/carla_multi_agent_env.py`
+passed; `git diff --check` clean; the diff is the single line at `:1748`.

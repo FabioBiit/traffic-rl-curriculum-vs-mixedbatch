@@ -41,7 +41,7 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 
 # Project Operating Brief
 
-Last updated: 2026-05-16
+Last updated: 2026-05-17
 
 ## Role
 
@@ -107,12 +107,33 @@ from vehicles.
   falsified. By user decision `gamma=0.997` is kept (not reverted) as the base
   for `H3`.
 - `H3` (`entropy_coeff` constant 0.03 -> schedule `[[0,0.03],[250000,0.005]]`)
-  is applied (`train_mappo.yaml`, `mappo_runtime.py`) as a single-knob A/B vs
-  `20260515_211055`; A/B run pending. Targets the late-training `entropy`
-  blow-up seen in both `175921` and `211055`.
+  was evaluated on run `20260516_144007` (single-knob A/B vs `20260515_211055`;
+  seed 999, easy-lock, 300k). Mechanism confirmed: vehicle final `entropy`
+  4.78 -> 3.25 (schedule reached `entropy_coeff=0.005`), `vf_explained_var`
+  0.92 (critic healthy). Vehicle gate vs `20260515_211055` (cumulative,
+  recomputed from `episodes.jsonl`) FAILS 3 of 4: SR -0.32 pp (21.75->21.43),
+  stuck+timeout -0.37 pp (44.71->44.35), collision -0.99 pp (26.79->25.79),
+  offroad +1.69 pp (6.75->8.43). Vehicle route-completions are identical in
+  absolute count (216 in both runs); the SR delta is denominator-only. All
+  deltas sit within the run-to-run noise visible in the pre-250k chunks where
+  H2 and H3 share an identical config. Not promoted; by user decision the
+  entropy schedule is retained (not reverted) as the base for `R3`. H1+H2+H3
+  together: three optimizer-side single-knob changes, all mechanism-confirmed,
+  all failing the vehicle gate, vehicle SR pinned ~21.5%; the binding
+  constraint is the vehicle collision rate (~25.8%).
 - `R3` (raise the vehicle collision penalty `-50.0` -> `-500.0` at
-  `carla_multi_agent_env.py:1748`) is a pending reward-shaping candidate, not
-  yet applied. The collision rate is now the binding constraint on vehicle SR.
+  `carla_multi_agent_env.py:1748`) is applied (vehicle only; pedestrian
+  `-50.0` at `:1841` unchanged) on the `H3` base (`gamma=0.997`, entropy
+  schedule, `vf_clip=1e6`, `vf_loss_coeff=0.05` all retained); single-knob A/B
+  vs `20260516_144007`. The R3 A/B run `20260516_200545` is launched and in
+  progress (not yet evaluable). Rationale verified from `episodes.jsonl`: the
+  260 `H3` vehicle collisions earned a mean `route_completion` of 0.29
+  (~+200-290 of `+100/wp` bonuses) before crashing, so the old `-50` penalty
+  left a crash strongly net-positive; `-500` exceeds the route bonus of
+  essentially all crash episodes and roughly matches the cost of a full freeze
+  (idle + no-advance + loop penalties ~ -600/-900). R3 uses an adapted gate
+  (recorded in its registry entry): collision is the primary axis, so
+  stuck+timeout is a do-not-worsen canary rather than a required improvement.
 - Current path curriculum configuration uses `difficulty=path` with route
   distances `15m / 35m / 60m` for both vehicles and pedestrians.
 - Current curriculum budget proposal is `easy=0.30`, `medium=0.32`,
@@ -139,8 +160,8 @@ from vehicles.
 | Full path curriculum | pending/conditional | — | `difficulty=path`, no lock, `15/35/60m`, budget `0.30/0.32/0.38`, weights `1.00/1.07/1.27`. |
 | H1+H1.1 | not promoted but not reverted / mechanism confirmed | 20260515_175921 | Critic fix: `vf_clip_param` 10->1e6 (H1) + `vf_loss_coeff` 0.5->0.05 (H1.1); obs unchanged (44D), checkpoint-comparable. Mechanism confirmed from RLlib logs: vehicle `vf_explained_var` ~0 (baseline -0.002, critic explained ~0% of return variance) -> 0.87. Vehicle gate vs `20260514_211642` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +1.51 pp (20.10->21.61), stuck+timeout -1.98 pp (54.17->52.19), collision +3.28 pp (18.33->21.61), offroad -2.81 pp (7.40->4.59). Blocker: collision regression and late-training degradation (`entropy`->5.43). Confounded (two knobs). Not promoted; `vf_clip` kept, not reverted (reverting restores a non-functional critic). |
 | H2 | not promoted / not reverted / hypothesis falsified | 20260515_211055 | `gamma` 0.99->0.997 on the H1+H1.1 base; single-knob A/B vs `20260515_175921` (only `gamma` differs; seed 999, easy-lock, 300k). Intended to reduce the H1+H1.1 collision regression by propagating the -50 penalty over a longer horizon; produced the opposite. Vehicle gate vs `175921` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +0.14 pp (21.61->21.75), stuck+timeout -7.48 pp (52.19->44.71), collision +5.18 pp (21.61->26.79), offroad +2.16 pp (4.59->6.75). Mechanism: longer horizon amplified the dominant route-completion incentive (speed 10.08->13.81 km/h, timeout -6.53 pp) and converted passive failure into active failure roughly 1:1; SR flat. Critic healthy (`vf_explained_var` 0.94). Hypothesis falsified. Not reverted by user decision: `gamma=0.997` retained as the base for `H3`. |
-| H3 | in progress | — | `entropy_coeff` constant 0.03 -> schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base; single-knob A/B vs `20260515_211055`. Targets the late-training `entropy` blow-up present in both `175921` (->5.43) and `211055` (->4.78), which coincides with the chunk-4->chunk-6 vehicle SR decay (~33%->~20%). Edits applied to `train_mappo.yaml` and `mappo_runtime.py`; A/B run pending launch. Checkpoint-compatible. |
-| R3 | pending | — | Reward shaping: raise the vehicle collision penalty at `carla_multi_agent_env.py:1748` from `reward -= 50.0` to `reward -= 500.0` (vehicle only; pedestrian `-50.0` at `:1841` unchanged). Single-knob A/B. Rationale: collision -50 equals half of one waypoint bonus (+100), so a crash currently costs less than one unit of route progress; -500 equals 5 waypoints, making a crash a real setback. This is the magnitude fix H2 needed (H2 propagated a structurally-too-small penalty). Overcorrection canary: stuck+timeout. Base = `H3` outcome if H3 promoted, else `211055`. Not yet applied. |
+| H3 | not promoted / not reverted / mechanism confirmed | 20260516_144007 | `entropy_coeff` constant 0.03 -> schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base; single-knob A/B vs `20260515_211055` (only the schedule differs; seed 999, easy-lock, 300k). Mechanism confirmed: vehicle final `entropy` 4.78 -> 3.25 (schedule reached `entropy_coeff=0.005`), `vf_explained_var` 0.92 (critic healthy). Vehicle gate vs `211055` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR -0.32 pp (21.75->21.43), stuck+timeout -0.37 pp (44.71->44.35), collision -0.99 pp (26.79->25.79), offroad +1.69 pp (6.75->8.43). Vehicle route-completions identical in absolute count (216 vs 216); the SR delta is denominator-only (H3 ran 5 more episodes). All deltas within the run-to-run noise visible in the pre-250k chunks (identical config there). Late-training SR decay only slightly softened (chunk-6 vehicle SR 22.62 vs 19.64); chunk-4 peak (~32.7%) unchanged; composition shifted timeout -5.81 pp / stuck +5.45 pp. Integrity OK (336 ep x 6 = 2016 records, 0 dups, 0 NaN/inf). Not promoted; by user decision the entropy schedule is retained (not reverted) as the base for `R3`. |
+| R3 | applied / A/B run in progress | 20260516_200545 | Reward shaping: vehicle collision penalty at `carla_multi_agent_env.py:1748` raised `reward -= 50.0` -> `reward -= 500.0` (vehicle only; pedestrian `-50.0` at `:1841` unchanged). Applied on the `H3` base (`gamma=0.997` + entropy schedule + `vf_clip=1e6` + `vf_loss_coeff=0.05` retained); single-knob A/B vs `20260516_144007` (seed 999, easy-lock, 300k). Rationale verified from `episodes.jsonl`: the 260 `H3` vehicle collisions earned mean `route_completion` 0.29 (~+200-290 of `+100/wp` bonuses) before crashing, so `-50` left a crash strongly net-positive; `-500` exceeds the route bonus of essentially all crash episodes and roughly matches a full-freeze cost (idle + no-advance + loop ~ -600/-900). `-200` was rejected (leaves an aggressive push at positive EV; a crash still cheaper than a freeze). Adapted R3 gate (user-approved, deviates from the generic vehicle gate): PRIMARY = vehicle SR >= +2.0 pp AND vehicle collision drops >= -3.0 pp; CANARY (must not worsen by more than +1.0 pp) = stuck+timeout, offroad; plus 6 records/episode and no NaN/inf. Deviation rationale: R3 targets the collision axis, so requiring stuck+timeout to improve (generic gate) would reject a clean collision->completion conversion. |
 
 See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pseudocode.
 
@@ -155,10 +176,16 @@ See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pse
 - `H2` (`gamma=0.997`) was evaluated (run `20260515_211055`) and is not
   promoted; the H2 hypothesis is falsified. By user decision it is not
   reverted: `gamma=0.997` is retained as the experimental base for `H3`.
-- `H3` (`entropy_coeff` schedule `[[0,0.03],[250000,0.005]]`) is applied on the
-  H1+H1.1+H2 base as a single-knob A/B vs `20260515_211055`; A/B run pending.
-- `R3` (raise the vehicle collision penalty `-50.0`->`-500.0`) is a pending
-  reward-shaping candidate, not yet applied; its base will be the `H3` outcome.
+- `H3` (`entropy_coeff` schedule `[[0,0.03],[250000,0.005]]`) was evaluated
+  (run `20260516_144007`) and is not promoted; the mechanism is confirmed
+  (vehicle `entropy` 4.78->3.25) but the vehicle gate fails 3 of 4. By user
+  decision the schedule is not reverted: it is retained as the experimental
+  base for `R3`.
+- `R3` (vehicle collision penalty `-50.0`->`-500.0` at
+  `carla_multi_agent_env.py:1748`) is applied on the `H3` base as a
+  single-knob A/B vs `20260516_144007`; the A/B run `20260516_200545` is
+  launched and in progress. R3 uses an adapted gate (collision-axis primary,
+  stuck+timeout as canary) recorded in its registry entry.
 - Pending/conditional: full `difficulty=path` curriculum without
   `--lock-curriculum-level`, using route distances `15m / 35m / 60m`, budget
   shares `0.30 / 0.32 / 0.38`, and sampling weights `1.00 / 1.07 / 1.27`.

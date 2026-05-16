@@ -1745,7 +1745,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # ---- 3. Collision penalty (large, immediate) ----
         if ad.collision_flag and ad.collision_step == 0:
-            reward -= 50.0
+            reward -= 500.0
 
         # ---- 4. Off-lane penalty (stay on road) ----
         wp = self._map.get_waypoint(el, project_to_road=True)
