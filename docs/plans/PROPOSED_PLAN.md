@@ -529,21 +529,21 @@
 
  Modifica (3 micro-edit nella stessa funzione):
 
- (a) eliminare la riga ~1760 (variabile che diventa inutilizzata):
- # RIMUOVERE
-             route_completion = self._route_completion(ad)
+	 (a) eliminare la riga ~1760 (variabile che diventa inutilizzata):
+	 # RIMUOVERE
+				 route_completion = self._route_completion(ad)
 
- (b) riga ~1782 — start/unblock shaping:
- # PRIMA
-                 if safe_to_push and route_completion < 0.3 and alignment > 0.25:
- # DOPO
-                 if safe_to_push and alignment > 0.25:
+	 (b) riga ~1782 — start/unblock shaping:
+	 # PRIMA
+		 if safe_to_push and route_completion < 0.3 and alignment > 0.25:
+	 # DOPO
+		 if safe_to_push and alignment > 0.25:
 
- (c) riga ~1788 — speed shaping (target_min_speed):
- # PRIMA
-             if safe_to_push and route_completion < 0.3 and alignment > 0.25:
- # DOPO
-             if safe_to_push and alignment > 0.25:
+	 (c) riga ~1788 — speed shaping (target_min_speed):
+	 # PRIMA
+		 if safe_to_push and route_completion < 0.3 and alignment > 0.25:
+	 # DOPO
+		 if safe_to_push and alignment > 0.25:
 
  Razionale: lo shaping di velocità/sblocco è inattivo oltre il 30 % di rotta; la coorte timeout (23.7 %, route_completion medio 0.55)
  sta esattamente lì senza incentivo a non rallentare. I gate safe_to_push (hazard<0.75) e alignment>0.25 restano e proteggono
@@ -854,3 +854,63 @@
   In sintesi
 
   Tieni max_steps=1000 e non aggiungere il candidato Q1/Q2: sono un cambio di misura + un candidato già rigettato, e nel piano combinato si contraddicono (Q1 allunga +50 % di step sprecati anche sui 293 veri stuck, Q2 serve a recuperarne una parte). Il piano già attacca timeout/stuck alla causa: Punto 5 (bug rotte — de-confonde l'interpretazione del timeout), R1 (incentivo velocità oltre il 30 %), H2 (orizzonte), O1 (osservabilità). La run H1 175921 è ancora in corso — rimisura la coorte timeout dopo che H1/Punto 5/R1/H2 sono atterrati, prima di toccare il clock.
+
+
+  🎯 R3 — calibrazione della penalità collisione
+
+  Anatomia _vehicle_reward (verificata dal codice):
+
+  ┌──────────────────────────────────────┬─────────────────┬───────────┐
+  │              Componente              │     Valore      │   Riga    │
+  ├──────────────────────────────────────┼─────────────────┼───────────┤
+  │ Waypoint raggiunto                   │ +100 / waypoint │ 1731      │
+  ├──────────────────────────────────────┼─────────────────┼───────────┤
+  │ Avvicinamento al wp                  │ ±4 / metro      │ 1743      │
+  ├──────────────────────────────────────┼─────────────────┼───────────┤
+  │ Collisione                           │ −50 one-shot    │ 1748      │
+  ├──────────────────────────────────────┼─────────────────┼───────────┤
+  │ Off-lane / idle / sterzo / anti-loop │ O(0.1–1.0)/step │ 1750–1811 │
+  └──────────────────────────────────────┴─────────────────┴───────────┘
+
+  Il problema, in numeri. La penalità collisione −50 = metà di UN waypoint (+100). Il calcolo che fa l'agente:
+
+  "Guido aggressivo → prendo 1 waypoint → mi schianto" = +100 − 50 = +50 netto positivo.
+
+  Schiantarsi conviene se prima agguanti ≥1 waypoint. È strutturale — ed è esattamente perché H2 è fallito: ha propagato su orizzonte
+  lungo una penalità che perde ogni trade-off locale. Il problema non era γ, era la magnitudo.
+
+  Perché −500 (raccomandato):
+
+  ┌───────────────┬──────────────┬─────────────────────┬─────────────────────────────────────────────────────────────────────────
+  │   Penalità    │ = N waypoint │  "1 wp poi crash"   │                                  Effetto                                   │
+  ├───────────────┼──────────────┼─────────────────────┼─────────────────────────────────────────────────────────────────────────
+  │ −50 (attuale) │ 0.5 wp       │ +50 → conviene      │ crash più economico di 1 unità di progresso                                │
+  ├───────────────┼──────────────┼─────────────────────┼─────────────────────────────────────────────────────────────────────────
+  │ −500 ✅       │ 5 wp         │ −400 → non conviene │ crash = danno reale; servono ≥5 wp per pareggiare                          │
+  ├───────────────┼──────────────┼─────────────────────┼─────────────────────────────────────────────────────────────────────────
+  │ −2000         │ 20 wp        │ −1900               │ > valore intera rotta (~15 wp, route_length_vehicle:15) →iper-difensività │
+  └───────────────┴──────────────┴─────────────────────┴─────────────────────────────────────────────────────────────────────────
+
+  −500 capovolge il segno del trade-off locale (+50 → −400) con un fattore 10×: abbastanza per cambiare comportamento, non tanto da
+  forzare la guida iper-difensiva. −2000 (40×) rischia la sovra-correzione: penalità > valore dell'intera rotta → ogni rischio di
+  collisione diventa catastrofico → freeze/crawl → stuck+timeout risale (è il fallimento di D3, l'asse di H2 al contrario). −500 è un
+  probe: se le collisioni scendono ma non basta → R3.1 a −1000; se −500 già sovra-corregge → soffitto trovato a basso costo.
+
+  Sinergia con γ=0.997 (mantenuto): H2 dà l'orizzonte lungo, R3 dà la magnitudo. Insieme: penalità localmente decisiva (vince il
+  trade-off vicino all'impatto, γ¹⁰≈0.97) e propagata all'indietro. R3 è il fix di magnitudo che a H2 mancava.
+
+  Perché NON "ridurre lo shaping denso": la scala O(10^4) è creata dal +100/waypoint (sez. 1), il segnale primario di progresso. Ridurlo
+  indebolisce l'incentivo a completare la rotta e cambia l'intera scala dei return → de-calibra H1/H1.1 (vf_clip/vf_loss_coeff tarati su
+   questa scala) → confounded. Alzare il −50 è una riga, un numero, segnale di progresso intatto.
+
+  Scheda R3
+
+  - Edit (1 riga): carla_multi_agent_env.py:1748 — reward -= 50.0 → reward -= 500.0. Solo veicolo; il -50.0 pedone (:1841) resta (pedoni
+   collidono ~0.1%).
+  - Base: esito di H3 (H3 promosso → base H3; bocciato → 211055). Edit applicata solo al turno di R3.
+  - Gate: vs base — SR +≥2.0, stuck+TO −≥2.0, collision/offroad ≤+1.0. Segnale di successo: collisione scende in modo netto. Spia di
+  sovra-correzione: stuck+timeout (se risale, −500 è troppo).
+  - Sicuro per il critic: −500 resta dentro vf_clip=1e6, nessun rischio NaN.
+
+  (Aside, fuori da R3: l'off-road ha solo una penalità densa O(1), nessuna penalità terminale tipo il −50 della collisione — possibile
+  candidato futuro, ma è un altro knob.)

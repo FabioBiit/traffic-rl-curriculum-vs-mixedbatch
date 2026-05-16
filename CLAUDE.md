@@ -40,7 +40,7 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 ---
 
 <metadata>
-Last updated: 2026-05-15
+Last updated: 2026-05-16
 Purpose: Repository-level operating instructions for Claude Code.
 Language rule: Write all future additions and updates to this file in English.
 </metadata>
@@ -97,6 +97,21 @@ reported separately from vehicles.
   critic non-functional) but failed the vehicle gate (collision +3.28 pp) on
   run `20260515_175921`; not promoted but not reverted, and `vf_clip` is kept (not reverted) as
   the base for `H2`.
+- `H2` (`gamma` 0.99->0.997) was evaluated on run `20260515_211055` and failed
+  the vehicle gate 3 of 4 vs `20260515_175921`: SR +0.14 pp, stuck+timeout
+  -7.48 pp, collision +5.18 pp, offroad +2.16 pp. The longer horizon amplified
+  the route-completion incentive and converted passive failure (timeout) into
+  active failure (collision/offroad) roughly 1:1, leaving SR flat; the H2
+  hypothesis (longer horizon propagates the -50 collision penalty) is
+  falsified. By user decision `gamma=0.997` is kept (not reverted) as the base
+  for `H3`.
+- `H3` (`entropy_coeff` constant 0.03 -> schedule `[[0,0.03],[250000,0.005]]`)
+  is applied (`train_mappo.yaml`, `mappo_runtime.py`) as a single-knob A/B vs
+  `20260515_211055`; A/B run pending. Targets the late-training `entropy`
+  blow-up seen in both `175921` and `211055`.
+- `R3` (raise the vehicle collision penalty `-50.0` -> `-500.0` at
+  `carla_multi_agent_env.py:1748`) is a pending reward-shaping candidate, not
+  yet applied. The collision rate is now the binding constraint on vehicle SR.
 - Current path curriculum configuration uses `difficulty=path` with route
   distances `15m / 35m / 60m` for both vehicles and pedestrians.
 - Current curriculum budget proposal is `easy=0.30`, `medium=0.32`,
@@ -122,7 +137,9 @@ reported separately from vehicles.
 | Path curriculum easy-only | candidate evidence only | 20260514_211642 | Lock easy, `15m/15m`. Does not test budget or sampling weights. |
 | Full path curriculum | pending/conditional | — | `difficulty=path`, no lock, `15/35/60m`, budget `0.30/0.32/0.38`, weights `1.00/1.07/1.27`. |
 | H1+H1.1 | not promoted but not reverted / mechanism confirmed | 20260515_175921 | Critic fix: `vf_clip_param` 10->1e6 (H1) + `vf_loss_coeff` 0.5->0.05 (H1.1); obs unchanged (44D), checkpoint-comparable. Mechanism confirmed from RLlib logs: vehicle `vf_explained_var` ~0 (baseline -0.002, critic explained ~0% of return variance) -> 0.87. Vehicle gate vs `20260514_211642` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +1.51 pp (20.10->21.61), stuck+timeout -1.98 pp (54.17->52.19), collision +3.28 pp (18.33->21.61), offroad -2.81 pp (7.40->4.59). Blocker: collision regression and late-training degradation (`entropy`->5.43). Confounded (two knobs). Not promoted; `vf_clip` kept, not reverted (reverting restores a non-functional critic). |
-| H2 | pending | — | `gamma` 0.99->0.997 on the H1+H1.1 base; single-knob A/B vs `20260515_175921`. Lengthens discount horizon (~5s->~17s) so the -50 collision penalty propagates; targets the H1+H1.1 collision regression. |
+| H2 | not promoted / not reverted / hypothesis falsified | 20260515_211055 | `gamma` 0.99->0.997 on the H1+H1.1 base; single-knob A/B vs `20260515_175921` (only `gamma` differs; seed 999, easy-lock, 300k). Intended to reduce the H1+H1.1 collision regression by propagating the -50 penalty over a longer horizon; produced the opposite. Vehicle gate vs `175921` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +0.14 pp (21.61->21.75), stuck+timeout -7.48 pp (52.19->44.71), collision +5.18 pp (21.61->26.79), offroad +2.16 pp (4.59->6.75). Mechanism: longer horizon amplified the dominant route-completion incentive (speed 10.08->13.81 km/h, timeout -6.53 pp) and converted passive failure into active failure roughly 1:1; SR flat. Critic healthy (`vf_explained_var` 0.94). Hypothesis falsified. Not reverted by user decision: `gamma=0.997` retained as the base for `H3`. |
+| H3 | in progress | — | `entropy_coeff` constant 0.03 -> schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base; single-knob A/B vs `20260515_211055`. Targets the late-training `entropy` blow-up present in both `175921` (->5.43) and `211055` (->4.78), which coincides with the chunk-4->chunk-6 vehicle SR decay (~33%->~20%). Edits applied to `train_mappo.yaml` and `mappo_runtime.py`; A/B run pending launch. Checkpoint-compatible. |
+| R3 | pending | — | Reward shaping: raise the vehicle collision penalty at `carla_multi_agent_env.py:1748` from `reward -= 50.0` to `reward -= 500.0` (vehicle only; pedestrian `-50.0` at `:1841` unchanged). Single-knob A/B. Rationale: collision -50 equals half of one waypoint bonus (+100), so a crash currently costs less than one unit of route progress; -500 equals 5 waypoints, making a crash a real setback. This is the magnitude fix H2 needed (H2 propagated a structurally-too-small penalty). Overcorrection canary: stuck+timeout. Base = `H3` outcome if H3 promoted, else `211055`. Not yet applied. |
 
 See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pseudocode.
 </current_known_state>
@@ -134,8 +151,13 @@ See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pse
   `vf_loss_coeff=0.05` are retained as the experimental base for `H2` because
   the H1 critic fix is mechanistically confirmed and reverting it restores a
   non-functional critic.
-- `H2` (`gamma=0.997`) is in progress as a single-knob A/B on the H1+H1.1
-  base.
+- `H2` (`gamma=0.997`) was evaluated (run `20260515_211055`) and is not
+  promoted; the H2 hypothesis is falsified. By user decision it is not
+  reverted: `gamma=0.997` is retained as the experimental base for `H3`.
+- `H3` (`entropy_coeff` schedule `[[0,0.03],[250000,0.005]]`) is applied on the
+  H1+H1.1+H2 base as a single-knob A/B vs `20260515_211055`; A/B run pending.
+- `R3` (raise the vehicle collision penalty `-50.0`->`-500.0`) is a pending
+  reward-shaping candidate, not yet applied; its base will be the `H3` outcome.
 - Pending/conditional: full `difficulty=path` curriculum without
   `--lock-curriculum-level`, using route distances `15m / 35m / 60m`, budget
   shares `0.30 / 0.32 / 0.38`, and sampling weights `1.00 / 1.07 / 1.27`.

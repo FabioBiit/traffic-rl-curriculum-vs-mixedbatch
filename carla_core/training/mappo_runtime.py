@@ -278,6 +278,7 @@ def _build_mappo_config(
             lambda_=opt.get("gae_lambda", 0.95),
             clip_param=opt.get("clip_param", 0.2),
             entropy_coeff=opt.get("entropy_coeff", 0.01),
+            entropy_coeff_schedule=opt.get("entropy_coeff_schedule"),
             vf_loss_coeff=opt.get("vf_loss_coeff", 0.5),
             grad_clip=opt.get("grad_clip", 0.5),
             vf_clip_param=opt.get("vf_clip_param", 10.0),
