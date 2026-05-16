@@ -899,14 +899,11 @@
   Sinergia con γ=0.997 (mantenuto): H2 dà l'orizzonte lungo, R3 dà la magnitudo. Insieme: penalità localmente decisiva (vince il
   trade-off vicino all'impatto, γ¹⁰≈0.97) e propagata all'indietro. R3 è il fix di magnitudo che a H2 mancava.
 
-  Perché NON "ridurre lo shaping denso": la scala O(10^4) è creata dal +100/waypoint (sez. 1), il segnale primario di progresso. Ridurlo
-  indebolisce l'incentivo a completare la rotta e cambia l'intera scala dei return → de-calibra H1/H1.1 (vf_clip/vf_loss_coeff tarati su
-   questa scala) → confounded. Alzare il −50 è una riga, un numero, segnale di progresso intatto.
+  Perché NON "ridurre lo shaping denso": la scala O(10^4) è creata dal +100/waypoint (sez. 1), il segnale primario di progresso. Ridurlo indebolisce l'incentivo a completare la rotta e cambia l'intera scala dei return → de-calibra H1/H1.1 (vf_clip/vf_loss_coeff tarati suquesta scala) → confounded. Alzare il −50 è una riga, un numero, segnale di progresso intatto.
 
   Scheda R3
 
-  - Edit (1 riga): carla_multi_agent_env.py:1748 — reward -= 50.0 → reward -= 500.0. Solo veicolo; il -50.0 pedone (:1841) resta (pedoni
-   collidono ~0.1%).
+  - Edit (1 riga): carla_multi_agent_env.py:1748 — reward -= 50.0 → reward -= 500.0. Solo veicolo; il -50.0 pedone (:1841) resta (pedoni collidono ~0.1%).
   - Base: esito di H3 (H3 promosso → base H3; bocciato → 211055). Edit applicata solo al turno di R3.
   - Gate: vs base — SR +≥2.0, stuck+TO −≥2.0, collision/offroad ≤+1.0. Segnale di successo: collisione scende in modo netto. Spia di
   sovra-correzione: stuck+timeout (se risale, −500 è troppo).
