@@ -408,7 +408,7 @@
  ---
  MODIFICHE (7 punti + 1 opzionale)
 
-### Punto 1 — H1&H1.1: alzare vf_clip_param (priorità massima) + abbassare vf_loss_coeff
+### Punto 1 — H1&H1.1 (DONE) : alzare vf_clip_param (priorità massima) + abbassare vf_loss_coeff
 
  - File: carla_core/configs/train_mappo.yaml — riga 29
  - Esperimento: H1 · confrontabile col trunk: sì (nessun cambio obs/architettura, checkpoint-compatibile)
@@ -455,7 +455,7 @@
  Verifica diagnostica aggiuntiva: controllare nei log RLlib/TensorBoard vf_explained_var (atteso: da ~0/negativo a >0.3) e vf_loss. Se compare instabilità/grad esplosivi → fallback: riscalare la reward ÷~100 (waypoint +100→+1) e tenere vf_clip_param ~50, ma è una modifica di reward (condizione separata).
 
  ---
-### Punto 2 — H2: allungare l'orizzonte di sconto
+### Punto 2 — H2 (DONE) : allungare l'orizzonte di sconto
 
  - File: carla_core/configs/train_mappo.yaml — riga 23
  - Esperimento: H2 · confrontabile col trunk: sì
@@ -469,10 +469,7 @@
  Razionale: a 20 Hz, γ=0.99 → orizzonte 1/(1−γ)=100 step = 5 s; un successo richiede ~862 step. γ=0.997 → ~333 step ≈ 17 s. Alternativa più profonda se γ da sola non basta (test successivo, non in questo punto): action-repeat k=3 in CarlaMultiAgentEnv.step() (carla_multi_agent_env.py:424), che porta il controllo a ~7 Hz e va accompagnato da max_steps ridotto.
 
 
-● H2 confermato. Per darti l'istruzione chirurgica esatta verifico lo stato attuale di train_mappo.yaml (deve ancora contenere i valori
-  H1+H1.1, o vanno ri-applicati):
-
-  Read 1 file (ctrl+o to expand)
+● H2 confermato. Per darti l'istruzione chirurgica esatta verifico lo stato attuale di train_mappo.yaml (deve ancora contenere i valori H1+H1.1, o vanno ri-applicati):
 
 ● train_mappo.yaml contiene ancora i valori H1+H1.1 (vf_clip_param: 1000000.0, vf_loss_coeff: 0.05) — non li hai revertiti. Quindi per H2 serve una sola modifica.
 
@@ -667,7 +664,7 @@
  > compute senza guadagno di comparabilità. Punti 6 e 7 sono distinti come punti di codice ma vanno trattati come un solo esperimento.
 
  ---
- Punto 8 (OPZIONALE) — H3: schedule di entropia decrescente
+ Punto 8 (DONE) — H3: schedule di entropia decrescente
 
  - File 1: carla_core/training/mappo_runtime.py — blocco .training(), dopo riga 280
  - File 2: carla_core/configs/train_mappo.yaml — blocco optimization:
@@ -680,17 +677,69 @@
              entropy_coeff=opt.get("entropy_coeff", 0.01),
              entropy_coeff_schedule=opt.get("entropy_coeff_schedule"),
 
- Modifica (b) — train_mappo.yaml, blocco optimization: (aggiungere sotto entropy_coeff):
-   entropy_coeff: 0.03
+ Modifica (b) — train_mappo.yaml, blocco optimization: (aggiungere sotto entropy_coeff): entropy_coeff: 0.03
    entropy_coeff_schedule: [[0, 0.03], [250000, 0.005]]   # H3: alta esplorazione iniziale -> consolidamento
 
- Razionale: entropy_coeff=0.03 costante è alto per controllo continuo 2D con log_std stato-dipendente → rumore d'azione persistente che
-  litiga con il bonus di sterzo fluido. Uno schedule decrescente mantiene esplorazione presto e consolida tardi. Se la chiave yaml è
- assente, opt.get(...) ritorna None → comportamento invariato (retro-compatibile).
+ Razionale: entropy_coeff=0.03 costante è alto per controllo continuo 2D con log_std stato-dipendente → rumore d'azione persistente che litiga con il bonus di sterzo fluido. Uno schedule decrescente mantiene esplorazione presto e consolida tardi. Se la chiave yaml è assente, opt.get(...) ritorna None → comportamento invariato (retro-compatibile).
  Nota: gli endpoint dello schedule sono in timestep — per il run completo da 3M scalare a [[0, 0.03], [2500000, 0.005]].
 
+
+### VALUTAZIONE RUN H1+H1.1+H2+H3
+
+● Valutazione run carla_mappo_20260516_144007 (H3 — schedule entropy_coeff)
+
+  Verdetto: H3 NON passa il gate veicoli (FAIL 3/4). Meccanismo confermato, ma effetto sull'outcome nullo entro il rumore run-to-run (NO REVERT)
+
+  Confermato che è un A/B single-knob valido: run_config.json di H3 vs H2 differisce solo per entropy_coeff_schedule 
+  [[0,0.03],[250000,0.005]] (gamma 0.997, vf_clip 1e6, vf_loss_coeff 0.05, seed 999, easy-lock, 300k identici).
+
+  Gate veicoli — cumulativo da episodes.jsonl (H3 vs base H2 211055)
+
+  ┌──────────────────────────────┬─────────────┬─────────────┬──────────┬────────┬─────────┐
+  │ Metrica veicoli (cumulativa) │ H2 (211055) │ H3 (144007) │    Δ     │ Soglia │  Esito  │
+  ├──────────────────────────────┼─────────────┼─────────────┼──────────┼────────┼─────────┤
+  │ Success rate                 │ 21.75%      │ 21.43%      │ −0.32 pp │ ≥ +2.0 │ ❌ FAIL │
+  ├──────────────────────────────┼─────────────┼─────────────┼──────────┼────────┼─────────┤
+  │ Stuck+timeout                │ 44.71%      │ 44.35%      │ −0.37 pp │ ≤ −2.0 │ ❌ FAIL │
+  ├──────────────────────────────┼─────────────┼─────────────┼──────────┼────────┼─────────┤
+  │ Collision                    │ 26.79%      │ 25.79%      │ −0.99 pp │ ≤ +1.0 │ ✅ PASS │
+  ├──────────────────────────────┼─────────────┼─────────────┼──────────┼────────┼─────────┤
+  │ Offroad                      │ 6.75%       │ 8.43%       │ +1.69 pp │ ≤ +1.0 │ ❌ FAIL │
+  └──────────────────────────────┴─────────────┴─────────────┴──────────┴────────┴─────────┘
+
+  - Integrità: 336 episodi × 6 record = 2016, 0 duplicati, 0 episodi malformati → PASS.
+  - NaN/inf: 0 su tutti i campi numerici → PASS.
+  - Pedoni (riportati separatamente): SR 87.20% (H2 84.69%), collision 0.10% — forti e stabili, nessun effetto negativo.
+
+  Meccanismo: confermato
+
+  L'entropia veicolo a fine training (da last_result.json, iter 36): H2 = 4.78 → H3 = 3.25 con entropy_coeff correttamente sceso a 0.005. Lo schedule ha fatto esattamente ciò per cui è stato progettato: ha soppresso il blow-up tardivo di entropia (H1→5.43, H2→4.78, H3→3.25). vf_explained_var resta sano (0.92). Nessun danno al critic.
+
+  Perché il meccanismo non muove l'outcome
+
+  1. Successi veicolo identici in valore assoluto: H2 = 216, H3 = 216 route-complete. La SR scende di 0.32 pp solo perché H3 ha girato 5 episodi in più (denominatore). Lo schedule non ha prodotto neanche un successo in più.
+  2. Le Δ sono dentro il rumore. Nei chunk 1–3 (timestep < 250k, dove H2 e H3 hanno config identica) la SR per chunk oscilla già di ±2–8 pp e la collision di ±7 pp tra le due run, per pura non-determinismo CARLA/RLlib. Le Δ cumulative del gate (−0.32, −0.37, −0.99, +1.69) non superano questo pavimento di rumore. Conferma indiretta: la velocità veicolo H3 = 10.78 km/h ≈ H1 (10.08), non H2 (13.81) — eppure H3 ha lo stesso gamma 0.997 di H2; quindi il presunto "gamma alza la velocità" attribuito a H2 era anch'esso in larga parte rumore.
+  3. Decadimento tardivo della SR (chunk 4→6, ipotesi centrale di H3): H3 32.74→28.57→22.62, H2 32.73→28.48→19.64. Lo schedule attenua leggermente il crollo finale (+2.98 pp sul chunk 6), ma il picco (chunk 4 ~32.7%) è invariato e nel chunk 6 la collision H3 è peggiore (33.93 vs 30.36). Effetto reale ma piccolo e compensato.
+  4. Spostamento di composizione: timeout −5.81 pp ma stuck +5.45 pp → entropia più bassa = policy più "decisa" che si incastra (stuck) invece di vagare fino al timeout, e quando sbaglia commit va offroad (+1.69) invece di restare passiva. S+T netto invariato.
+
+  Quadro convergente H1 + H2 + H3
+
+  Tre cambi single-knob consecutivi sul lato ottimizzatore — critic fix (H1), orizzonte (H2), entropia (H3) — tutti meccanicamente confermati, tutti falliti al gate veicoli ma non revertati (migliorano le metriche), con SR veicolo inchiodata a ~21.5% (successi assoluti 212/216/216). Evidenza ormai solida: il tetto della vehicle policy non è fissato dai knob ottimizzatore/critic/orizzonte/entropia. Il binding constraint resta la collision (25.79%), governata dalla struttura di reward — che è esattamente ciò che H1/H2/H3 non hanno toccato.
+
+  Final eval
+
+  Nessun file per 20260516_144007 in carla_core/results/eval/ (ultimi: 20260511). Coerente con H1/H2: il gate degli A/B single-knob
+  H-series usa gli episodi di training cumulativi, non la final eval. Non è un blocco per la decisione.
+
+  Raccomandazione
+
+  1. Non promuovere H3 (registro: not promoted, gate FAIL 3/4 — di fatto risultato nullo entro il rumore).
+  2. Prossimo step → R3 (penalità collisione veicolo −50 → −500 in carla_multi_agent_env.py:1748): è l'unico candidato che attacca il binding constraint dimostrato. La serie H ha esaurito il lato ottimizzatore.
+
  ---
- Verifica
+ 
+ 
+ ## Verifica
 
  Static check (dopo ogni modifica)
 
@@ -746,6 +795,8 @@
  └──────────────────────────────────────────┴────────────┘
 
 
+###Q&A
+
 ● TensorBoard (TensorFlow è il framework; TensorBoard è la dashboard). E sì, è lo strumento giusto
   — anzi, per H1/H1.1 è di fatto l'unico: vf_explained_var, vf_loss, grad_gnorm, policy_loss sono learner-stats di RLlib che il
   results.json del progetto non salva (lì ci sono solo SR/reward/collision). Ho verificato la run 211642.
@@ -789,8 +840,7 @@
   Note importanti
 
   - Per la decisione del gate usa comunque episodes.jsonl ricalcolato da disco (regola di misura del progetto, <measurement_rules>): le custom_metrics in TB sono la curva live, episodes.jsonl è la verità aggregata e disaggregabile veicoli/pedoni.
-  - Senza TB: progress.csv nella stessa dir contiene tutte le 238 colonne (stessi nomi della tabella sopra) → apribile con pandas se
-  preferisci grafici tuoi.
+  - Senza TB: progress.csv nella stessa dir contiene tutte le 238 colonne (stessi nomi della tabella sopra) → apribile con pandas se preferisci grafici tuoi.
   - Opzionale (fuori dal piano): il timeseries di results.json non include vf_explained_var — il dato c'è già nel result dict
   (result["info"]["learner"]…, vedi train_carla_mappo.py:284). Aggiungere una riga al timeseries.append (train_carla_mappo.py:1105) lo
   porterebbe nella pipeline del progetto, così compare_results_carla.py può usarlo senza TB. Dimmi se vuoi che lo aggiunga al piano come punto extra.
@@ -899,11 +949,14 @@
   Sinergia con γ=0.997 (mantenuto): H2 dà l'orizzonte lungo, R3 dà la magnitudo. Insieme: penalità localmente decisiva (vince il
   trade-off vicino all'impatto, γ¹⁰≈0.97) e propagata all'indietro. R3 è il fix di magnitudo che a H2 mancava.
 
-  Perché NON "ridurre lo shaping denso": la scala O(10^4) è creata dal +100/waypoint (sez. 1), il segnale primario di progresso. Ridurlo indebolisce l'incentivo a completare la rotta e cambia l'intera scala dei return → de-calibra H1/H1.1 (vf_clip/vf_loss_coeff tarati suquesta scala) → confounded. Alzare il −50 è una riga, un numero, segnale di progresso intatto.
+  Perché NON "ridurre lo shaping denso": la scala O(10^4) è creata dal +100/waypoint (sez. 1), il segnale primario di progresso. Ridurlo
+  indebolisce l'incentivo a completare la rotta e cambia l'intera scala dei return → de-calibra H1/H1.1 (vf_clip/vf_loss_coeff tarati su
+   questa scala) → confounded. Alzare il −50 è una riga, un numero, segnale di progresso intatto.
 
   Scheda R3
 
-  - Edit (1 riga): carla_multi_agent_env.py:1748 — reward -= 50.0 → reward -= 500.0. Solo veicolo; il -50.0 pedone (:1841) resta (pedoni collidono ~0.1%).
+  - Edit (1 riga): carla_multi_agent_env.py:1748 — reward -= 50.0 → reward -= 500.0. Solo veicolo; il -50.0 pedone (:1841) resta (pedoni
+   collidono ~0.1%).
   - Base: esito di H3 (H3 promosso → base H3; bocciato → 211055). Edit applicata solo al turno di R3.
   - Gate: vs base — SR +≥2.0, stuck+TO −≥2.0, collision/offroad ≤+1.0. Segnale di successo: collisione scende in modo netto. Spia di
   sovra-correzione: stuck+timeout (se risale, −500 è troppo).
