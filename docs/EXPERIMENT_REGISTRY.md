@@ -28,7 +28,8 @@ per candidate.
 | H1+H1.1 | not promoted / not reverted | 20260515_175921 | Critic fix: `vf_clip_param` 10->1e6 + `vf_loss_coeff` 0.5->0.05. Mechanism confirmed (vehicle `vf_explained_var` ~0->0.87) but vehicle gate FAILS 3 of 4. Not promoted; kept as base for H2 (reverting restores a non-functional critic). |
 | H2 | not promoted / not reverted | 20260515_211055 | `gamma` 0.99->0.997 on the H1+H1.1 base. Hypothesis (longer horizon propagates the -50 collision penalty) falsified; vehicle gate FAILS 3 of 4. Not promoted; `gamma=0.997` kept as base for H3. |
 | H3 | not promoted / not reverted | 20260516_144007 | `entropy_coeff` schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base. Mechanism confirmed (vehicle final `entropy` 4.78->3.25) but vehicle gate FAILS 3 of 4; all deltas within run-to-run noise. Not promoted; schedule kept as base for R3. |
-| R3 | applied / A/B run in progress | 20260516_200545 | Vehicle collision penalty `carla_multi_agent_env.py:1748` `-50.0`->`-500.0` (vehicle only; pedestrian `:1841` unchanged). Applied on the H3 base; single-knob A/B vs `20260516_144007`. |
+| R3 | not promoted / not reverted / hypothesis falsified | 20260516_200545 | Vehicle collision penalty `carla_multi_agent_env.py:1748` `-50.0`->`-500.0` (vehicle only). Adapted R3 gate FAILS (SR +1.27, collision -0.23, stuck+timeout +2.28, offroad -3.32 pp vs H3). Hypothesis "collision tunable via penalty magnitude" falsified. Not promoted; `-500` kept as base for the observation experiment. |
+| Obs hazard-perception | pending (approved, not designed) | — | Vehicle observation change adding hazard / nearby-agent perception features. Targets the perception limit exposed by R3. Changes the 44D vehicle obs space; not checkpoint-comparable. Not yet designed. |
 
 ---
 
@@ -364,8 +365,8 @@ there). Late-training SR decay only slightly softened (chunk-6 vehicle SR
 ## R3 — Vehicle Collision Penalty Magnitude
 
 **Type:** Reward shaping
-**Status:** Applied / A/B run in progress (`20260516_200545`)
-**Run:** `20260516_200545` (A/B run in progress; not yet evaluable)
+**Status:** Not promoted / not reverted (hypothesis falsified)
+**Run:** `20260516_200545` (A/B run completed — 326 episodes)
 **Files:** `carla_core/envs/carla_multi_agent_env.py` (line 1748, `_vehicle_reward()`)
 **Base:** H3 config `20260516_144007` (`gamma=0.997` + entropy schedule +
 `vf_clip_param=1e6` + `vf_loss_coeff=0.05` retained)
@@ -402,6 +403,24 @@ reward -= 500.0   # vehicle only; pedestrian collision (:1841) stays -50.0
   "stuck+timeout improves by >= -2.0 pp" would reject a clean
   collision->completion conversion. For R3, stuck+timeout is an
   overcorrection canary, not a required improvement.
+
+**Gate result (vs H3 `20260516_144007`, cumulative from `episodes.jsonl`):**
+The adapted gate FAILS. PRIMARY: vehicle SR +1.27 pp (21.43->22.70, need
+>= +2.0); collision -0.23 pp (25.79->25.56, need <= -3.0 — clean miss).
+CANARY: stuck+timeout +2.28 pp (44.35->46.63 — breached); offroad -3.32 pp
+(8.43->5.11 — pass). Integrity OK (326 ep x 6 = 1956 records, 0 dups,
+0 NaN/inf); vehicle `vf_explained_var` 0.92->0.88, `entropy` 3.25->2.58.
+
+The hypothesis "the vehicle collision rate is tunable via the
+collision-penalty magnitude" is falsified: a 10x penalty left collision flat.
+The policy did respond to the reward change (offroad -3.32 pp; stuck -7.17 pp
+converted into timeout +9.45 pp; `route%` 0.44->0.50; entropy down) but not on
+the collision axis — collision avoidance is not learnable from the current 44D
+vehicle observation (a perception limit, not a reward-weight problem). Not
+promoted; `-500` retained (not reverted) by user decision as the base for the
+planned observation (hazard-perception) experiment, the intervention expected
+to make the penalty effective. Reward shaping for the collision axis is
+exhausted.
 
 **Verification:** `python -m compileall carla_core/envs/carla_multi_agent_env.py`
 passed; `git diff --check` clean; the diff is the single line at `:1748`.

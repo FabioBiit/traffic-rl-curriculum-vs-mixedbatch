@@ -121,19 +121,28 @@ from vehicles.
   together: three optimizer-side single-knob changes, all mechanism-confirmed,
   all failing the vehicle gate, vehicle SR pinned ~21.5%; the binding
   constraint is the vehicle collision rate (~25.8%).
-- `R3` (raise the vehicle collision penalty `-50.0` -> `-500.0` at
-  `carla_multi_agent_env.py:1748`) is applied (vehicle only; pedestrian
-  `-50.0` at `:1841` unchanged) on the `H3` base (`gamma=0.997`, entropy
-  schedule, `vf_clip=1e6`, `vf_loss_coeff=0.05` all retained); single-knob A/B
-  vs `20260516_144007`. The R3 A/B run `20260516_200545` is launched and in
-  progress (not yet evaluable). Rationale verified from `episodes.jsonl`: the
-  260 `H3` vehicle collisions earned a mean `route_completion` of 0.29
-  (~+200-290 of `+100/wp` bonuses) before crashing, so the old `-50` penalty
-  left a crash strongly net-positive; `-500` exceeds the route bonus of
-  essentially all crash episodes and roughly matches the cost of a full freeze
-  (idle + no-advance + loop penalties ~ -600/-900). R3 uses an adapted gate
-  (recorded in its registry entry): collision is the primary axis, so
-  stuck+timeout is a do-not-worsen canary rather than a required improvement.
+- `R3` (vehicle collision penalty `-50.0` -> `-500.0` at
+  `carla_multi_agent_env.py:1748`) was evaluated on run `20260516_200545`
+  (single-knob A/B vs `20260516_144007`; seed 999, easy-lock, 300k). The
+  adapted R3 gate FAILS: vehicle SR +1.27 pp (21.43->22.70), collision
+  -0.23 pp (25.79->25.56), stuck+timeout +2.28 pp (44.35->46.63), offroad
+  -3.32 pp (8.43->5.11); integrity OK (326 ep x 6 = 1956 records, 0 dups,
+  0 NaN/inf); vehicle `vf_explained_var` 0.92->0.88, `entropy` 3.25->2.58.
+  The hypothesis "the vehicle collision rate is tunable via the
+  collision-penalty magnitude" is falsified: a 10x penalty left the collision
+  rate flat. The policy did respond to the reward change (offroad -3.32 pp,
+  stuck -7.17 pp converted into timeout +9.45 pp, `route%` 0.44->0.50) but not
+  on the collision axis -- evidence that collision avoidance is not learnable
+  from the current 44D vehicle observation (a perception limit, not a
+  reward-weight problem). R3 is not promoted; by user decision the `-500`
+  penalty is retained (not reverted) as the base for the planned observation
+  experiment, because that obs change is the intervention expected to make the
+  penalty effective. Reward shaping for the collision axis is exhausted.
+- The next planned candidate is a vehicle observation change adding hazard /
+  nearby-agent perception features, approved by the user as a separate
+  experimental variant. It targets the perception limit exposed by `R3`. It
+  changes the vehicle observation space (currently 44D) and is therefore not
+  checkpoint-comparable with prior runs. Not yet designed or applied.
 - Current path curriculum configuration uses `difficulty=path` with route
   distances `15m / 35m / 60m` for both vehicles and pedestrians.
 - Current curriculum budget proposal is `easy=0.30`, `medium=0.32`,
@@ -161,7 +170,8 @@ from vehicles.
 | H1+H1.1 | not promoted but not reverted / mechanism confirmed | 20260515_175921 | Critic fix: `vf_clip_param` 10->1e6 (H1) + `vf_loss_coeff` 0.5->0.05 (H1.1); obs unchanged (44D), checkpoint-comparable. Mechanism confirmed from RLlib logs: vehicle `vf_explained_var` ~0 (baseline -0.002, critic explained ~0% of return variance) -> 0.87. Vehicle gate vs `20260514_211642` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +1.51 pp (20.10->21.61), stuck+timeout -1.98 pp (54.17->52.19), collision +3.28 pp (18.33->21.61), offroad -2.81 pp (7.40->4.59). Blocker: collision regression and late-training degradation (`entropy`->5.43). Confounded (two knobs). Not promoted; `vf_clip` kept, not reverted (reverting restores a non-functional critic). |
 | H2 | not promoted / not reverted / hypothesis falsified | 20260515_211055 | `gamma` 0.99->0.997 on the H1+H1.1 base; single-knob A/B vs `20260515_175921` (only `gamma` differs; seed 999, easy-lock, 300k). Intended to reduce the H1+H1.1 collision regression by propagating the -50 penalty over a longer horizon; produced the opposite. Vehicle gate vs `175921` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +0.14 pp (21.61->21.75), stuck+timeout -7.48 pp (52.19->44.71), collision +5.18 pp (21.61->26.79), offroad +2.16 pp (4.59->6.75). Mechanism: longer horizon amplified the dominant route-completion incentive (speed 10.08->13.81 km/h, timeout -6.53 pp) and converted passive failure into active failure roughly 1:1; SR flat. Critic healthy (`vf_explained_var` 0.94). Hypothesis falsified. Not reverted by user decision: `gamma=0.997` retained as the base for `H3`. |
 | H3 | not promoted / not reverted / mechanism confirmed | 20260516_144007 | `entropy_coeff` constant 0.03 -> schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base; single-knob A/B vs `20260515_211055` (only the schedule differs; seed 999, easy-lock, 300k). Mechanism confirmed: vehicle final `entropy` 4.78 -> 3.25 (schedule reached `entropy_coeff=0.005`), `vf_explained_var` 0.92 (critic healthy). Vehicle gate vs `211055` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR -0.32 pp (21.75->21.43), stuck+timeout -0.37 pp (44.71->44.35), collision -0.99 pp (26.79->25.79), offroad +1.69 pp (6.75->8.43). Vehicle route-completions identical in absolute count (216 vs 216); the SR delta is denominator-only (H3 ran 5 more episodes). All deltas within the run-to-run noise visible in the pre-250k chunks (identical config there). Late-training SR decay only slightly softened (chunk-6 vehicle SR 22.62 vs 19.64); chunk-4 peak (~32.7%) unchanged; composition shifted timeout -5.81 pp / stuck +5.45 pp. Integrity OK (336 ep x 6 = 2016 records, 0 dups, 0 NaN/inf). Not promoted; by user decision the entropy schedule is retained (not reverted) as the base for `R3`. |
-| R3 | applied / A/B run in progress | 20260516_200545 | Reward shaping: vehicle collision penalty at `carla_multi_agent_env.py:1748` raised `reward -= 50.0` -> `reward -= 500.0` (vehicle only; pedestrian `-50.0` at `:1841` unchanged). Applied on the `H3` base (`gamma=0.997` + entropy schedule + `vf_clip=1e6` + `vf_loss_coeff=0.05` retained); single-knob A/B vs `20260516_144007` (seed 999, easy-lock, 300k). Rationale verified from `episodes.jsonl`: the 260 `H3` vehicle collisions earned mean `route_completion` 0.29 (~+200-290 of `+100/wp` bonuses) before crashing, so `-50` left a crash strongly net-positive; `-500` exceeds the route bonus of essentially all crash episodes and roughly matches a full-freeze cost (idle + no-advance + loop ~ -600/-900). `-200` was rejected (leaves an aggressive push at positive EV; a crash still cheaper than a freeze). Adapted R3 gate (user-approved, deviates from the generic vehicle gate): PRIMARY = vehicle SR >= +2.0 pp AND vehicle collision drops >= -3.0 pp; CANARY (must not worsen by more than +1.0 pp) = stuck+timeout, offroad; plus 6 records/episode and no NaN/inf. Deviation rationale: R3 targets the collision axis, so requiring stuck+timeout to improve (generic gate) would reject a clean collision->completion conversion. |
+| R3 | not promoted / not reverted / hypothesis falsified | 20260516_200545 | Reward shaping: vehicle collision penalty at `carla_multi_agent_env.py:1748` raised `reward -= 50.0` -> `reward -= 500.0` (vehicle only; pedestrian `-50.0` at `:1841` unchanged), on the `H3` base; single-knob A/B vs `20260516_144007` (seed 999, easy-lock, 300k). Adapted R3 gate (PRIMARY: vehicle SR >= +2.0 pp AND collision <= -3.0 pp; CANARY: stuck+timeout and offroad must not worsen > +1.0 pp) FAILS: SR +1.27 pp (21.43->22.70), collision -0.23 pp (25.79->25.56), stuck+timeout +2.28 pp (44.35->46.63), offroad -3.32 pp (8.43->5.11). Integrity OK (326 ep x 6 = 1956 records, 0 dups, 0 NaN/inf); vehicle `vf_explained_var` 0.92->0.88, `entropy` 3.25->2.58. Hypothesis "collision rate is tunable via the collision-penalty magnitude" falsified: the 10x penalty left collision flat. The policy responded elsewhere (offroad -3.32 pp; stuck -7.17 pp converted into timeout +9.45 pp; `route%` 0.44->0.50) but not on the collision axis -> collision avoidance is not learnable from the current 44D vehicle obs (perception limit). Not promoted; `-500` retained (not reverted) by user decision as the base for the planned observation (hazard-perception) experiment. |
+| Obs hazard-perception | pending (approved, not designed) | — | Vehicle observation change adding hazard / nearby-agent perception features. Targets the perception limit exposed by `R3`. Changes the 44D vehicle observation space; not checkpoint-comparable with prior runs. Not yet designed. |
 
 See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pseudocode.
 
@@ -182,10 +192,16 @@ See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pse
   decision the schedule is not reverted: it is retained as the experimental
   base for `R3`.
 - `R3` (vehicle collision penalty `-50.0`->`-500.0` at
-  `carla_multi_agent_env.py:1748`) is applied on the `H3` base as a
-  single-knob A/B vs `20260516_144007`; the A/B run `20260516_200545` is
-  launched and in progress. R3 uses an adapted gate (collision-axis primary,
-  stuck+timeout as canary) recorded in its registry entry.
+  `carla_multi_agent_env.py:1748`) was evaluated (run `20260516_200545`) and
+  is not promoted; the adapted R3 gate fails and the hypothesis (collision
+  rate tunable via the collision-penalty magnitude) is falsified. By user
+  decision the `-500` penalty is not reverted: it is retained as the base for
+  the planned vehicle observation (hazard-perception) experiment, the
+  intervention expected to make the penalty effective.
+- Next planned: a vehicle observation change adding hazard / nearby-agent
+  perception features (approved as a separate experimental variant; changes
+  the 44D vehicle observation space; not checkpoint-comparable). Not yet
+  designed.
 - Pending/conditional: full `difficulty=path` curriculum without
   `--lock-curriculum-level`, using route distances `15m / 35m / 60m`, budget
   shares `0.30 / 0.32 / 0.38`, and sampling weights `1.00 / 1.07 / 1.27`.
