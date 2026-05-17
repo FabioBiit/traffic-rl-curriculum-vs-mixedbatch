@@ -29,7 +29,7 @@ per candidate.
 | H2 | not promoted / not reverted | 20260515_211055 | `gamma` 0.99->0.997 on the H1+H1.1 base. Hypothesis (longer horizon propagates the -50 collision penalty) falsified; vehicle gate FAILS 3 of 4. Not promoted; `gamma=0.997` kept as base for H3. |
 | H3 | not promoted / not reverted | 20260516_144007 | `entropy_coeff` schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base. Mechanism confirmed (vehicle final `entropy` 4.78->3.25) but vehicle gate FAILS 3 of 4; all deltas within run-to-run noise. Not promoted; schedule kept as base for R3. |
 | R3 | not promoted / not reverted / hypothesis falsified | 20260516_200545 | Vehicle collision penalty `carla_multi_agent_env.py:1748` `-50.0`->`-500.0` (vehicle only). Adapted R3 gate FAILS (SR +1.27, collision -0.23, stuck+timeout +2.28, offroad -3.32 pp vs H3). Hypothesis "collision tunable via penalty magnitude" falsified. Not promoted; `-500` kept as base for the next candidate `R1`. |
-| R1 | pending (next) | — | Reward shaping: remove the `route_completion < 0.3` gate in `_vehicle_reward` (~1760/1782/1788) so start/unblock and speed shaping stay active for the whole route. Targets the dominant stuck+timeout failure. Checkpoint-comparable; single-knob A/B vs run `20260516_200545`. |
+| R1 | applied; awaiting A/B run | — | Reward shaping: drop the `route_completion < 0.3` guard in `_vehicle_reward` so start/unblock and `target_min_speed` shaping stay active for the whole route. Code applied in commit `721fc2e` (3 micro-edits, `compileall` OK), not yet run or evaluated. Checkpoint-comparable; single-knob A/B vs run `20260516_200545`. |
 | R2 | pending | — | Reward shaping: gate the `+0.1` smooth-steering bonus in `_vehicle_reward` (~1803) on `speed_kmh > 5.0`. Checkpoint-comparable. |
 | Route-len bugfix | pending | — | Env bugfix: enforce the docstring's `2.0x` upper bound on vehicle route length in `route_planner.py` `plan_vehicle_route` (~184); only the `0.5x` lower bound is currently checked. Checkpoint-comparable; separate A/B (changes the route-length distribution). |
 | O1+O2 | pending (obs change; applied last) | — | Vehicle obs `44D -> 47D`: O1 adds normalized `no_wp_steps` + `loop_penalty_active` flag, O2 adds normalized time-remaining. Markov state-aliasing fixes, not hazard/perception features. Not checkpoint-comparable; one retrain-from-scratch 47D variant. |
@@ -433,13 +433,19 @@ passed; `git diff --check` clean; the diff is the single line at `:1748`.
 ## R1 — Remove the route_completion < 0.3 Reward Gate
 
 **Type:** Reward shaping
-**Status:** Pending (immediate next candidate)
-**Files:** `carla_core/envs/carla_multi_agent_env.py` — `_vehicle_reward()` (~1760, ~1782, ~1788)
+**Status:** Applied; awaiting A/B run (not yet evaluated)
+**Files:** `carla_core/envs/carla_multi_agent_env.py` — `_vehicle_reward()`
 **Comparability:** Checkpoint-comparable (no obs/architecture change)
 
 **Change:** Drop the `route_completion < 0.3` guard so the start/unblock and
 `target_min_speed` shaping stay active for the whole route, not only the first
 30%. The `safe_to_push` (hazard < 0.75) and `alignment > 0.25` guards remain.
+
+**Applied (2026-05-17, commit `721fc2e`; not yet run):** Three micro-edits in
+`_vehicle_reward()` — removed the now-unused
+`route_completion = self._route_completion(ad)` assignment and dropped
+`route_completion < 0.3` from both shaping guards. Coefficients unchanged.
+`python -m compileall` OK, `git diff --check` clean.
 
 **Rationale:** The timeout cohort sits at mean `route_completion` ~0.5-0.6 —
 past the `0.3` guard — so it currently has no speed incentive. Targets the

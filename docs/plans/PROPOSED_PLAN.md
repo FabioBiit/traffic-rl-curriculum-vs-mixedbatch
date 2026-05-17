@@ -544,8 +544,37 @@
 
  Razionale: lo shaping di velocità/sblocco è inattivo oltre il 30 % di rotta; la coorte timeout (23.7 %, route_completion medio 0.55) sta esattamente lì senza incentivo a non rallentare. I gate safe_to_push (hazard<0.75) e alignment>0.25 restano e proteggono curve/ostacoli. Coefficienti invariati per un A/B a variabile singola; se R1 fa salire le collisioni oltre il gate, fallback: dimezzare i coefficienti su righe 1785-1786 e 1791-1793.
 
+
+### R1 applicato e verificato.
+
+  R1 — fatto
+
+  Diff in carla_core/envs/carla_multi_agent_env.py, _vehicle_reward(), 3 righe (Punto 3 del piano):
+
+  - rimossa route_completion = self._route_completion(ad) (ora variabile inutilizzata — verificato: nessun altro uso nella funzione);
+  - if safe_to_push and route_completion < 0.3 and alignment > 0.25: → if safe_to_push and alignment > 0.25: (start/unblock shaping);
+  - stessa modifica sul secondo gate (speed shaping target_min_speed=8.0).
+
+  Verifica: python -m compileall OK; git diff --check pulito; il diff è esattamente le 3 righe previste, nient'altro.
+
+  Effetto atteso: lo shaping start/unblock e di velocità resta attivo per tutta la rotta, non solo nel primo 30%. Le guardie
+  safe_to_push (hazard < 0.75) e alignment > 0.25 restano → curve e ostacoli ancora protetti. Coefficienti invariati: A/B a singolo knob.
+
+  Come testarlo (non lo lancio io)
+
+  Stesso protocollo della serie, A/B single-knob vs run 20260516_200545 (R3):
+
+  python -m carla_core.training.train_carla_mappo --mode curriculum --difficulty path --timesteps 300000 --seed 999
+  --lock-curriculum-level easy
+
+  È un run da ~2h (R3 ne ha impiegate ~1.9h). Lancialo tu quando vuoi — se serve, col prefisso ! nel prompt così l'output entra in sessione.
+
+  Gate R1 (veicoli, cumulativo da episodes.jsonl vs R3): SR +≥2.0 pp, stuck+timeout −≥2.0 pp, collision/offroad ≤+1.0 pp. Canary da tenere d'occhio: la collision — è il rischio "shaping di velocità su tutta la rotta → più contatti". Fallback già nel piano se la collision sfora il gate: dimezzare i coefficienti sulle righe di shaping (start_gain e 0.04/0.15).
+
+
  ---
- Punto 4 — R2: condizionare il bonus di sterzo fluido alla velocità
+ 
+### Punto 4 — R2: condizionare il bonus di sterzo fluido alla velocità
 
  - File: carla_core/envs/carla_multi_agent_env.py — funzione _vehicle_reward (riga ~1803)
  - Esperimento: R2 (reward shaping) · confrontabile col trunk: sì
@@ -925,6 +954,34 @@
 
   Confermi? Parto dalla correzione dei doc, poi R1.
   
+### UPDATE PLAN
+
+  Cosa è stato corretto
+
+  In tutti i doc, la voce stale "Obs hazard-perception / next = obs change" è sostituita con la sequenza reale del piano: R1 → R2 → bugfix route-len → O1+O2, con R1 candidato immediato. O1/O2 sono ora descritti per quello che sono — fix di state-aliasing di Markov (no_wp_steps, loop flag, tempo residuo) — non feature di percezione hazard.
+
+  File: CLAUDE.md
+  Modifiche: 5 edit: tail R3 e "next planned" in current_known_state + current_accepted_trunk; riga registro Obs hazard-perception → 4 righe R1/R2/Route-len/O1+O2.
+  ────────────────────────────────────────
+  File: AGENTS.md
+  Modifiche: Le stesse 5 edit (file mantenuto sincronizzato con CLAUDE.md).
+  ────────────────────────────────────────
+  File: docs/EXPERIMENT_REGISTRY.md
+  Modifiche: Tabella di sintesi (riga R3 + riga obs→4 righe), tail della sezione R3, + 4 nuove sezioni di dettaglio R1/R2/Route-len bugfix/O1+O2 che rimandano a PROPOSED_PLAN.md Punti 3-7.
+  ────────────────────────────────────────
+  File: reports/carla_finetuning_maggio_2026.docx
+  Modifiche: p110 (chiusura R3), p111 ("Quadro e prossimo passo"), tabella registro riga 15→R1 + 3 righe nuove (R2/Route-len/O1+O2, formattazione di riga clonata da quella esistente).
+
+  Ho anche corretto, dove compariva, l'affermazione "reward shaping esaurito": ora dice che è esaurita la magnitudo della penalità collisione, ma R1/R2 restano reward shaping non testato, mirato al fallimento dominante stuck+timeout.
+
+  Verifica: git diff --check pulito (i warning LF→CRLF sono normali su Windows); .docx riaperto e verificato (tabella 16→19 righe, p110/p111 corretti). Nessun file Python toccato.
+
+  Un punto da decidere (non risolto dal RECAP)
+
+  La penalità collisione -500: il RECAP raccomandava di revertarla a -50 ("portare in tesi un termine 10× non giustificabile è
+  indifendibile"), ma rinviava la decisione a te — e CLAUDE.md la documenta come "retained by user decision". Nei doc l'ho lasciata -500 (retained), correggendo solo la motivazione: da "base per l'esperimento obs" a "base sperimentale per R1". È coerente comunque, perché R1 è un A/B single-knob sul run R3 (20260516_200545), che ha -500. Ma se vuoi revertarla prima di R1, cambia la config base di R1 e i doc vanno ritoccati: dimmi tu.
+
+  Per la discussione che avevi messo in conto: resta aperto se R1 debba davvero precedere O1+O2. Io confermo l'ordine del RECAP (R1 prima), ma se vuoi ne discutiamo.  
   
 #########################################################Q&A#####################################################################
   
