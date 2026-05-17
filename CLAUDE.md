@@ -138,21 +138,35 @@ reported separately from vehicles.
   candidate `R1`. Collision-axis reward shaping (penalty magnitude) is
   exhausted, but `R1` and `R2` remain untested reward-shaping candidates that
   target the dominant stuck+timeout failure, not the collision axis.
-- The next planned candidates, in `PROPOSED_PLAN.md` order, are: `R1` (remove
-  the `route_completion < 0.3` reward gate in `_vehicle_reward`), `R2` (gate
-  the smooth-steering bonus on `speed_kmh > 5`), the `route_planner`
-  upper-bound bugfix (enforce route length `<= 2.0x` of target), and `O1+O2`
-  (vehicle obs `44D -> 47D`: add `no_wp_steps` norm, loop flag, and normalized
-  time-remaining). `R1`, `R2` and the bugfix are checkpoint-comparable;
-  `O1+O2` change the vehicle observation space, are not checkpoint-comparable,
-  and are applied last as a single retrain-from-scratch 47D variant. `O1+O2`
-  are Markov state-aliasing fixes (the reward already uses `no_wp_steps` and
-  `loop_penalty_active`, and the episode is truncated at a fixed horizon), not
-  hazard/perception features. `R1` has been applied to `_vehicle_reward`
-  (`carla_multi_agent_env.py`, three micro-edits; `compileall` OK,
-  `git diff --check` clean) and is awaiting its single-knob A/B run vs
-  `20260516_200545`, not yet evaluated. `R2`, the `route_planner` bugfix and
-  `O1+O2` remain pending.
+- `R1` (remove the `route_completion < 0.3` reward gate in `_vehicle_reward`,
+  so start/unblock and `target_min_speed` shaping stay active for the whole
+  route) was evaluated on run `20260517_134652` (single-knob A/B vs
+  `20260516_200545`; seed 999, easy-lock, ~300k). Vehicle gate (cumulative,
+  recomputed from `episodes.jsonl`) PASSES 4 of 4: SR +4.69 pp (22.70->27.38),
+  stuck+timeout -3.45 pp (46.63->43.18), collision -1.46 pp (25.56->24.10),
+  offroad +0.22 pp (5.11->5.33); integrity OK (325 ep x 6 = 1950 records,
+  0 dups, 0 NaN/inf). On-mechanism: vehicle route-completions +45 in absolute
+  count (222->267, not a denominator effect); the timeout cohort is the
+  largest contributor (-2.71 pp / -27 episodes); vehicle speed 11.53->13.04
+  km/h; the collision canary improved rather than regressed; no late-training
+  SR decay (chunk-6 vehicle SR 38.2 vs R3 27.6). Pedestrians (reported
+  separately): SR 89.06->85.03 (-4.03 pp), stuck +4.23 pp -- `R1` does not
+  touch `_pedestrian_reward`; most likely run-to-run noise (pedestrian SR has
+  ranged 84.7-89.1 across the last four runs, R3 the high point) with a
+  possible small MARL shared-environment contribution; to be confirmed with
+  extra seeds. `R1` is the first candidate to pass the vehicle gate since
+  `D2`; promoted into the trunk and retained as the base for `R2`.
+- Candidate pipeline (`PROPOSED_PLAN.md` order): `R1` is done and promoted
+  (above). Remaining: `R2` (gate the smooth-steering bonus on
+  `speed_kmh > 5`), the `route_planner` upper-bound bugfix (enforce route
+  length `<= 2.0x` of target), and `O1+O2` (vehicle obs `44D -> 47D`: add
+  `no_wp_steps` norm, loop flag, normalized time-remaining). `R2` and the
+  bugfix are checkpoint-comparable; `O1+O2` change the vehicle observation
+  space, are not checkpoint-comparable, and are applied last as a single
+  retrain-from-scratch 47D variant. `O1+O2` are Markov state-aliasing fixes
+  (the reward uses `no_wp_steps` and `loop_penalty_active`, and the episode is
+  truncated at a fixed horizon), not hazard/perception features. The immediate
+  next candidate is `R2`, a single-knob A/B on the `R1` base.
 - Current path curriculum configuration uses `difficulty=path` with route
   distances `15m / 35m / 60m` for both vehicles and pedestrians.
 - Current curriculum budget proposal is `easy=0.30`, `medium=0.32`,
@@ -181,7 +195,7 @@ reported separately from vehicles.
 | H2 | not promoted / not reverted / hypothesis falsified | 20260515_211055 | `gamma` 0.99->0.997 on the H1+H1.1 base; single-knob A/B vs `20260515_175921` (only `gamma` differs; seed 999, easy-lock, 300k). Intended to reduce the H1+H1.1 collision regression by propagating the -50 penalty over a longer horizon; produced the opposite. Vehicle gate vs `175921` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +0.14 pp (21.61->21.75), stuck+timeout -7.48 pp (52.19->44.71), collision +5.18 pp (21.61->26.79), offroad +2.16 pp (4.59->6.75). Mechanism: longer horizon amplified the dominant route-completion incentive (speed 10.08->13.81 km/h, timeout -6.53 pp) and converted passive failure into active failure roughly 1:1; SR flat. Critic healthy (`vf_explained_var` 0.94). Hypothesis falsified. Not reverted by user decision: `gamma=0.997` retained as the base for `H3`. |
 | H3 | not promoted / not reverted / mechanism confirmed | 20260516_144007 | `entropy_coeff` constant 0.03 -> schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base; single-knob A/B vs `20260515_211055` (only the schedule differs; seed 999, easy-lock, 300k). Mechanism confirmed: vehicle final `entropy` 4.78 -> 3.25 (schedule reached `entropy_coeff=0.005`), `vf_explained_var` 0.92 (critic healthy). Vehicle gate vs `211055` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR -0.32 pp (21.75->21.43), stuck+timeout -0.37 pp (44.71->44.35), collision -0.99 pp (26.79->25.79), offroad +1.69 pp (6.75->8.43). Vehicle route-completions identical in absolute count (216 vs 216); the SR delta is denominator-only (H3 ran 5 more episodes). All deltas within the run-to-run noise visible in the pre-250k chunks (identical config there). Late-training SR decay only slightly softened (chunk-6 vehicle SR 22.62 vs 19.64); chunk-4 peak (~32.7%) unchanged; composition shifted timeout -5.81 pp / stuck +5.45 pp. Integrity OK (336 ep x 6 = 2016 records, 0 dups, 0 NaN/inf). Not promoted; by user decision the entropy schedule is retained (not reverted) as the base for `R3`. |
 | R3 | not promoted / not reverted / hypothesis falsified | 20260516_200545 | Reward shaping: vehicle collision penalty at `carla_multi_agent_env.py:1748` raised `reward -= 50.0` -> `reward -= 500.0` (vehicle only; pedestrian `-50.0` at `:1841` unchanged), on the `H3` base; single-knob A/B vs `20260516_144007` (seed 999, easy-lock, 300k). Adapted R3 gate (PRIMARY: vehicle SR >= +2.0 pp AND collision <= -3.0 pp; CANARY: stuck+timeout and offroad must not worsen > +1.0 pp) FAILS: SR +1.27 pp (21.43->22.70), collision -0.23 pp (25.79->25.56), stuck+timeout +2.28 pp (44.35->46.63), offroad -3.32 pp (8.43->5.11). Integrity OK (326 ep x 6 = 1956 records, 0 dups, 0 NaN/inf); vehicle `vf_explained_var` 0.92->0.88, `entropy` 3.25->2.58. Hypothesis "collision rate is tunable via the collision-penalty magnitude" falsified: the 10x penalty left collision flat. The policy responded elsewhere (offroad -3.32 pp; stuck -7.17 pp converted into timeout +9.45 pp; `route%` 0.44->0.50) but not on the collision axis -> collision avoidance is not learnable from the current 44D vehicle obs (perception limit). Not promoted; `-500` retained (not reverted) by user decision as the base for the planned observation (hazard-perception) experiment. |
-| R1 | applied; awaiting A/B run | — | Reward shaping: drop the `route_completion < 0.3` guard in `_vehicle_reward` (`carla_multi_agent_env.py`) so the start/unblock and `target_min_speed` shaping stay active for the whole route, not only the first 30%; `safe_to_push` (hazard < 0.75) and `alignment > 0.25` guards kept, coefficients unchanged. Targets the dominant stuck+timeout failure. Code applied in commit `721fc2e` (3 micro-edits, `compileall` OK, `git diff --check` clean); not yet run or evaluated. Checkpoint-comparable; single-knob A/B vs run `20260516_200545`. See `PROPOSED_PLAN.md` Punto 3. |
+| R1 | promoted (trunk) | 20260517_134652 | Reward shaping: dropped the `route_completion < 0.3` guard in `_vehicle_reward` so start/unblock and `target_min_speed` shaping stay active for the whole route (`safe_to_push` and `alignment > 0.25` guards kept, coefficients unchanged). Single-knob A/B vs R3 `20260516_200545`. Vehicle gate PASSES 4/4: SR +4.69 pp (22.70->27.38), stuck+timeout -3.45 pp (46.63->43.18), collision -1.46 pp (25.56->24.10), offroad +0.22 pp. +45 route-completions in absolute count (222->267); timeout cohort the largest contributor (-2.71 pp); speed 11.53->13.04 km/h; collision canary improved. Integrity OK (325 ep x 6 = 1950, 0 dups, 0 NaN/inf). Pedestrians (separate): SR -4.03 pp (R1 does not touch pedestrian reward; likely run-to-run noise) -- to confirm with extra seeds. First gate pass since `D2`; promoted into the trunk, base for `R2`. |
 | R2 | pending | — | Reward shaping: gate the `+0.1` smooth-steering bonus in `_vehicle_reward` (`carla_multi_agent_env.py:1803`) on `speed_kmh > 5.0` so a stationary vehicle no longer collects it. Checkpoint-comparable. See `PROPOSED_PLAN.md` Punto 4. |
 | Route-len bugfix | pending | — | Env bugfix: enforce the docstring's `2.0x` upper bound on vehicle route length in `route_planner.py` `plan_vehicle_route` (~184); currently only the `0.5x` lower bound is checked. Checkpoint-comparable; separate A/B (it changes the route-length distribution). See `PROPOSED_PLAN.md` Punto 5. |
 | O1+O2 | pending (obs change; applied last) | — | Vehicle obs `44D -> 47D`: O1 adds normalized `no_wp_steps` + `loop_penalty_active` flag, O2 adds normalized time-remaining. Markov state-aliasing fixes (the reward uses these quantities, the obs does not), not hazard/perception features. Not checkpoint-comparable; one retrain-from-scratch 47D variant. See `PROPOSED_PLAN.md` Punti 6-7. |
@@ -190,7 +204,7 @@ See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pse
 </current_known_state>
 
 <current_accepted_trunk>
-- Active trunk: `C0 + C1 + D2`.
+- Active trunk: `C0 + C1 + D2 + R1`.
 - Reverted: `D3`.
 - `H1+H1.1` is not promoted but not reverted; `vf_clip_param=1000000.0` and
   `vf_loss_coeff=0.05` are retained as the experimental base for `H2` because
@@ -210,13 +224,18 @@ See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pse
   rate tunable via the collision-penalty magnitude) is falsified. By user
   decision the `-500` penalty is not reverted: it is retained as the
   experimental base for the next candidate `R1`.
-- Next planned (`PROPOSED_PLAN.md` order): `R1` (remove the
-  `route_completion < 0.3` reward gate) -> `R2` (gate the smooth-steering
+- `R1` (remove the `route_completion < 0.3` reward gate in `_vehicle_reward`)
+  was evaluated (run `20260517_134652`) and PASSES the vehicle gate 4 of 4 vs
+  `20260516_200545`: SR +4.69 pp, stuck+timeout -3.45 pp, collision -1.46 pp,
+  offroad +0.22 pp. It is the first candidate to pass the gate since `D2`;
+  promoted into the trunk and retained as the base for `R2`. Pedestrian SR
+  regressed -4.03 pp (`R1` does not touch `_pedestrian_reward`; likely
+  run-to-run noise, to be confirmed with extra seeds).
+- Next planned (`PROPOSED_PLAN.md` order): `R2` (gate the smooth-steering
   bonus on `speed_kmh > 5`) -> `route_planner` upper-bound bugfix -> `O1+O2`
   (vehicle obs `44D -> 47D`, Markov state-aliasing fixes, applied last as one
-  retrain-from-scratch 47D variant). `R1` has been applied to
-  `_vehicle_reward` (commit `721fc2e`) and is awaiting its single-knob A/B run
-  vs `20260516_200545`; `R2`, the bugfix and `O1+O2` remain pending.
+  retrain-from-scratch 47D variant). The immediate next candidate is `R2`, a
+  single-knob A/B on the `R1` base.
 - Pending/conditional: full `difficulty=path` curriculum without
   `--lock-curriculum-level`, using route distances `15m / 35m / 60m`, budget
   shares `0.30 / 0.32 / 0.38`, and sampling weights `1.00 / 1.07 / 1.27`.

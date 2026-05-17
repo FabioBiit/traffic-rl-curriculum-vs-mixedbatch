@@ -1799,8 +1799,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         # ---- 6. Steering smoothness ----
         steer_delta = abs(ctrl.steer - ad.prev_steer)
-        if steer_delta < 0.1:
-            reward += 0.1   # smooth driving bonus
+        if steer_delta < 0.1 and speed_kmh > 5.0:
+            reward += 0.1   # smooth driving bonus (only when the vehicle is moving)
         elif steer_delta > 0.5:
             reward -= 0.3   # jerk penalty
         ad.prev_steer = ctrl.steer

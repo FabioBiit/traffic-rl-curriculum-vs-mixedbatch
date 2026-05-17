@@ -571,6 +571,39 @@
 
   Gate R1 (veicoli, cumulativo da episodes.jsonl vs R3): SR +≥2.0 pp, stuck+timeout −≥2.0 pp, collision/offroad ≤+1.0 pp. Canary da tenere d'occhio: la collision — è il rischio "shaping di velocità su tutta la rotta → più contatti". Fallback già nel piano se la collision sfora il gate: dimezzare i coefficienti sulle righe di shaping (start_gain e 0.04/0.15).
 
+### VALUTAZIONE R1 
+
+● Valutazione R1 — run carla_mappo_20260517_134652
+
+  Verdetto: R1 PASSA il gate veicoli — 4/4 + integrità. È il primo PASS dopo D3, H1, H2, H3, R3.
+
+  Integrità. 1950 record, 325 episodi × 6, 0 duplicati, 0 NaN/inf. seed=999, ~302k step, easy-lock → A/B single-knob pulito vs R3
+  (20260516_200545). R3 ricalcolato da disco in parallelo (numeri identici alla valutazione precedente).
+
+  Gate veicoli (cumulativo da episodes.jsonl, gate progetto standard — R1 mira a stuck+timeout, quindi vale il gate normale, non
+  adattato):
+
+  ┌─────────────────┬────────┬────────┬──────────┬────────┬─────────┐
+  │ Metrica veicoli │   R3   │   R1   │    Δ     │ Soglia │  Esito  │
+  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
+  │ Success rate    │ 22.70% │ 27.38% │ +4.69 pp │ ≥ +2.0 │ ✅ PASS │
+  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
+  │ Stuck+timeout   │ 46.63% │ 43.18% │ −3.45 pp │ ≤ −2.0 │ ✅ PASS │
+  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
+  │ Collision       │ 25.56% │ 24.10% │ −1.46 pp │ ≤ +1.0 │ ✅ PASS │
+  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
+  │ Offroad         │  5.11% │  5.33% │ +0.22 pp │ ≤ +1.0 │ ✅ PASS │
+  └─────────────────┴────────┴────────┴──────────┴────────┴─────────┘
+
+  Meccanismo — on-mechanism, sopra il rumore:
+  - +45 route-complete in valore assoluto (222→267) su ~stesso numero di episodi → non è effetto-denominatore (a differenza di H3, dove i completamenti erano identici).
+  - Il contributo maggiore viene dalla coorte timeout: −27 episodi (−2.71 pp) — esattamente il bersaglio di R1 (incentivo di velocità ora attivo oltre il 30% di rotta). Speed veicolo 11.53→13.04 km/h; la coorte timeout passa a 20 km/h (era 15.6).
+  - Canary collisione: non peggiora, migliora −1.46 pp. La preoccupazione "più velocità → più collisioni" non si è verificata — il gate safe_to_push (hazard<0.75) tiene.
+  - Chunk SR veicoli (6 chunk, ordine episodi): R3 3.7 22.1 16.6 31.9 34.4 27.6 vs R1 3.1 18.5 23.5 43.2 37.7 38.2. R1 è sopra nei chunk 3-6 e non ha il decadimento tardivo (chunk 6: 38.2 vs 27.6). I chunk 1-2 (R1 sotto) mostrano che un rumore di qualche pp c'è, ma la separazione cumulativa e tardiva lo supera.
+
+  Pedoni (riportati separati). SR 89.06%→85.03% (−4.03 pp), stuck 8.18%→12.41% (+4.23 pp). R1 non tocca _pedestrian_reward. Lettura: probabile rumore run-to-run — la SR pedoni ha oscillato 84.7 / 87.2 / 89.1 / 85.0 nelle ultime 4 run (banda ~4 pp), R3 era il picco alto e R1 è dentro la banda; possibile piccola componente di coupling MARL (veicoli più attivi → ambiente condiviso diverso). Non disambiguabile da una singola run, e non è nel gate (veicolo-centrico) — ma va sorvegliato. Nota: la SR congiunta 55.88→56.21 è piatta e maschera tutto → non usarla (measurement_rules).
+
+  Caveat: A/B single-run, rotte non-paired (bug hash() route seed); final_evaluation_completed=false → nessun dato Town05, come per tutta la serie
 
  ---
  
