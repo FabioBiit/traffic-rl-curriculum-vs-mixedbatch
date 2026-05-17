@@ -1757,7 +1757,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # ---- 5. Start/unblock shaping + no-advance pressure ----
         if not hold_for_light:
             alignment = self._route_alignment_to_next_waypoint(ad, el, transform)
-            route_completion = self._route_completion(ad)
             no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
             veh_ttc, veh_occ = self._path_hazard_risk(
                 ad,
@@ -1779,13 +1778,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if speed_kmh < 2.5:
                 reward -= 0.15  # idle penalty
 
-                if safe_to_push and route_completion < 0.3 and alignment > 0.25:
+                if safe_to_push and alignment > 0.25:
                     urgency = min(no_wp_steps / 200.0, 1.0)
                     start_gain = 0.20 + 0.30 * urgency
                     reward += start_gain * ctrl.throttle * alignment
                     reward -= start_gain * ctrl.brake
 
-            if safe_to_push and route_completion < 0.3 and alignment > 0.25:
+            if safe_to_push and alignment > 0.25:
                 target_min_speed = 8.0
                 if speed_kmh < target_min_speed:
                     reward -= 0.04 * (target_min_speed - speed_kmh) * alignment

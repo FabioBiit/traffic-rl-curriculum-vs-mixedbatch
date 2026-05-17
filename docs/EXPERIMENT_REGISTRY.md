@@ -28,8 +28,11 @@ per candidate.
 | H1+H1.1 | not promoted / not reverted | 20260515_175921 | Critic fix: `vf_clip_param` 10->1e6 + `vf_loss_coeff` 0.5->0.05. Mechanism confirmed (vehicle `vf_explained_var` ~0->0.87) but vehicle gate FAILS 3 of 4. Not promoted; kept as base for H2 (reverting restores a non-functional critic). |
 | H2 | not promoted / not reverted | 20260515_211055 | `gamma` 0.99->0.997 on the H1+H1.1 base. Hypothesis (longer horizon propagates the -50 collision penalty) falsified; vehicle gate FAILS 3 of 4. Not promoted; `gamma=0.997` kept as base for H3. |
 | H3 | not promoted / not reverted | 20260516_144007 | `entropy_coeff` schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base. Mechanism confirmed (vehicle final `entropy` 4.78->3.25) but vehicle gate FAILS 3 of 4; all deltas within run-to-run noise. Not promoted; schedule kept as base for R3. |
-| R3 | not promoted / not reverted / hypothesis falsified | 20260516_200545 | Vehicle collision penalty `carla_multi_agent_env.py:1748` `-50.0`->`-500.0` (vehicle only). Adapted R3 gate FAILS (SR +1.27, collision -0.23, stuck+timeout +2.28, offroad -3.32 pp vs H3). Hypothesis "collision tunable via penalty magnitude" falsified. Not promoted; `-500` kept as base for the observation experiment. |
-| Obs hazard-perception | pending (approved, not designed) | — | Vehicle observation change adding hazard / nearby-agent perception features. Targets the perception limit exposed by R3. Changes the 44D vehicle obs space; not checkpoint-comparable. Not yet designed. |
+| R3 | not promoted / not reverted / hypothesis falsified | 20260516_200545 | Vehicle collision penalty `carla_multi_agent_env.py:1748` `-50.0`->`-500.0` (vehicle only). Adapted R3 gate FAILS (SR +1.27, collision -0.23, stuck+timeout +2.28, offroad -3.32 pp vs H3). Hypothesis "collision tunable via penalty magnitude" falsified. Not promoted; `-500` kept as base for the next candidate `R1`. |
+| R1 | pending (next) | — | Reward shaping: remove the `route_completion < 0.3` gate in `_vehicle_reward` (~1760/1782/1788) so start/unblock and speed shaping stay active for the whole route. Targets the dominant stuck+timeout failure. Checkpoint-comparable; single-knob A/B vs run `20260516_200545`. |
+| R2 | pending | — | Reward shaping: gate the `+0.1` smooth-steering bonus in `_vehicle_reward` (~1803) on `speed_kmh > 5.0`. Checkpoint-comparable. |
+| Route-len bugfix | pending | — | Env bugfix: enforce the docstring's `2.0x` upper bound on vehicle route length in `route_planner.py` `plan_vehicle_route` (~184); only the `0.5x` lower bound is currently checked. Checkpoint-comparable; separate A/B (changes the route-length distribution). |
+| O1+O2 | pending (obs change; applied last) | — | Vehicle obs `44D -> 47D`: O1 adds normalized `no_wp_steps` + `loop_penalty_active` flag, O2 adds normalized time-remaining. Markov state-aliasing fixes, not hazard/perception features. Not checkpoint-comparable; one retrain-from-scratch 47D variant. |
 
 ---
 
@@ -417,10 +420,86 @@ The policy did respond to the reward change (offroad -3.32 pp; stuck -7.17 pp
 converted into timeout +9.45 pp; `route%` 0.44->0.50; entropy down) but not on
 the collision axis — collision avoidance is not learnable from the current 44D
 vehicle observation (a perception limit, not a reward-weight problem). Not
-promoted; `-500` retained (not reverted) by user decision as the base for the
-planned observation (hazard-perception) experiment, the intervention expected
-to make the penalty effective. Reward shaping for the collision axis is
-exhausted.
+promoted; `-500` retained (not reverted) by user decision as the experimental
+base for the next candidate `R1`. Collision-axis reward shaping (penalty
+magnitude) is exhausted, but `R1` and `R2` remain untested reward-shaping
+candidates targeting the dominant stuck+timeout failure.
 
 **Verification:** `python -m compileall carla_core/envs/carla_multi_agent_env.py`
 passed; `git diff --check` clean; the diff is the single line at `:1748`.
+
+---
+
+## R1 — Remove the route_completion < 0.3 Reward Gate
+
+**Type:** Reward shaping
+**Status:** Pending (immediate next candidate)
+**Files:** `carla_core/envs/carla_multi_agent_env.py` — `_vehicle_reward()` (~1760, ~1782, ~1788)
+**Comparability:** Checkpoint-comparable (no obs/architecture change)
+
+**Change:** Drop the `route_completion < 0.3` guard so the start/unblock and
+`target_min_speed` shaping stay active for the whole route, not only the first
+30%. The `safe_to_push` (hazard < 0.75) and `alignment > 0.25` guards remain.
+
+**Rationale:** The timeout cohort sits at mean `route_completion` ~0.5-0.6 —
+past the `0.3` guard — so it currently has no speed incentive. Targets the
+dominant stuck+timeout failure, not the collision axis.
+
+**A/B:** Single-knob vs run `20260516_200545` (R3); project gate.
+See `PROPOSED_PLAN.md` Punto 3 for the exact surgical edits.
+
+---
+
+## R2 — Gate the Smooth-Steering Bonus on Speed
+
+**Type:** Reward shaping
+**Status:** Pending
+**Files:** `carla_core/envs/carla_multi_agent_env.py` — `_vehicle_reward()` (~1803)
+**Comparability:** Checkpoint-comparable
+
+**Change:** Pay the `+0.1` smooth-steering bonus only when `speed_kmh > 5.0`.
+The jerk penalty (`steer_delta > 0.5 -> -0.3`) is unchanged.
+
+**Rationale:** The bonus is currently unconditional, so a stationary vehicle
+holding the wheel still collects `+0.1/step`, partly cancelling the `-0.15`
+idle penalty. Purely defensive — removes a reward-hacking incentive for
+immobility. See `PROPOSED_PLAN.md` Punto 4.
+
+---
+
+## Route-len Bugfix — Enforce the Route-Length Upper Bound
+
+**Type:** Environment bugfix
+**Status:** Pending
+**Files:** `carla_core/envs/route_planner.py` — `plan_vehicle_route()` (~184)
+**Comparability:** Checkpoint-comparable; separate A/B condition (it changes
+the realized route-length distribution)
+
+**Change:** Reject routes with `route_len > target_distance_m * 2.0`. The
+function docstring already promises validation in `[0.5x, 2.0x]`, but the code
+checks only the `0.5x` lower bound, so an "easy 15m" route can be arbitrarily
+long.
+
+**Rationale:** Unbounded route length inflates timeouts and decalibrates
+curriculum difficulty. See `PROPOSED_PLAN.md` Punto 5.
+
+---
+
+## O1+O2 — Markov State-Aliasing Observations (44D -> 47D)
+
+**Type:** Observation change (dimensionality-changing)
+**Status:** Pending (applied last; one retrain-from-scratch 47D variant)
+**Files:** `carla_core/envs/carla_multi_agent_env.py` (obs constant + `_get_vehicle_obs`),
+`carla_core/agents/centralized_critic.py` (obs constant)
+**Comparability:** NOT checkpoint-comparable — breaks checkpoints, requires a
+retrain from scratch; not directly comparable to the 44D trunk
+
+**Change:**
+- O1 (44D -> 46D): `obs[44] = min(no_wp_steps / 300, 1)`, `obs[45] = float(loop_penalty_active)`.
+- O2 (46D -> 47D): `obs[46] = 1 - min(step_count / max_steps, 1)` (time-remaining).
+
+**Rationale:** The reward already penalizes `no_wp_steps > 100` and
+`loop_penalty_active`, and the episode is truncated at a fixed horizon, but
+none of these is in the observation — a Markov violation that causes
+state-aliasing in exactly the stuck/timeout cohorts. These are state-aliasing
+fixes, NOT hazard/perception features. See `PROPOSED_PLAN.md` Punti 6-7.
