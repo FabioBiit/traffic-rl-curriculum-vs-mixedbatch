@@ -30,8 +30,8 @@ per candidate.
 | H3 | not promoted / not reverted | 20260516_144007 | `entropy_coeff` schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base. Mechanism confirmed (vehicle final `entropy` 4.78->3.25) but vehicle gate FAILS 3 of 4; all deltas within run-to-run noise. Not promoted; schedule kept as base for R3. |
 | R3 | not promoted / not reverted / hypothesis falsified | 20260516_200545 | Vehicle collision penalty `carla_multi_agent_env.py:1748` `-50.0`->`-500.0` (vehicle only). Adapted R3 gate FAILS (SR +1.27, collision -0.23, stuck+timeout +2.28, offroad -3.32 pp vs H3). Hypothesis "collision tunable via penalty magnitude" falsified. Not promoted; `-500` kept as base for the next candidate `R1`. |
 | R1 | promoted (trunk) | 20260517_134652 | Reward shaping: dropped the `route_completion < 0.3` guard in `_vehicle_reward` so start/unblock and `target_min_speed` shaping stay active for the whole route. Single-knob A/B vs R3 `20260516_200545`. Vehicle gate PASSES 4/4: SR +4.69 pp (22.70->27.38), stuck+timeout -3.45 pp (46.63->43.18), collision -1.46 pp, offroad +0.22 pp. +45 route-completions in absolute count (222->267); integrity OK (1950 records, 0 dups, 0 NaN/inf). Pedestrians (separate): SR -4.03 pp -- likely run-to-run noise, to confirm with seeds. First gate pass since `D2`; promoted into the trunk, base for `R2`. |
-| R2 | pending | — | Reward shaping: gate the `+0.1` smooth-steering bonus in `_vehicle_reward` (~1803) on `speed_kmh > 5.0`. Checkpoint-comparable. |
-| Route-len bugfix | pending | — | Env bugfix: enforce the docstring's `2.0x` upper bound on vehicle route length in `route_planner.py` `plan_vehicle_route` (~184); only the `0.5x` lower bound is currently checked. Checkpoint-comparable; separate A/B (changes the route-length distribution). |
+| R2 | retained provisional / not promoted | 20260517_164707 | Reward shaping: gate the `+0.1` smooth-steering bonus in `_vehicle_reward` (~1803) on `speed_kmh > 5.0`. Checkpoint-comparable. Formal vehicle gate vs `R1` baseline `20260517_134652` FAILS: SR -1.85 pp, stuck+timeout -2.73 pp, collision +1.43 pp, offroad +3.15 pp. User decision: no immediate revert; keep provisionally because immobility improved, but not a validated promotion. |
+| Route-len bugfix | pending (code applied; awaiting A/B run) | — | Env bugfix: enforce the docstring's `2.0x` upper bound on vehicle route length in `route_planner.py` `plan_vehicle_route` (~184); previously only the `0.5x` lower bound was checked. Code applied 2026-05-17 (one-line change; `compileall` OK, `git diff --check` clean), awaiting the A/B run vs `20260517_164707`. Checkpoint-comparable; separate A/B (changes the route-length distribution). |
 | O1+O2 | pending (obs change; applied last) | — | Vehicle obs `44D -> 47D`: O1 adds normalized `no_wp_steps` + `loop_penalty_active` flag, O2 adds normalized time-remaining. Markov state-aliasing fixes, not hazard/perception features. Not checkpoint-comparable; one retrain-from-scratch 47D variant. |
 
 ---
@@ -474,7 +474,7 @@ See `PROPOSED_PLAN.md` Punto 3 for the exact surgical edits.
 ## R2 — Gate the Smooth-Steering Bonus on Speed
 
 **Type:** Reward shaping
-**Status:** Pending
+**Status:** Retained provisional / not promoted
 **Files:** `carla_core/envs/carla_multi_agent_env.py` — `_vehicle_reward()` (~1803)
 **Comparability:** Checkpoint-comparable
 
@@ -486,20 +486,60 @@ holding the wheel still collects `+0.1/step`, partly cancelling the `-0.15`
 idle penalty. Purely defensive — removes a reward-hacking incentive for
 immobility. See `PROPOSED_PLAN.md` Punto 4.
 
+**Evaluation append (2026-05-17):** run `carla_mappo_20260517_164707`, compared
+against the new `R1` baseline `carla_mappo_20260517_134652`. `run_config.json`
+is identical on experimental fields; code-level attribution is inferred from
+the commit timing (`R1` before `134652`, `R2` before `164707`) because run
+metadata do not store a git commit hash. `results.json.evaluation` is empty, so
+this is training-only evidence.
+
+**Integrity:** `342` episodes x `6` records = `2052` agent records; `0`
+duplicates; `0` bad episode counts; `0` NaN/inf.
+
+**Vehicle cumulative vs `R1` baseline:** SR `27.38->25.54` (`-1.85 pp`),
+collision `24.10->25.54` (`+1.43 pp`), stuck `25.03->23.59` (`-1.44 pp`),
+timeout `18.15->16.86` (`-1.29 pp`), stuck+timeout `43.18->40.45`
+(`-2.73 pp`), offroad `5.33->8.48` (`+3.15 pp`), route completion
+`0.4949->0.4959`, speed `13.04->15.25 km/h`, `no_wp_steps`
+`232.94->204.84`.
+
+**Equal-episode check:** truncating `R2` to the first `325` episodes preserves
+the verdict vs `134652`: SR `-2.15 pp`, stuck+timeout `-2.05 pp`, collision
+`+0.92 pp`, offroad `+3.28 pp`.
+
+**Gate result:** formal FAIL. The intended mechanism is visible (less
+immobility, higher speed, fewer `no_wp_steps`), but it does not convert into
+success rate and it breaches safety canaries, especially offroad. User decision:
+do not revert immediately; keep as a provisional experimental base, but do not
+count as accepted trunk until follow-up validation brings collision/offroad
+within the `+1.0 pp` canary.
+
+**Old baseline comparison:** `20260517_164707` vs `20260511_153859` is
+historical only, not causal. The old baseline differs in route distance,
+traffic density, optimizer settings, entropy schedule, and curriculum-lock
+behavior. Vehicle SR is `+5.01 pp` and stuck+timeout is `-16.69 pp`, but
+collision is `+9.13 pp` and offroad is `+2.55 pp`; do not cite this as an
+isolated `R2` effect.
+
 ---
 
 ## Route-len Bugfix — Enforce the Route-Length Upper Bound
 
 **Type:** Environment bugfix
-**Status:** Pending
+**Status:** Pending (code applied; awaiting A/B run)
 **Files:** `carla_core/envs/route_planner.py` — `plan_vehicle_route()` (~184)
 **Comparability:** Checkpoint-comparable; separate A/B condition (it changes
 the realized route-length distribution)
 
 **Change:** Reject routes with `route_len > target_distance_m * 2.0`. The
-function docstring already promises validation in `[0.5x, 2.0x]`, but the code
-checks only the `0.5x` lower bound, so an "easy 15m" route can be arbitrarily
-long.
+function docstring already promised validation in `[0.5x, 2.0x]`, but the code
+checked only the `0.5x` lower bound, so an "easy 15m" route could be
+arbitrarily long; the upper bound is now enforced (rejected routes fall back to
+the legacy `wp.next()` chain).
+
+**Applied (2026-05-17):** One-line change in `plan_vehicle_route` plus the log
+message; `python -m compileall` OK, `git diff --check` clean. Not yet run or
+evaluated.
 
 **Rationale:** Unbounded route length inflates timeouts and decalibrates
 curriculum difficulty. See `PROPOSED_PLAN.md` Punto 5.

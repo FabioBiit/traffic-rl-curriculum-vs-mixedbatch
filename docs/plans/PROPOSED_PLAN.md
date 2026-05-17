@@ -571,40 +571,6 @@
 
   Gate R1 (veicoli, cumulativo da episodes.jsonl vs R3): SR +≥2.0 pp, stuck+timeout −≥2.0 pp, collision/offroad ≤+1.0 pp. Canary da tenere d'occhio: la collision — è il rischio "shaping di velocità su tutta la rotta → più contatti". Fallback già nel piano se la collision sfora il gate: dimezzare i coefficienti sulle righe di shaping (start_gain e 0.04/0.15).
 
-### VALUTAZIONE R1 
-
-● Valutazione R1 — run carla_mappo_20260517_134652
-
-  Verdetto: R1 PASSA il gate veicoli — 4/4 + integrità. È il primo PASS dopo D3, H1, H2, H3, R3.
-
-  Integrità. 1950 record, 325 episodi × 6, 0 duplicati, 0 NaN/inf. seed=999, ~302k step, easy-lock → A/B single-knob pulito vs R3
-  (20260516_200545). R3 ricalcolato da disco in parallelo (numeri identici alla valutazione precedente).
-
-  Gate veicoli (cumulativo da episodes.jsonl, gate progetto standard — R1 mira a stuck+timeout, quindi vale il gate normale, non
-  adattato):
-
-  ┌─────────────────┬────────┬────────┬──────────┬────────┬─────────┐
-  │ Metrica veicoli │   R3   │   R1   │    Δ     │ Soglia │  Esito  │
-  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
-  │ Success rate    │ 22.70% │ 27.38% │ +4.69 pp │ ≥ +2.0 │ ✅ PASS │
-  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
-  │ Stuck+timeout   │ 46.63% │ 43.18% │ −3.45 pp │ ≤ −2.0 │ ✅ PASS │
-  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
-  │ Collision       │ 25.56% │ 24.10% │ −1.46 pp │ ≤ +1.0 │ ✅ PASS │
-  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
-  │ Offroad         │  5.11% │  5.33% │ +0.22 pp │ ≤ +1.0 │ ✅ PASS │
-  └─────────────────┴────────┴────────┴──────────┴────────┴─────────┘
-
-  Meccanismo — on-mechanism, sopra il rumore:
-  - +45 route-complete in valore assoluto (222→267) su ~stesso numero di episodi → non è effetto-denominatore (a differenza di H3, dove i completamenti erano identici).
-  - Il contributo maggiore viene dalla coorte timeout: −27 episodi (−2.71 pp) — esattamente il bersaglio di R1 (incentivo di velocità ora attivo oltre il 30% di rotta). Speed veicolo 11.53→13.04 km/h; la coorte timeout passa a 20 km/h (era 15.6).
-  - Canary collisione: non peggiora, migliora −1.46 pp. La preoccupazione "più velocità → più collisioni" non si è verificata — il gate safe_to_push (hazard<0.75) tiene.
-  - Chunk SR veicoli (6 chunk, ordine episodi): R3 3.7 22.1 16.6 31.9 34.4 27.6 vs R1 3.1 18.5 23.5 43.2 37.7 38.2. R1 è sopra nei chunk 3-6 e non ha il decadimento tardivo (chunk 6: 38.2 vs 27.6). I chunk 1-2 (R1 sotto) mostrano che un rumore di qualche pp c'è, ma la separazione cumulativa e tardiva lo supera.
-
-  Pedoni (riportati separati). SR 89.06%→85.03% (−4.03 pp), stuck 8.18%→12.41% (+4.23 pp). R1 non tocca _pedestrian_reward. Lettura: probabile rumore run-to-run — la SR pedoni ha oscillato 84.7 / 87.2 / 89.1 / 85.0 nelle ultime 4 run (banda ~4 pp), R3 era il picco alto e R1 è dentro la banda; possibile piccola componente di coupling MARL (veicoli più attivi → ambiente condiviso diverso). Non disambiguabile da una singola run, e non è nel gate (veicolo-centrico) — ma va sorvegliato. Nota: la SR congiunta 55.88→56.21 è piatta e maschera tutto → non usarla (measurement_rules).
-
-  Caveat: A/B single-run, rotte non-paired (bug hash() route seed); final_evaluation_completed=false → nessun dato Town05, come per tutta la serie
-
  ---
  
 ### Punto 4 — R2: condizionare il bonus di sterzo fluido alla velocità
@@ -627,11 +593,11 @@
              reward -= 0.3   # jerk penalty
 
  Razionale: il bonus +0.1/step è incondizionato → un veicolo fermo con sterzo costante incassa ~+100/episodio (= un waypoint),
- cancellando in parte la penalità idle −0.15. speed_kmh è già calcolato a inizio funzione (riga ~1722). La jerk-penalty resta invariata
-  (la brusquezza è negativa a qualsiasi velocità).
+ cancellando in parte la penalità idle −0.15. speed_kmh è già calcolato a inizio funzione (riga ~1722). La jerk-penalty resta invariata (la brusquezza è negativa a qualsiasi velocità).
 
  ---
- Punto 5 — Bugfix: enforce upper bound lunghezza rotta
+ 
+### Punto 5 — Bugfix: enforce upper bound lunghezza rotta
 
  - File: carla_core/envs/route_planner.py — funzione plan_vehicle_route (righe ~184-187)
  - Esperimento: bugfix env · confrontabile col trunk: sì
@@ -655,9 +621,7 @@
              )
              return None
 
- Razionale: la docstring promette validazione in [0.5x, 2.0x] ma il codice controlla solo il lower bound → rotte "easy 15 m" possono
- essere arbitrariamente lunghe (A* che gira l'isolato), gonfiando i timeout e decalibrando la difficoltà del curriculum. Rotte scartate
-  ricadono sul fallback legacy wp.next().
+ Razionale: la docstring promette validazione in [0.5x, 2.0x] ma il codice controlla solo il lower bound → rotte "easy 15 m" possono essere arbitrariamente lunghe (A* che gira l'isolato), gonfiando i timeout e decalibrando la difficoltà del curriculum. Rotte scartate ricadono sul fallback legacy wp.next().
 
  ---
  Punto 6 — O1: osservabilità dello stato "stuck" (Markov)
@@ -795,7 +759,7 @@
   1. Non promuovere H3 (registro: not promoted, gate FAIL 3/4 — di fatto risultato nullo entro il rumore).
   2. Prossimo step → R3 (penalità collisione veicolo −50 → −500 in carla_multi_agent_env.py:1748): è l'unico candidato che attacca il binding constraint dimostrato. La serie H ha esaurito il lato ottimizzatore.
 
-### VALUTAZIONE RUN BASE + R3
+### VALUTAZIONE R3
 
 ● Valutazione run R3 carla_mappo_20260516_200545
 
@@ -835,8 +799,84 @@
 
   Raccomandazione: R3 non promosso; consiglio di revertare −500→−50 (lo scopo di R3 è falsificato; portare nella tesi un termine di reward 10× non giustificabile è indifendibile; i guadagni marginali sono nel rumore). Decido con te qui sotto — R3 ha comunque l'SR più alta della serie e ha ridotto l'offroad, quindi è una scelta reale.
 
- ---
- 
+### VALUTAZIONE R1 
+
+● Valutazione R1 — run carla_mappo_20260517_134652
+
+  Verdetto: R1 PASSA il gate veicoli — 4/4 + integrità. È il primo PASS dopo D3, H1, H2, H3, R3.
+
+  Integrità. 1950 record, 325 episodi × 6, 0 duplicati, 0 NaN/inf. seed=999, ~302k step, easy-lock → A/B single-knob pulito vs R3
+  (20260516_200545). R3 ricalcolato da disco in parallelo (numeri identici alla valutazione precedente).
+
+  Gate veicoli (cumulativo da episodes.jsonl, gate progetto standard — R1 mira a stuck+timeout, quindi vale il gate normale, non
+  adattato):
+
+  ┌─────────────────┬────────┬────────┬──────────┬────────┬─────────┐
+  │ Metrica veicoli │   R3   │   R1   │    Δ     │ Soglia │  Esito  │
+  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
+  │ Success rate    │ 22.70% │ 27.38% │ +4.69 pp │ ≥ +2.0 │ ✅ PASS │
+  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
+  │ Stuck+timeout   │ 46.63% │ 43.18% │ −3.45 pp │ ≤ −2.0 │ ✅ PASS │
+  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
+  │ Collision       │ 25.56% │ 24.10% │ −1.46 pp │ ≤ +1.0 │ ✅ PASS │
+  ├─────────────────┼────────┼────────┼──────────┼────────┼─────────┤
+  │ Offroad         │  5.11% │  5.33% │ +0.22 pp │ ≤ +1.0 │ ✅ PASS │
+  └─────────────────┴────────┴────────┴──────────┴────────┴─────────┘
+
+  Meccanismo — on-mechanism, sopra il rumore:
+  - +45 route-complete in valore assoluto (222→267) su ~stesso numero di episodi → non è effetto-denominatore (a differenza di H3, dove i completamenti erano identici).
+  - Il contributo maggiore viene dalla coorte timeout: −27 episodi (−2.71 pp) — esattamente il bersaglio di R1 (incentivo di velocità ora attivo oltre il 30% di rotta). Speed veicolo 11.53→13.04 km/h; la coorte timeout passa a 20 km/h (era 15.6).
+  - Canary collisione: non peggiora, migliora −1.46 pp. La preoccupazione "più velocità → più collisioni" non si è verificata — il gate safe_to_push (hazard<0.75) tiene.
+  - Chunk SR veicoli (6 chunk, ordine episodi): R3 3.7 22.1 16.6 31.9 34.4 27.6 vs R1 3.1 18.5 23.5 43.2 37.7 38.2. R1 è sopra nei chunk 3-6 e non ha il decadimento tardivo (chunk 6: 38.2 vs 27.6). I chunk 1-2 (R1 sotto) mostrano che un rumore di qualche pp c'è, ma la separazione cumulativa e tardiva lo supera.
+
+  Pedoni (riportati separati). SR 89.06%→85.03% (−4.03 pp), stuck 8.18%→12.41% (+4.23 pp). R1 non tocca _pedestrian_reward. Lettura: probabile rumore run-to-run — la SR pedoni ha oscillato 84.7 / 87.2 / 89.1 / 85.0 nelle ultime 4 run (banda ~4 pp), R3 era il picco alto e R1 è dentro la banda; possibile piccola componente di coupling MARL (veicoli più attivi → ambiente condiviso diverso). Non disambiguabile da una singola run, e non è nel gate (veicolo-centrico) — ma va sorvegliato. Nota: la SR congiunta 55.88→56.21 è piatta e maschera tutto → non usarla (measurement_rules).
+
+  Caveat: A/B single-run, rotte non-paired (bug hash() route seed); final_evaluation_completed=false → nessun dato Town05, come per tutta la serie
+
+### VALUTAZIONE R2 
+
+● Valutazione R2 — run carla_mappo_20260517_164707
+
+    Verifica (ricalcolo da episodes.jsonl):
+
+  ┌───────────────────────────┬─────────────┬──────────────────┬─────────────────┐
+  │                           │ R1 (325 ep) │ R2 full (342 ep) │ R2 primi 325 ep │
+  ├───────────────────────────┼─────────────┼──────────────────┼─────────────────┤
+  │ stuck+timeout (conteggio) │         421 │              415 │             401 │
+  ├───────────────────────────┼─────────────┼──────────────────┼─────────────────┤
+  │ stuck+timeout (rate)      │      43.18% │           40.45% │          41.13% │
+  ├───────────────────────────┼─────────────┼──────────────────┼─────────────────┤
+  │ no_wp_steps (media)       │      232.94 │           204.84 │          210.08 │
+  └───────────────────────────┴─────────────┴──────────────────┴─────────────────┘
+
+  A episodi pari (975 ep-veicolo entrambi) R2 ha 401 stuck+timeout vs 421 di R1 — 20 in meno, e no_wp_steps −22.86. Il mio confronto del
+   turno scorso (415 vs 421 → "piatto") metteva a paragone due run di lunghezza diversa (1026 vs 975 ep-veicolo): quello era l'errore.
+  Lo "stuck+timeout PASS" non è un artefatto di denominatore e l'immobilità non è piatta — R2 ha davvero ridotto l'immobilità di ~2 pp,
+  come da progetto.
+
+  Gate a episodi pari (R2 primi-325 vs R1): SR −2.15 (FAIL), stuck+timeout −2.05 (PASS, reale), collision +0.92 (PASS, sotto canary),
+  offroad +3.28 (FAIL).
+
+  Quindi non tocco i doc: la voce R2 di Codex (CLAUDE.md, AGENTS.md, EXPERIMENT_REGISTRY.md) è già accurata — ha la troncatura a episodi
+   pari e il verdetto corretto. Inserire "artefatto di denominatore" ci metterebbe dentro il mio errore. Non serve nessuna correzione.
+
+  Verdetto R2 corretto
+
+  R2 fallisce il gate, ma per le ragioni giuste: offroad +3.3 pp (regressione reale e strutturale — resta al 6-10% nei chunk dove R1 lo
+  azzera) e SR −2.15 pp. La collision è borderline/rumorosa (+1.43 full, +0.92 a episodi pari — straddle del canary). Lo stuck+timeout
+  migliora davvero ~2 pp: R2 ha fatto ciò per cui era pensato (meno immobilità), ma la mobilità extra è finita in offroad invece che in
+  completamenti. "Retained provisional / not promoted" resta la classificazione corretta e i doc la riflettono bene. La mia
+  raccomandazione di revert del turno scorso era basata su un quadro troppo nero — il quadro reale è "effetto misto"; la tua scelta di
+  tenerlo provvisorio è difendibile.
+
+  Come procedere
+
+  R2 è un candidato fallito/provvisorio — non va trattato come base validata. Due punti reali ancora aperti, ed entrambi i doc di Codex lo dicono: il rumore run-to-run (ormai dimostrato) e le rotte non-paired (hash seed).
+
+  Mia raccomandazione: confermare R1 con 2 seed prima di proseguire. R1 è il trunk e l'unico PASS pulito; due valutazioni di fila (H3, R2) hanno richiesto controlli equal-episode per non farsi ingannare — è il momento di consolidare R1 invece di impilare. Poi Punto 5 (bugfix route-len, che è un fix d'ambiente, gate a sé).
+
+
+ --- 
  
  ## Verifica
 
@@ -945,78 +985,54 @@
   porterebbe nella pipeline del progetto, così compare_results_carla.py può usarlo senza TB. Dimmi se vuoi che lo aggiunga al piano come punto extra.
  
 
-#########################################################RECAP###################################################################
- 
+#########################################################RECAP##################################################################
+
 ### RECAP 17/05/2026
 
- # Goal: improve the CARLA MAPPO vehicle policy by following the plan in PROPOSED_PLAN.md. R3 was evaluated (gate fail, collision flat) and recorded; next planned point is R1, removing the route_completion < 0.3 reward gate. Awaiting your OK to fix the docs and apply R1.
+ ### RACAP OPEN-POINTS
 
- Ho letto PROPOSED_PLAN.md per intero (966 righe). Hai ragione: c'è un piano chirurgico ordinato e dopo R3 il prossimo punto è Punto 3 — R1. Mi sono sbagliato.
+  Dove siamo. Trunk attivo: C0 + C1 + D2 + R1. La base sperimentale porta anche H1/H2/H3/R3 (retained, non promossi) e R2 (provvisorio). Codice attuale in _vehicle_reward: R1 + R2.
 
-  Perché è successo — onesto, senza scuse strane. Dopo R3 ho valutato il suo esito in isolamento e ho concluso da zero "collisione non tunabile → percezione → cambio obs", senza riaprire il piano (che avevi tenuto visibile tutta la sessione). Due errori concreti: 1. Ho saltato Punti 3-4-5 (R1, R2, bugfix) — che attaccano il fallimento dominante (stuck+timeout ~54%), non la collisione. Nei doc ho scritto "reward shaping esaurito": falso — R1 e R2 sono reward shaping e sono ancora da fare.
-  2. Ho etichettato l'obs change "feature hazard": sbagliato. I Punti 6-7 sono O1 (osservabilità stuck: no_wp_norm + loop_flag) e O2 (tempo residuo) — fix di state-aliasing Markov, non percezione hazard.
+  Stato dei Punti di piano:
 
-  Stato reale secondo il piano:
+  ┌─────────────┬─────────────────────────────────────┬────────────────────────────────────────────┐
+  │    Punto    │                Cosa                 │                   Stato                    │
+  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
+  │ 1 — H1+H1.1 │ vf_clip_param / vf_loss_coeff       │ fatto — non promosso, retained come base   │
+  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
+  │ 2 — H2      │ gamma 0.99→0.997                    │ fatto — non promosso, ipotesi falsificata  │
+  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
+  │ 3 — R1      │ rimuove gate route_completion < 0.3 │ fatto — PROMOSSO (unico PASS)              │
+  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
+  │ 4 — R2      │ bonus sterzo gated su speed > 5     │ fatto — non promosso, retained provvisorio │
+  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
+  │ 8 — H3      │ schedule entropy                    │ fatto — non promosso, retained             │
+  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
+  │ (R3)        │ collisione −50→−500                 │ fatto — non promosso, falsificato          │
+  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
+  │ 5           │ bugfix route-len                    │ 🔵 APERTO                                  │
+  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
+  │ 6+7         │ O1+O2 — obs 44D→47D                 │ 🔵 APERTO                                  │
+  └─────────────┴─────────────────────────────────────┴────────────────────────────────────────────┘
 
-  ┌─────────┬─────────────────────────────────────────────────────────────────┬─────────────┐
-  │  Punto  │                               ID                                │    Stato    │
-  ├─────────┼─────────────────────────────────────────────────────────────────┼─────────────┤
-  │ 1       │ H1+H1.1 (vf_clip/vf_loss_coeff)                                 │ ✅ fatto    │
-  ├─────────┼─────────────────────────────────────────────────────────────────┼─────────────┤
-  │ 2       │ H2 (gamma 0.997)                                                │ ✅ fatto    │
-  ├─────────┼─────────────────────────────────────────────────────────────────┼─────────────┤
-  │ 8 (opz) │ H3 (schedule entropy)                                           │ ✅ fatto    │
-  ├─────────┼─────────────────────────────────────────────────────────────────┼─────────────┤
-  │ —       │ R3 (collisione −50→−500)                                        │ ✅ fatto    │
-  ├─────────┼─────────────────────────────────────────────────────────────────┼─────────────┤
-  │ 3       │ R1 — rimuovere il gate route_completion < 0.3                   │ ⬅️  PROSSIMO │
-  ├─────────┼─────────────────────────────────────────────────────────────────┼─────────────┤
-  │ 4       │ R2 — bonus sterzo fluido solo se speed_kmh > 5                  │ da fare     │
-  ├─────────┼─────────────────────────────────────────────────────────────────┼─────────────┤
-  │ 5       │ bugfix route_planner — upper bound 2.0× lunghezza rotta         │ da fare     │
-  ├─────────┼─────────────────────────────────────────────────────────────────┼─────────────┤
-  │ 6+7     │ O1+O2 — obs 44D→47D (insieme, per ultimi: rompono i checkpoint) │ da fare     │
-  └─────────┴─────────────────────────────────────────────────────────────────┴─────────────┘
+  Aperti trasversali (non numerati, ma reali)
 
-  Conseguenza sui doc: le voci "Obs hazard-perception" / "next = obs change" che ho appena scritto in CLAUDE.md, AGENTS.md,
-  EXPERIMENT_REGISTRY.md e nel .docx sono sbagliate vs il piano — vanno corrette in R1 → R2 → bugfix → O1+O2.
+  - Bug determinismo route-seed (hash(ad.agent_id)) — le run non sono route-paired tra processi.
+  - Conferma multi-seed di R1 — R1 è promosso su una run singola; il calo SR pedoni e il rumore run-to-run restano da chiarire.
+  - Final eval Town05 — mai eseguita; tutte le run hanno final_evaluation_completed=false.  
 
-  Come mi riallineo — proposta: 1. Correggo i 4 doc: sostituisco la voce errata "Obs hazard-perception" con i candidati reali del piano (R1, R2, bugfix route-len, O1+O2) come pending, nell'ordine corretto.
-  2. Eseguo Punto 3 — R1 esattamente come da piano: i 3 micro-edit in _vehicle_reward (rimuovere route_completion =
-  self._route_completion(ad) ~1760; togliere il gate route_completion < 0.3 da ~1782 e ~1788). Checkpoint-comparabile, single-knob A/B vs 20260516_200545 (run R3), con freeze git status + compileall.
+  I 2 Punti aperti
 
-  Confermi? Parto dalla correzione dei doc, poi R1.
+  -> Punto 5 — Bugfix route-len (route_planner.py, plan_vehicle_route ~184). Una riga: aggiungere il reject route_len > target × 2.0. La docstring promette [0.5x, 2.0x] ma il codice controlla solo il lower bound 0.5x → rotte "easy 15m" possono essere arbitrariamente lunghe, gonfiando i timeout e decalibrando la difficoltà. Tipo: bugfix d'ambiente, checkpoint-comparabile, ma A/B a sé (cambia la distribuzione della lunghezza-rotta).
+
+  -> Punti 6+7 — O1+O2 (carla_multi_agent_env.py cost. riga 83 + centralized_critic.py riga 54 + _get_vehicle_obs). Obs veicolo 44D→47D: O1 = no_wp_steps norm + flag loop_penalty_active; O2 = tempo residuo. Fix di state-aliasing di Markov. Cambia lo spazio osservazione → NON checkpoint-comparabile, retrain da zero; da applicare insieme e per ultimi.
+
+  Candidato di piano in sospeso
+
+  - Full path curriculum — la run di curriculum vera (difficulty=path, niente --lock-curriculum-level, 15/35/60m, budget 0.30/0.32/0.38, pesi 1.00/1.07/1.27, ~3M step). È l'esperimento che risponde alla domanda di tesi (curriculum vs mixed-batch); finora tutte le run sono easy-lock.
   
-### UPDATE PLAN
 
-  Cosa è stato corretto
-
-  In tutti i doc, la voce stale "Obs hazard-perception / next = obs change" è sostituita con la sequenza reale del piano: R1 → R2 → bugfix route-len → O1+O2, con R1 candidato immediato. O1/O2 sono ora descritti per quello che sono — fix di state-aliasing di Markov (no_wp_steps, loop flag, tempo residuo) — non feature di percezione hazard.
-
-  File: CLAUDE.md
-  Modifiche: 5 edit: tail R3 e "next planned" in current_known_state + current_accepted_trunk; riga registro Obs hazard-perception → 4 righe R1/R2/Route-len/O1+O2.
-  ────────────────────────────────────────
-  File: AGENTS.md
-  Modifiche: Le stesse 5 edit (file mantenuto sincronizzato con CLAUDE.md).
-  ────────────────────────────────────────
-  File: docs/EXPERIMENT_REGISTRY.md
-  Modifiche: Tabella di sintesi (riga R3 + riga obs→4 righe), tail della sezione R3, + 4 nuove sezioni di dettaglio R1/R2/Route-len bugfix/O1+O2 che rimandano a PROPOSED_PLAN.md Punti 3-7.
-  ────────────────────────────────────────
-  File: reports/carla_finetuning_maggio_2026.docx
-  Modifiche: p110 (chiusura R3), p111 ("Quadro e prossimo passo"), tabella registro riga 15→R1 + 3 righe nuove (R2/Route-len/O1+O2, formattazione di riga clonata da quella esistente).
-
-  Ho anche corretto, dove compariva, l'affermazione "reward shaping esaurito": ora dice che è esaurita la magnitudo della penalità collisione, ma R1/R2 restano reward shaping non testato, mirato al fallimento dominante stuck+timeout.
-
-  Verifica: git diff --check pulito (i warning LF→CRLF sono normali su Windows); .docx riaperto e verificato (tabella 16→19 righe, p110/p111 corretti). Nessun file Python toccato.
-
-  Un punto da decidere (non risolto dal RECAP)
-
-  La penalità collisione -500: il RECAP raccomandava di revertarla a -50 ("portare in tesi un termine 10× non giustificabile è
-  indifendibile"), ma rinviava la decisione a te — e CLAUDE.md la documenta come "retained by user decision". Nei doc l'ho lasciata -500 (retained), correggendo solo la motivazione: da "base per l'esperimento obs" a "base sperimentale per R1". È coerente comunque, perché R1 è un A/B single-knob sul run R3 (20260516_200545), che ha -500. Ma se vuoi revertarla prima di R1, cambia la config base di R1 e i doc vanno ritoccati: dimmi tu.
-
-  Per la discussione che avevi messo in conto: resta aperto se R1 debba davvero precedere O1+O2. Io confermo l'ordine del RECAP (R1 prima), ma se vuoi ne discutiamo.  
-  
-#########################################################Q&A#####################################################################
+#########################################################Q&A####################################################################
   
 ### Q&A
   

@@ -179,11 +179,12 @@ class CARLARoutePlanner:
         # Extract waypoints from (wp, RoadOption) tuples
         wps = [wp for wp, _ in raw_route]
 
-        # Validate route length
+        # Validate route length: enforce [0.5x, 2.0x] of target (docstring contract)
         route_len = _waypoints_length(wps)
-        if route_len < target_distance_m * 0.5:
+        if route_len < target_distance_m * 0.5 or route_len > target_distance_m * 2.0:
             logger.debug(
-                "Route too short: %.0fm vs target %.0fm", route_len, target_distance_m,
+                "Route length %.0fm outside [0.5x, 2.0x] of target %.0fm",
+                route_len, target_distance_m,
             )
             return None
 
