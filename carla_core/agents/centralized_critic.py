@@ -766,6 +766,15 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                     "stuck_cause": info.get("stuck_cause", ""),
                     "dist_to_next_wp": info.get("dist_to_next_wp", 0.0),
                     "speed_kmh": info.get("speed_kmh", 0.0),
+                    "route_source": info.get("route_source", "unknown"),
+                    "route_target_distance_m": info.get("route_target_distance_m", 0.0),
+                    "route_optimal_length_m": info.get("route_optimal_length_m", 0.0),
+                    "actual_distance_traveled_m": info.get(
+                        "actual_distance_traveled_m", 0.0
+                    ),
+                    "route_length_ratio": info.get("route_length_ratio", 0.0),
+                    "route_fallback_flag": info.get("route_fallback_flag", 0.0),
+                    "route_too_short_flag": info.get("route_too_short_flag", 0.0),
                 }
 
         # --- Source 2: side-channel for terminated agents ---
@@ -793,6 +802,15 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                         "stuck_cause": info.get("stuck_cause", ""),
                         "dist_to_next_wp": info.get("dist_to_next_wp", 0.0),
                         "speed_kmh": info.get("speed_kmh", 0.0),
+                        "route_source": info.get("route_source", "unknown"),
+                        "route_target_distance_m": info.get("route_target_distance_m", 0.0),
+                        "route_optimal_length_m": info.get("route_optimal_length_m", 0.0),
+                        "actual_distance_traveled_m": info.get(
+                            "actual_distance_traveled_m", 0.0
+                        ),
+                        "route_length_ratio": info.get("route_length_ratio", 0.0),
+                        "route_fallback_flag": info.get("route_fallback_flag", 0.0),
+                        "route_too_short_flag": info.get("route_too_short_flag", 0.0),
                     }
         except (AttributeError, IndexError):
             pass
@@ -838,6 +856,39 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             )
             episode.custom_metrics[f"{policy_id}/skipped_waypoints"] = float(
                 np.mean([d.get("skipped_waypoints", 0) for d in agent_data.values()])
+            )
+            episode.custom_metrics[f"{policy_id}/speed_kmh"] = float(
+                np.mean([d.get("speed_kmh", 0.0) for d in agent_data.values()])
+            )
+            episode.custom_metrics[f"{policy_id}/no_wp_steps"] = float(
+                np.mean([d.get("no_wp_steps", 0) for d in agent_data.values()])
+            )
+            episode.custom_metrics[f"{policy_id}/route_target_distance_m"] = float(
+                np.mean(
+                    [d.get("route_target_distance_m", 0.0) for d in agent_data.values()]
+                )
+            )
+            episode.custom_metrics[f"{policy_id}/route_optimal_length_m"] = float(
+                np.mean(
+                    [d.get("route_optimal_length_m", 0.0) for d in agent_data.values()]
+                )
+            )
+            episode.custom_metrics[f"{policy_id}/actual_distance_traveled_m"] = float(
+                np.mean(
+                    [
+                        d.get("actual_distance_traveled_m", 0.0)
+                        for d in agent_data.values()
+                    ]
+                )
+            )
+            episode.custom_metrics[f"{policy_id}/route_length_ratio"] = float(
+                np.mean([d.get("route_length_ratio", 0.0) for d in agent_data.values()])
+            )
+            episode.custom_metrics[f"{policy_id}/route_fallback_rate"] = float(
+                np.mean([d.get("route_fallback_flag", 0.0) for d in agent_data.values()])
+            )
+            episode.custom_metrics[f"{policy_id}/route_too_short_rate"] = float(
+                np.mean([d.get("route_too_short_flag", 0.0) for d in agent_data.values()])
             )
 
         # Debug: warn about agents with no captured outcome

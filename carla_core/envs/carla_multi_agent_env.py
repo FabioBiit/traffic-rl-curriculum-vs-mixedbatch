@@ -238,7 +238,9 @@ class AgentData:
         "last_skipped_waypoints",
         "route_optimal_length",     # somma distanze WP-to-WP (calcolata al reset)
         "actual_distance_traveled", # accumulata step-by-step
-        "prev_location"             # per calcolo distanza incrementale
+        "prev_location",            # per calcolo distanza incrementale
+        "route_source",
+        "route_target_distance_m",
     ]
 
     def __init__(self, agent_id: str, agent_type: str):
@@ -262,6 +264,8 @@ class AgentData:
         self.route_optimal_length = 0.0
         self.actual_distance_traveled = 0.0
         self.prev_location = None
+        self.route_source = "unknown"
+        self.route_target_distance_m = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +547,16 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if termination_reason == "stuck":
                 path_eff = 0.0
 
+            route_target = float(ad.route_target_distance_m or 0.0)
+            route_length_ratio = (
+                ad.route_optimal_length / route_target
+                if route_target > 0.0 else 0.0
+            )
+            route_fallback_flag = 1.0 if "fallback" in ad.route_source else 0.0
+            route_too_short_flag = (
+                1.0 if route_target > 0.0 and route_length_ratio < 0.8 else 0.0
+            )
+
             # Build info dict for this agent
             agent_info = {
                 "step": self._step_count,
@@ -557,6 +571,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 "stuck_cause": self._stuck_cause(ad, termination_reason),
                 "dist_to_next_wp": self._distance_to_next_waypoint(ad),
                 "speed_kmh": self._speed_kmh(ad),
+                "route_source": ad.route_source,
+                "route_target_distance_m": route_target,
+                "route_optimal_length_m": ad.route_optimal_length,
+                "actual_distance_traveled_m": ad.actual_distance_traveled,
+                "route_length_ratio": route_length_ratio,
+                "route_fallback_flag": route_fallback_flag,
+                "route_too_short_flag": route_too_short_flag,
             }
 
             if not term and not trunc:
@@ -930,6 +951,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
     def _setup_vehicle_route(self, ad: AgentData, skip_current_wp: bool = False):
         # Block 5.1: A* route by distance (if configured)
         route_distance_m = self.cfg["episode"].get("route_distance_m")
+        ad.route_target_distance_m = float(route_distance_m or 0.0)
+        ad.route_source = "legacy_chain"
         if route_distance_m is not None and self._route_planner is not None:
             origin = ad.actor.get_location()
             rng = np.random.default_rng(
@@ -944,8 +967,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 ad.current_wp_idx = 0
                 ad.route_optimal_length = self._compute_route_optimal_length(ad)
                 ad.prev_location = ad.actor.get_location()
+                ad.route_source = "grp"
                 return
+            ad.route_source = "legacy_fallback"
             logger.debug("GRP fallback to legacy chain for %s", ad.agent_id)
+        elif route_distance_m is not None:
+            ad.route_source = "legacy_fallback"
 
         # Legacy: chain waypoints via wp.next()
         loc = ad.actor.get_location()
@@ -975,6 +1002,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
         """Build a pedestrian route by chaining sidewalk waypoints like vehicles."""
         # Block 5.1: distance-based sidewalk routing (if configured)
         ped_dist = self.cfg["episode"].get("route_distance_m_pedestrian")
+        ad.route_target_distance_m = float(ped_dist or 0.0)
+        ad.route_source = "legacy_chain"
         if ped_dist is not None and self._route_planner is not None:
             origin = ad.actor.get_location()
             wps = self._route_planner.plan_pedestrian_route_by_distance(
@@ -986,8 +1015,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 ad.goal_location = wps[0].transform.location
                 ad.route_optimal_length = self._compute_route_optimal_length(ad)
                 ad.prev_location = ad.actor.get_location()
+                ad.route_source = "sidewalk_distance"
                 return
+            ad.route_source = "sidewalk_fallback"
             logger.debug("Ped distance routing fallback for %s", ad.agent_id)
+        elif ped_dist is not None:
+            ad.route_source = "sidewalk_fallback"
 
         route_len = self.cfg["episode"].get("route_length_pedestrian", 10)
         ad.route_waypoints = []

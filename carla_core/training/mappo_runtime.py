@@ -142,6 +142,25 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
                         "stuck_cause": out.get("stuck_cause", ""),
                         "dist_to_next_wp": round(out.get("dist_to_next_wp", 0.0), 4),
                         "speed_kmh": round(out.get("speed_kmh", 0.0), 4),
+                        "route_source": out.get("route_source", "unknown"),
+                        "route_target_distance_m": round(
+                            out.get("route_target_distance_m", 0.0), 4
+                        ),
+                        "route_optimal_length_m": round(
+                            out.get("route_optimal_length_m", 0.0), 4
+                        ),
+                        "actual_distance_traveled_m": round(
+                            out.get("actual_distance_traveled_m", 0.0), 4
+                        ),
+                        "route_length_ratio": round(
+                            out.get("route_length_ratio", 0.0), 4
+                        ),
+                        "route_fallback_flag": float(
+                            out.get("route_fallback_flag", 0.0)
+                        ),
+                        "route_too_short_flag": float(
+                            out.get("route_too_short_flag", 0.0)
+                        ),
                         "step_count": episode.length,
                         "level": current_level,
                     },
