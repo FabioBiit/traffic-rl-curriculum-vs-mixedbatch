@@ -1078,7 +1078,10 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Legacy: chain waypoints via wp.next()
         loc = ad.actor.get_location()
         wp = self._map.get_waypoint(loc, project_to_road=True)
-        route_len = self.cfg["episode"].get("route_length_vehicle", 10) # 50 -> 10 Reward v5 - Waypoints for vehicle route
+        fallback_spacing_m = 2.0
+        route_len = int(self.cfg["episode"].get("route_length_vehicle", 10))
+        if route_distance_m is not None:
+            route_len = max(1, int(math.ceil(float(route_distance_m) / fallback_spacing_m)))
         ad.route_waypoints = []
         current_wp = wp
 
@@ -1086,7 +1089,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.route_waypoints.append(current_wp)
 
         for _ in range(route_len):
-            nexts = current_wp.next(2.0)  # 2.0m spacing vehicle (ratio 1:1)
+            nexts = current_wp.next(fallback_spacing_m)
             if not nexts:
                 break
             current_wp = nexts[0]

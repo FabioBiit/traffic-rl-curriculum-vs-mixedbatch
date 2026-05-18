@@ -1263,8 +1263,7 @@
   - su medium 60m: fallback accorcia molto;
   - su hard 100m: fallback accorcia moltissimo.
 
-  Quindi il comportamento corretto dipende da quanto scende route_fallback_rate. Se resta alto, la difficoltà route medium/hard viene
-  ancora compressa dal fallback. Ora però lo vedremo chiaramente nei log.
+  Quindi il comportamento corretto dipende da quanto scende route_fallback_rate. Se resta alto, la difficoltà route medium/hard viene ancora compressa dal fallback. Ora però lo vedremo chiaramente nei log.
 
   Log Attesi
   In episodes.jsonl e TensorBoard dovremmo vedere:
@@ -1297,13 +1296,49 @@
 
 #########################################################Q&A####################################################################
 
-###Q&A
+### Q&A 18-05-2026
 
-● TensorBoard (TensorFlow è il framework; TensorBoard è la dashboard). E sì, è lo strumento giusto
-  — anzi, per H1/H1.1 è di fatto l'unico: vf_explained_var, vf_loss, grad_gnorm, policy_loss sono learner-stats di RLlib che il
-  results.json del progetto non salva (lì ci sono solo SR/reward/collision). Ho verificato la run 211642.
+> Quale trigger unlock scegliere tra SR windowed e cumulativa?
 
-  Dove sono i log (≠ cartella del progetto)
+● Raccomandazione: SR windowed per il trigger di unlock
+
+  È la scelta più difendibile e più solida per il tuo obiettivo (metrica massimale a fine budget). Ecco il ragionamento.
+
+  Perché è più difendibile
+
+  L'unlock è un segnale di controllo, non una metrica riportata. Un controllore deve riflettere la competenza attuale. La SR cumulativa è un integratore in ritardo: per costruzione media per sempre i fallimenti del cold-start, quindi sotto-stima in modo strutturale e permanente l'abilità corrente. Il pilota lo dimostra: 86% windowed (competenza reale) vs 67% cumulativo. Usare un segnale con bias-basso noto per decidere "l'agente è pronto?" risponde alla domanda sbagliata — "è stato bravo in media dalla nascita" invece di "è bravo ora".
+
+  Non c'è conflitto con la measurement_rule di CLAUDE.md ("primary aggregation: cumulative"): quella regola vale per il reporting della run. Il reporting resta cumulativo; il trigger di controllo usa windowed. Sono due funzioni diverse e vanno tenute distinte.
+
+  Perché è più solida per "metrica massimale a fine budget"
+
+  1. Efficienza di budget. Il gradiente su un livello padroneggiato è ≈ 0. La SR cumulativa tiene l'agente su easy molto dopo che il gradiente si è esaurito (pilota: easy è risolto a ~250k, ma la cumulativa direbbe ancora "continua su easy"). Ogni step su easy oltre la mastery è budget sprecato → meno budget per medium/hard → competenza finale più bassa. La windowed sposta il focus quando la competenza è reale.
+  2. La cumulativa ha un failure mode su long run. Con abbastanza fallimenti iniziali, la cumulativa potrebbe non superare mai la soglia entro il budget: l'unlock cadrebbe sempre sul force_unlock_global_share_cap. Risultato: la success_rate_threshold (la riga che hai selezionato) diventa codice morto e il curriculum degenera in uno schedule a timestep fissi. La windowed fa effettivamente scattare l'unlock competence-based — cioè dà senso al metodo curriculare.
+
+  L'obiezione "windowed è rumorosa" — è già mitigata
+
+  La windowed (finestra 50 episodi) potrebbe scattare su una finestra fortunata. Ma è una preoccupazione triplamente coperta:
+  - finestra da 50 episodi → la maggior parte del rumore è già smorzata;
+  - l'unlock richiede anche level_timesteps >= min_budget_share (:468) → una finestra fortunata troppo precoce non sblocca prima della spesa minima;
+  - probation_blocks_after_unlock = 2 → un unlock leggermente anticipato è già cuscinato (riduce la pressione di campionamento sul nuovo livello per 2 blocchi).
+
+  La SR cumulativa, invece, ha un downside (il lag strutturale) senza alcuna mitigazione.
+
+  Nota tecnica
+
+  Il codice ha già la windowed: tracker.window_success_rate è usata in _policy_gate_details (:377,384), ma quel gate è spento
+  (require_policy_success: false). Il path competence_unlocked attivo (:468-472) legge invece cumulative_success_rate via
+  _balanced_policy_success_details (:405). Il cambio è narrow: far leggere a quel path la window_success_rate bilanciata invece della cumulativa. force_unlock_global_share_cap resta come backstop.
+
+  In sintesi: adotta windowed. Se vuoi un margine extra di robustezza si può aggiungere un guard "soglia sostenuta per 2 blocchi
+  consecutivi", ma con min-budget-gate + probation già presenti la windowed semplice è sufficiente e più pulita.
+
+
+### Q&A
+
+> Dove trovo i log di TensorBoard?
+
+● TensorBoard, Dove sono i log (≠ cartella del progetto)
 
   I log RLlib non stanno in carla_core/experiments/... — stanno in C:\Users\kyros\ray_results\, una dir per run. La run 211642 è:
 
@@ -1352,8 +1387,7 @@
   
   > Domanda: Avrebbe senso aumentare il tempo totale degli episodi (tipo da 1000 a 1500) al fine di recuperare tutti quei veicoli che  vanno in timeout e di conseguenza implementare una logica mirata che vada a troncare l'episodio nel momento in cui il veicolo è stuck (ad esempio se continuous_route_progress < 0.1 e no_wp_steps > 150, o altri valori in combo [ma senza inserire troppo rumore o rigidità]) intercettandolo in tempo così da non aggravare il train? -rispondi criticamente ed in modo empirico in base ai dati che abbiamo a disposizione su episode.jsonl 
 
-
-  ● Ho ricalcolato dalla baseline completa 211642 (960 record veicolo, deduplicati). Il dato che ribalta l'impostazione della domanda è questo:
+● Ho ricalcolato dalla baseline completa 211642 (960 record veicolo, deduplicati). Il dato che ribalta l'impostazione della domanda è questo:
 
   ┌────────────────┬─────┬────────────────────────┬─────────────────────────┬─────────────────┬─────────────┐
   │ Coorte veicolo │  n  │ route_compl. (mediana) │ no_wp_steps (med / p90) │ speed_kmh (med) │ step_count  │

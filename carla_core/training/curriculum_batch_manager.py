@@ -402,13 +402,15 @@ class CurriculumManager:
                 details[policy_id] = {"available": False}
                 continue
 
-            success_rate = tracker.cumulative_success_rate
+            success_rate = tracker.window_success_rate
             details[policy_id] = {
                 "available": True,
                 "total_episodes": tracker.total_episodes,
                 "total_successes": tracker.total_successes,
-                "cumulative_success_rate": success_rate,
-                "cumulative_collision_rate": tracker.cumulative_collision_rate,
+                "window_success_rate": success_rate,
+                "window_collision_rate": tracker.window_collision_rate,
+                "window_full": tracker.window_full,
+                "cumulative_success_rate": tracker.cumulative_success_rate,
                 "level_timesteps": tracker.level_timesteps,
                 "level_episodes": tracker.level_episodes,
             }
@@ -466,7 +468,8 @@ class CurriculumManager:
             return None, criteria
 
         if tracker.level_timesteps >= required_timesteps and (
-            balanced_sr >= criteria["success_rate_threshold"]
+            tracker.window_full
+            and balanced_sr >= criteria["success_rate_threshold"]
             and policy_ok
         ):
             return "competence_unlocked", criteria
@@ -526,8 +529,8 @@ class CurriculumManager:
                 "timesteps_on_level": tracker.level_timesteps,
                 "success_rate_at_unlock": criteria.get(
                     "balanced_policy_success", {}
-                ).get("value", tracker.cumulative_success_rate),
-                "balanced_cumulative_success_rate_at_unlock": criteria.get(
+                ).get("value", tracker.window_success_rate),
+                "balanced_window_success_rate_at_unlock": criteria.get(
                     "balanced_policy_success", {}
                 ).get("value"),
                 "cumulative_success_rate_at_unlock": tracker.cumulative_success_rate,
@@ -550,11 +553,11 @@ class CurriculumManager:
             events.append(f"unlock:{target_level}")
 
             logger.info(
-                "Unlocked %s from %s at timestep %s (balanced cumulative SR=%s, window CR=%.2f)",
+                "Unlocked %s from %s at timestep %s (balanced window SR=%s, window CR=%.2f)",
                 target_level,
                 source_level,
                 global_timestep,
-                unlock_event["balanced_cumulative_success_rate_at_unlock"],
+                unlock_event["balanced_window_success_rate_at_unlock"],
                 tracker.window_collision_rate,
             )
 
@@ -835,7 +838,7 @@ class CurriculumManager:
         sample_total = max(sum(self._sample_counts.values()), 1)
         return {
             "teacher_type": "budget_normalized_distributional",
-            "promotion_logic": "balanced_cumulative_sr_or_pressure_cap",
+            "promotion_logic": "balanced_window_sr_or_pressure_cap",
             "current_level": self.current_level,
             "levels": list(self.levels),
             "window_size": self.window_size,

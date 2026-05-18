@@ -8,30 +8,30 @@ curriculum:
   # collision_threshold: 0.20               # default competence CR ceiling for unlock checks
   min_episodes: 50                          # retained for legacy competence-gate summaries
   window_size: 50                           # episode tracker sliding window for observed metrics
-  require_policy_success: false             # Promotion uses balanced cumulative policy SR or pressure cap
+  require_policy_success: false             # Promotion uses balanced windowed policy SR or pressure cap
   policy_ids: ["vehicle_policy", "pedestrian_policy"]
   unlock_criteria:
     medium:
-      success_rate_threshold: 0.50          # unlock medium when balanced cumulative policy SR >= 50%
+      success_rate_threshold: 0.70          # unlock medium when balanced windowed policy SR >= 70%
       collision_rate_threshold: 0.20        # observed/reporting threshold; does not block pressure cap
-      min_budget_share: 0.12                # easy share required before medium can unlock
-      force_unlock_global_share_cap: 0.15   # fallback: unlock medium by 15% total budget if threshold is not met
+      min_budget_share: 0.20                # easy share required before medium can competence-unlock
+      force_unlock_global_share_cap: 0.30   # fallback: unlock medium by 30% total budget if threshold is not met
     hard:
-      success_rate_threshold: 0.40          # unlock hard when balanced cumulative policy SR >= 40%
+      success_rate_threshold: 0.60          # unlock hard when balanced windowed policy SR >= 60%
       collision_rate_threshold: 0.30        # observed/reporting threshold; does not block pressure cap
-      min_budget_share: 0.16                # medium share required before hard can unlock
-      force_unlock_global_share_cap: 0.50   # fallback: unlock hard by 50% total budget if threshold is not met
+      min_budget_share: 0.28                # medium share required before hard can competence-unlock
+      force_unlock_global_share_cap: 0.55   # fallback: unlock hard by 55% total budget if threshold is not met
   budget_constraints:
     easy_max_share: 0.30                    # easy cannot exceed 30% once medium is available
-    medium_max_share: 0.32                  # medium cannot monopolize post-hard training
-    hard_min_share: 0.38                    # dynamic hard floor over the total budget
+    medium_max_share: 0.35                  # medium ceiling, at parity with the hard floor
+    hard_min_share: 0.35                    # dynamic hard floor, at parity with the medium ceiling
   base_sampling_weights:
-    easy: 1.00
-    medium: 1.07
-    hard: 1.27
+    easy: 1.00                              # normalizes to 0.30
+    medium: 1.17                            # normalizes to 0.35
+    hard: 1.17                              # normalizes to 0.35
   probation_sampling_weights:
-    medium: 1.00
-    hard: 1.19
+    medium: 1.00                            # newly unlocked level keeps base-equivalent pressure
+    hard: 0.85                              # hard de-emphasized below medium during post-unlock probation
   probation_blocks_after_unlock: 2
   probation_blocks_after_cap_pressure: 1
 

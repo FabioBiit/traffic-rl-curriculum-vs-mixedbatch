@@ -247,12 +247,44 @@ from vehicles.
   confirming the bug). An environment-correctness/reproducibility fix, no gate
   (it does not change the route distribution, only its reproducibility); not
   yet exercised in a run.
+- `O1+O2` (vehicle obs `44D -> 47D`) was evaluated on run `20260518_195947`
+  (curriculum, easy-locked, seed 999, ~301k timesteps; `global_obs_dim` 225;
+  first run to exercise both the `O1+O2` obs change and the route-seed
+  determinism fix). Not a gated A/B: the `44D -> 47D` obs change makes it not
+  checkpoint-comparable to the post-bugfix baseline `20260517_212109`, so no
+  vehicle gate is applied. Health verdict (training-only; `results.json`
+  `evaluation` empty): HEALTHY. Integrity OK (394 ep x 6 = 2364 records,
+  0 dups, 0 NaN/inf). Critic healthy (vehicle `vf_explained_var` 0.983,
+  pedestrian 0.902). Clean monotone learning curve, no late-training decay:
+  vehicle SR by chronological chunk 0.5/15.2/56.9/68.5/79.7/78.7 (plateau
+  ~79%), `window_success_rate` (all agents) 0 -> 0.86; vehicle collision
+  20.3->4.6, offroad 24.4->3.0, stuck+timeout 89.8->13.7, speed
+  1.2->20.2 km/h; pedestrian SR plateau 88-94%. Cumulative vehicle SR 49.92%
+  is depressed by the cold-start chunks (the plateau is the real signal).
+  Caveat: `route_source=legacy_fallback` on 194/1182 (16.4%) vehicle routes --
+  to diagnose before the long run. `20260518_195947` is the 47D vehicle
+  baseline; absolute numbers are not comparable to 44D runs.
 - Current path curriculum configuration uses `difficulty=path` with route
   distances `15m / 35m / 60m` for both vehicles and pedestrians.
-- Current curriculum budget proposal is `easy=0.30`, `medium=0.32`,
-  `hard=0.38`.
-- Current sampling weights are base `easy=1.00`, `medium=1.07`, `hard=1.27`
-  and probation `medium=1.00`, `hard=1.19`.
+- Curriculum config updated 2026-05-18 (before the long run) in
+  `curriculum_batch.yaml`: budget shares `easy=0.30 / medium=0.35 / hard=0.35`
+  (was `0.30/0.32/0.38`); base sampling weights `easy=1.00 / medium=1.17 /
+  hard=1.17` (normalize to 0.30/0.35/0.35; was `1.00/1.07/1.27`); probation
+  sampling weights `medium=1.00 / hard=0.85` (was `1.00/1.19`; hard is now
+  de-emphasized below medium during post-unlock probation); medium
+  `min_budget_share` 0.30 -> 0.20. Rationale: medium has no convergence
+  evidence, so it is set at parity with hard rather than below it. The budget
+  remains a static post-unlock mixture, not a tapering schedule.
+- Curriculum unlock metric changed 2026-05-18 in `curriculum_batch_manager.py`:
+  the `competence_unlocked` path now uses the balanced *windowed* policy SR
+  (`_balanced_policy_success_details` reads `window_success_rate`) instead of
+  the cumulative SR, and additionally requires `tracker.window_full`. Reason:
+  cumulative SR is a lagging integrator permanently dragged by cold-start
+  failures (pilot `20260518_195947`: 86% windowed vs 67% cumulative), which
+  delays unlocks and can leave the competence path effectively dead; the
+  windowed metric reflects current competence. Reporting metrics remain
+  cumulative (unchanged); only the unlock control signal is windowed. Verified:
+  `compileall` OK, `git diff --check` clean. Not yet exercised in a run.
 - `carla_mappo_20260514_211642` was an easy-only locked exploratory run. It
   tested `path` easy `15m/15m`, but it did not test budget constraints or
   sampling weights because `--lock-curriculum-level easy` disables those.
@@ -270,7 +302,7 @@ from vehicles.
 | D2-Safety | rejected/reverted | 20260514_155151 | D2 safety variant. SR down, no safety improvement. Reverted. |
 | D3 | rejected/reverted | 20260514_190424 | Early vehicle-stuck termination (`no_wp_steps>=300`, `route<0.3`, `hazard<0.75`). SR -2.90 pp vs D2, stuck+timeout +7.07 pp. Reverted. |
 | Path curriculum easy-only | candidate evidence only | 20260514_211642 | Lock easy, `15m/15m`. Does not test budget or sampling weights. |
-| Full path curriculum | pending/conditional | — | `difficulty=path`, no lock, `15/35/60m`, budget `0.30/0.32/0.38`, weights `1.00/1.07/1.27`. |
+| Full path curriculum | pending/conditional | — | `difficulty=path`, no lock, `15/35/60m`, budget `0.30/0.35/0.35`, base weights `1.00/1.17/1.17`, probation weights `medium=1.00/hard=0.85` (updated 2026-05-18; windowed-SR unlock metric). |
 | H1+H1.1 | not promoted but not reverted / mechanism confirmed | 20260515_175921 | Critic fix: `vf_clip_param` 10->1e6 (H1) + `vf_loss_coeff` 0.5->0.05 (H1.1); obs unchanged (44D), checkpoint-comparable. Mechanism confirmed from RLlib logs: vehicle `vf_explained_var` ~0 (baseline -0.002, critic explained ~0% of return variance) -> 0.87. Vehicle gate vs `20260514_211642` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +1.51 pp (20.10->21.61), stuck+timeout -1.98 pp (54.17->52.19), collision +3.28 pp (18.33->21.61), offroad -2.81 pp (7.40->4.59). Blocker: collision regression and late-training degradation (`entropy`->5.43). Confounded (two knobs). Not promoted; `vf_clip` kept, not reverted (reverting restores a non-functional critic). |
 | H2 | not promoted / not reverted / hypothesis falsified | 20260515_211055 | `gamma` 0.99->0.997 on the H1+H1.1 base; single-knob A/B vs `20260515_175921` (only `gamma` differs; seed 999, easy-lock, 300k). Intended to reduce the H1+H1.1 collision regression by propagating the -50 penalty over a longer horizon; produced the opposite. Vehicle gate vs `175921` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR +0.14 pp (21.61->21.75), stuck+timeout -7.48 pp (52.19->44.71), collision +5.18 pp (21.61->26.79), offroad +2.16 pp (4.59->6.75). Mechanism: longer horizon amplified the dominant route-completion incentive (speed 10.08->13.81 km/h, timeout -6.53 pp) and converted passive failure into active failure roughly 1:1; SR flat. Critic healthy (`vf_explained_var` 0.94). Hypothesis falsified. Not reverted by user decision: `gamma=0.997` retained as the base for `H3`. |
 | H3 | not promoted / not reverted / mechanism confirmed | 20260516_144007 | `entropy_coeff` constant 0.03 -> schedule `[[0,0.03],[250000,0.005]]` on the H1+H1.1+H2 base; single-knob A/B vs `20260515_211055` (only the schedule differs; seed 999, easy-lock, 300k). Mechanism confirmed: vehicle final `entropy` 4.78 -> 3.25 (schedule reached `entropy_coeff=0.005`), `vf_explained_var` 0.92 (critic healthy). Vehicle gate vs `211055` (cumulative, recomputed from `episodes.jsonl`) FAILS 3 of 4: SR -0.32 pp (21.75->21.43), stuck+timeout -0.37 pp (44.71->44.35), collision -0.99 pp (26.79->25.79), offroad +1.69 pp (6.75->8.43). Vehicle route-completions identical in absolute count (216 vs 216); the SR delta is denominator-only (H3 ran 5 more episodes). All deltas within the run-to-run noise visible in the pre-250k chunks (identical config there). Late-training SR decay only slightly softened (chunk-6 vehicle SR 22.62 vs 19.64); chunk-4 peak (~32.7%) unchanged; composition shifted timeout -5.81 pp / stuck +5.45 pp. Integrity OK (336 ep x 6 = 2016 records, 0 dups, 0 NaN/inf). Not promoted; by user decision the entropy schedule is retained (not reverted) as the base for `R3`. |
@@ -278,8 +310,8 @@ from vehicles.
 | R1 | promoted (trunk) | 20260517_134652 | Reward shaping: dropped the `route_completion < 0.3` guard in `_vehicle_reward` so start/unblock and `target_min_speed` shaping stay active for the whole route (`safe_to_push` and `alignment > 0.25` guards kept, coefficients unchanged). Single-knob A/B vs R3 `20260516_200545`. Vehicle gate PASSES 4/4: SR +4.69 pp (22.70->27.38), stuck+timeout -3.45 pp (46.63->43.18), collision -1.46 pp (25.56->24.10), offroad +0.22 pp. +45 route-completions in absolute count (222->267); timeout cohort the largest contributor (-2.71 pp); speed 11.53->13.04 km/h; collision canary improved. Integrity OK (325 ep x 6 = 1950, 0 dups, 0 NaN/inf). Pedestrians (separate): SR -4.03 pp (R1 does not touch pedestrian reward; likely run-to-run noise) -- to confirm with extra seeds. First gate pass since `D2`; promoted into the trunk, base for `R2`. |
 | R2 | retained provisional / not promoted | 20260517_164707 | Reward shaping: gate the `+0.1` smooth-steering bonus in `_vehicle_reward` (`carla_multi_agent_env.py:1803`) on `speed_kmh > 5.0` so a stationary vehicle no longer collects it. Checkpoint-comparable. Single-knob comparison vs `R1` baseline `20260517_134652` formally FAILS the vehicle gate: SR -1.85 pp, stuck+timeout -2.73 pp, collision +1.43 pp, offroad +3.15 pp. Mechanism plausible (speed +2.21 km/h, `no_wp_steps` -28.10), but extra mobility increased offroad/collision rather than SR. User decision: keep as provisional base, no immediate revert; not a validated promotion. |
 | Route-len bugfix (Punto 5) | evaluated / kept (env correctness fix; not a policy promotion) | 20260517_212109 | Env bugfix: `route_planner.py` `plan_vehicle_route` now enforces the docstring `<= 2.0x target` upper bound (commit `24e072e`; previously only the `0.5x` lower bound was checked). Single-knob A/B vs `R2` `20260517_164707` (`run_config.json` byte-identical). Vehicle gate formally PASSES 4/4 (SR +49.57 pp 25.54->75.11, stuck+timeout -21.17 pp, collision -21.25 pp, offroad -7.16 pp; 3174 records, 0 dups/NaN) -- but the delta is a task-distribution change (removes routes >2x target unfinishable in 1000 steps: episodes 342->529, mean step_count 900->574, route% 50->87), NOT a policy improvement. Kept by user decision as an env-correctness fix; `20260517_212109` is the post-bugfix vehicle baseline; prior H/R absolute numbers not comparable across the bugfix. Final eval pending. See `PROPOSED_PLAN.md` Punto 5. |
-| Route-seed determinism fix | applied 2026-05-18 (verified; not yet run) | — | Env reproducibility bugfix: `carla_multi_agent_env.py:960` seeded the vehicle route RNG with `hash(ad.agent_id)`; Python `hash()` of a `str` is per-process salted (`PYTHONHASHSEED` not pinned) so route seeds were not reproducible across processes and A/B runs were not route-paired. Fixed 2026-05-18: `hash(ad.agent_id)` -> `np.random.SeedSequence([traffic_seed, reset_count, zlib.crc32(agent_id)])`; verified (compileall OK, `git diff --check` clean, identical RNG output across two separate processes). No gate (does not change the route distribution, only reproducibility); first exercised in the next run. |
-| O1+O2 | code applied 2026-05-18 (verified; run pending) | — | Vehicle obs `44D -> 47D`: O1 adds normalized `no_wp_steps` + `loop_penalty_active` flag, O2 adds normalized time-remaining. Markov state-aliasing fixes (the reward uses these quantities, the obs does not), not hazard/perception features. Code applied 2026-05-18: `VEHICLE_OBS_DIM`/`_VEHICLE_OBS_DIM` 44->47 + `obs[44/45/46]` in `_get_vehicle_obs`; `compileall` OK, `git diff --check` clean; `global_obs_dim` auto-recomputes 216->225. Not checkpoint-comparable; one retrain-from-scratch 47D variant, run pending. See `PROPOSED_PLAN.md` Punti 6-7. |
+| Route-seed determinism fix | applied 2026-05-18 (verified; not yet run) | — | Env reproducibility bugfix: `carla_multi_agent_env.py:960` seeded the vehicle route RNG with `hash(ad.agent_id)`; Python `hash()` of a `str` is per-process salted (`PYTHONHASHSEED` not pinned) so route seeds were not reproducible across processes and A/B runs were not route-paired. Fixed 2026-05-18: `hash(ad.agent_id)` -> `np.random.SeedSequence([traffic_seed, reset_count, zlib.crc32(agent_id)])`; verified (compileall OK, `git diff --check` clean, identical RNG output across two separate processes). No gate (does not change the route distribution, only reproducibility); first exercised in run `20260518_195947`. |
+| O1+O2 | evaluated / healthy (training-only) / 47D vehicle baseline | 20260518_195947 | Vehicle obs `44D -> 47D`: O1 adds normalized `no_wp_steps` + `loop_penalty_active` flag, O2 adds normalized time-remaining. Markov state-aliasing fixes, not hazard/perception features. `global_obs_dim` 216->225. Evaluated on run `20260518_195947` (curriculum, easy-locked, seed 999, ~301k; first run with both O1+O2 and the route-seed fix). Not checkpoint-comparable to 44D runs -> no vehicle gate. Health verdict HEALTHY: integrity OK (394 ep x 6 = 2364 records, 0 dups, 0 NaN/inf); critic healthy (vehicle `vf_explained_var` 0.983); clean monotone curve with no late decay (vehicle SR by chronological chunk 0.5/15.2/56.9/68.5/79.7/78.7, plateau ~79%; `window_success_rate` 0->0.86; collision 20.3->4.6, offroad 24.4->3.0). Caveat: 16.4% `legacy_fallback` vehicle routes, to diagnose before the long run. `20260518_195947` is the 47D vehicle baseline. See `PROPOSED_PLAN.md` Punti 6-7. |
 
 See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pseudocode.
 
@@ -329,12 +361,22 @@ See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pse
   `hash(ad.agent_id)` -> `np.random.SeedSequence`) was applied and verified
   2026-05-18; an environment-correctness/reproducibility fix (no gate). Future
   A/B runs are now route-paired.
-- Next planned (updated 2026-05-18): the route-seed determinism fix and the
-  `O1+O2` vehicle-obs change (`44D -> 47D`) are both applied and verified in
-  code; next is to launch the `O1+O2` retrain-from-scratch 47D run, evaluate
-  it, then run the final evaluation. This supersedes the earlier `Next planned`
-  lines below. The full `difficulty=path` curriculum remains
-  pending/conditional.
+- `O1+O2` (vehicle obs `44D -> 47D`) was evaluated (run `20260518_195947`,
+  easy-locked) and verdicted HEALTHY (training-only; see Current Known State);
+  it is the 47D vehicle baseline and the obs-space variant for the planned
+  long run. The curriculum config (`curriculum_batch.yaml`) was revised
+  2026-05-18: budget `0.30/0.35/0.35`, base weights `1.00/1.17/1.17`,
+  probation `medium=1.00 / hard=0.85`, medium `min_budget_share` 0.20, and the
+  unlock metric switched from cumulative to balanced windowed policy SR. A
+  config/code change only, no gate; not yet exercised in a run.
+- Next planned (updated 2026-05-18): the `O1+O2` 47D run `20260518_195947`
+  has been completed and evaluated (HEALTHY). The curriculum budget/weights and
+  the unlock metric were revised the same day. Next is to launch the full
+  `difficulty=path` curriculum long run (no `--lock-curriculum-level`) on the
+  47D obs with the updated `curriculum_batch.yaml`, then run the final
+  evaluation. Open item before launch: diagnose the 16.4% `legacy_fallback`
+  vehicle routes seen in `20260518_195947`. This supersedes the earlier
+  `Next planned` lines below.
 - Next planned (`PROPOSED_PLAN.md` order): `R2` (gate the smooth-steering
   bonus on `speed_kmh > 5`) -> `route_planner` upper-bound bugfix -> `O1+O2`
   (vehicle obs `44D -> 47D`, Markov state-aliasing fixes, applied last as one
@@ -346,7 +388,9 @@ See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pse
   offroad canaries.
 - Pending/conditional: full `difficulty=path` curriculum without
   `--lock-curriculum-level`, using route distances `15m / 35m / 60m`, budget
-  shares `0.30 / 0.32 / 0.38`, and sampling weights `1.00 / 1.07 / 1.27`.
+  shares `0.30 / 0.35 / 0.35`, base sampling weights `1.00 / 1.17 / 1.17`,
+  probation weights `medium=1.00 / hard=0.85`, and the windowed-SR unlock
+  metric (all updated 2026-05-18).
 
 ## Do Not Infer
 
