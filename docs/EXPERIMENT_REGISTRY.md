@@ -1,8 +1,8 @@
 # Experiment Registry
 
-Last updated: 2026-05-17
+Last updated: 2026-05-18
 Branch: EVO/new-main
-Trunk at time of writing: C0 + C1 + D2
+Trunk at time of writing: C0 + C1 + D2 + R1 (+ Punto 5 env fix)
 
 This file is the detailed audit trail for all experimental candidates.
 `CLAUDE.md` and `AGENTS.md` carry the summary table; this file has
@@ -31,7 +31,8 @@ per candidate.
 | R3 | not promoted / not reverted / hypothesis falsified | 20260516_200545 | Vehicle collision penalty `carla_multi_agent_env.py:1748` `-50.0`->`-500.0` (vehicle only). Adapted R3 gate FAILS (SR +1.27, collision -0.23, stuck+timeout +2.28, offroad -3.32 pp vs H3). Hypothesis "collision tunable via penalty magnitude" falsified. Not promoted; `-500` kept as base for the next candidate `R1`. |
 | R1 | promoted (trunk) | 20260517_134652 | Reward shaping: dropped the `route_completion < 0.3` guard in `_vehicle_reward` so start/unblock and `target_min_speed` shaping stay active for the whole route. Single-knob A/B vs R3 `20260516_200545`. Vehicle gate PASSES 4/4: SR +4.69 pp (22.70->27.38), stuck+timeout -3.45 pp (46.63->43.18), collision -1.46 pp, offroad +0.22 pp. +45 route-completions in absolute count (222->267); integrity OK (1950 records, 0 dups, 0 NaN/inf). Pedestrians (separate): SR -4.03 pp -- likely run-to-run noise, to confirm with seeds. First gate pass since `D2`; promoted into the trunk, base for `R2`. |
 | R2 | retained provisional / not promoted | 20260517_164707 | Reward shaping: gate the `+0.1` smooth-steering bonus in `_vehicle_reward` (~1803) on `speed_kmh > 5.0`. Checkpoint-comparable. Formal vehicle gate vs `R1` baseline `20260517_134652` FAILS: SR -1.85 pp, stuck+timeout -2.73 pp, collision +1.43 pp, offroad +3.15 pp. User decision: no immediate revert; keep provisionally because immobility improved, but not a validated promotion. |
-| Route-len bugfix | pending (code applied; awaiting A/B run) | — | Env bugfix: enforce the docstring's `2.0x` upper bound on vehicle route length in `route_planner.py` `plan_vehicle_route` (~184); previously only the `0.5x` lower bound was checked. Code applied 2026-05-17 (one-line change; `compileall` OK, `git diff --check` clean), awaiting the A/B run vs `20260517_164707`. Checkpoint-comparable; separate A/B (changes the route-length distribution). |
+| Route-len bugfix (Punto 5) | evaluated / kept (env correctness fix; not a policy promotion) | 20260517_212109 | Env bugfix: `route_planner.py` `plan_vehicle_route` now enforces the docstring `<= 2.0x target` upper bound (commit `24e072e`; previously only the `0.5x` lower bound was checked). Single-knob A/B vs `R2` `20260517_164707` (`run_config.json` byte-identical). Vehicle gate formally PASSES 4/4 (SR +49.57 pp 25.54->75.11, stuck+timeout -21.17 pp, collision -21.25 pp, offroad -7.16 pp; 3174 records, 0 dups/NaN) -- but the delta is a task-distribution change (removes routes >2x target unfinishable in 1000 steps: episodes 342->529, mean step_count 900->574, route% 50->87), NOT a policy improvement. Kept as an env-correctness fix; `20260517_212109` is the post-bugfix vehicle baseline. Final eval pending. |
+| Route-seed determinism fix | pending (user-approved; code not yet applied) | — | Env reproducibility bugfix: `carla_multi_agent_env.py:960` seeds the vehicle route RNG with `hash(ad.agent_id)`; Python `hash()` of a `str` is per-process salted (`PYTHONHASHSEED` not pinned) so route seeds are not reproducible across processes and A/B runs are not route-paired. Fix: `np.random.SeedSequence([traffic_seed, reset_count, zlib.crc32(agent_id)])`. No gate (does not change the route distribution, only reproducibility); to be applied before `O1+O2`. |
 | O1+O2 | pending (obs change; applied last) | — | Vehicle obs `44D -> 47D`: O1 adds normalized `no_wp_steps` + `loop_penalty_active` flag, O2 adds normalized time-remaining. Markov state-aliasing fixes, not hazard/perception features. Not checkpoint-comparable; one retrain-from-scratch 47D variant. |
 
 ---
@@ -526,7 +527,8 @@ isolated `R2` effect.
 ## Route-len Bugfix — Enforce the Route-Length Upper Bound
 
 **Type:** Environment bugfix
-**Status:** Pending (code applied; awaiting A/B run)
+**Status:** Evaluated / kept (environment-correctness fix; not a policy promotion)
+**Run:** `20260517_212109`
 **Files:** `carla_core/envs/route_planner.py` — `plan_vehicle_route()` (~184)
 **Comparability:** Checkpoint-comparable; separate A/B condition (it changes
 the realized route-length distribution)
@@ -538,11 +540,90 @@ arbitrarily long; the upper bound is now enforced (rejected routes fall back to
 the legacy `wp.next()` chain).
 
 **Applied (2026-05-17):** One-line change in `plan_vehicle_route` plus the log
-message; `python -m compileall` OK, `git diff --check` clean. Not yet run or
-evaluated.
+message; `python -m compileall` OK, `git diff --check` clean. Run and
+evaluated 2026-05-18 (see the Evaluation note below).
 
 **Rationale:** Unbounded route length inflates timeouts and decalibrates
 curriculum difficulty. See `PROPOSED_PLAN.md` Punto 5.
+
+**Evaluation (2026-05-18) — run `20260517_212109`:** Single-knob A/B vs `R2`
+`20260517_164707`; `run_config.json` byte-identical except the timestamp, and
+`git show 24e072e` confirms the only code change since the baseline is the
+`plan_vehicle_route` one-liner (the other 5 files in the commit are docs).
+Integrity OK: 529 ep x 6 = 3174 records, 0 duplicates, 0 malformed episodes,
+0 NaN/inf; `results.json` agrees with `episodes.jsonl` (1192/1587 vehicle
+`route_complete`).
+
+Vehicle cumulative (recomputed from `episodes.jsonl`), `164707` -> `212109`:
+SR 25.54 -> 75.11 (+49.57 pp), stuck+timeout 40.45 -> 19.28 (-21.17 pp),
+collision 25.54 -> 4.28 (-21.25 pp), offroad 8.48 -> 1.32 (-7.16 pp),
+route% 49.59 -> 87.08, speed 15.25 -> 12.28 km/h, mean `step_count`
+900.4 -> 573.8. The default vehicle gate formally PASSES 4/4.
+
+Interpretation: this is NOT a policy improvement. Policy, reward, observations
+and optimizer are identical; only the env route generator differs. The
++49.57 pp is a task-distribution change — the upper bound removes routes
+longer than 2x target that were unfinishable within the 1000-step episode.
+Evidence: total episodes 342 -> 529 at the same timestep budget (shorter
+episodes); absolute vehicle timeouts 173 -> 34; absolute vehicle collisions
+262 -> 68. Vehicle SR by chunk: `164707` 3.5/17.5/27.5/40.4/31.0/33.3 (peaks
+~40, decays), `212109` 10.9/70.0/91.0/93.3/94.0/92.5 (clean climb, plateau
+~93) — consistent with the bug also degrading training quality, but this
+single A/B cannot separate "easier task" from "healthier training".
+
+Pedestrians (separate): SR 84.41 -> 89.60 (+5.20 pp), stuck+timeout
+15.59 -> 10.40. The bugfix does not touch `plan_pedestrian_route_by_distance`;
+most likely mechanical (shorter joint episodes => less time to fail), not a
+pedestrian-policy change.
+
+Final evaluation pending (`results.json.evaluation` empty) — training-only
+evidence. Decision: KEPT as an environment-correctness fix (not a promoted
+policy candidate); `20260517_212109` is the post-bugfix vehicle baseline. All
+prior H/R-series runs were measured on the bug-contaminated route distribution
+— their absolute numbers are not comparable across the bugfix.
+
+---
+
+## Route-seed Determinism Fix — Reproducible Vehicle Route RNG
+
+**Type:** Environment bugfix (correctness / reproducibility)
+**Status:** Pending — user-approved 2026-05-18, code not yet applied
+**Files:** `carla_core/envs/carla_multi_agent_env.py` — `_setup_vehicle_route()` (line 960)
+**Comparability:** Changes realized route sequences but not the route
+distribution; a post-fix run is not bit-identical to `20260517_212109`. No
+gate — pure reproducibility fix.
+
+**Bug:** The vehicle route RNG seed is built as
+`traffic_seed + reset_count*1000 + hash(ad.agent_id) % 10000`. `hash()` of a
+`str` in CPython is salted per process (`PYTHONHASHSEED`, randomized by
+default; not pinned anywhere in the repo), so `hash(ad.agent_id)` changes on
+every process start: the route seed is not reproducible and, even with
+`seed=999` fixed, two runs of an A/B see different route sequences — the runs
+are not route-paired. Single site; vehicles only
+(`plan_pedestrian_route_by_distance` uses no RNG). Secondary issue: the
+additive composition (`reset_count*1000 + hash%10000`) has overlapping ranges,
+so the 3 vehicles can collide on the same seed at nearby `reset_count`.
+
+**Planned fix:** Replace the per-agent term with a stable hash and use
+`np.random.SeedSequence` for correct mixing:
+
+```python
+agent_key = zlib.crc32(ad.agent_id.encode())   # stable across processes
+rng = np.random.default_rng(np.random.SeedSequence([
+    int(self.cfg["traffic"].get("seed", 42)),
+    int(self._reset_count),
+    agent_key,
+]))
+```
+
+`SeedSequence` is the idiomatic NumPy way to derive reproducible independent
+streams and removes the additive-overlap collisions. The runs use a single
+CARLA env (fixed ports 2000/8000, no `worker_index` captured), so no
+cross-worker term is needed.
+
+**Verification plan:** `python -m compileall carla_core/envs/carla_multi_agent_env.py`;
+`git diff --check`; confirm the derived seed is identical across two separate
+process invocations for the same `(seed, reset_count, agent_id)`.
 
 ---
 

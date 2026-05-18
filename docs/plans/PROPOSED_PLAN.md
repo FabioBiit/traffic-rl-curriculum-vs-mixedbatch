@@ -381,11 +381,9 @@
  3. Gate reward route_completion < 0.3: l'incentivo alla velocità si spegne dopo il 30 % di rotta (coorte timeout).
  4. Bonus sterzo fluido incondizionato: +0.1/step anche da fermo → cancella in parte la penalità idle.
  5. Violazione di Markov: la reward penalizza no_wp_steps e loop_penalty_active, ma nessuno dei due è nell'osservazione.
- 6. Bug route planner: l'upper bound 2.0x della lunghezza rotta è nella docstring ma non nel codice → rotte "easy" di lunghezza non
- controllata.
+ 6. Bug route planner: l'upper bound 2.0x della lunghezza rotta è nella docstring ma non nel codice → rotte "easy" di lunghezza non controllata.
 
- Obiettivo: 7 modifiche chirurgiche + 1 opzionale, ognuna applicabile e verificabile come A/B isolato (una modifica per run) contro la
- baseline 211642, senza toccare l'architettura MAPPO.
+ Obiettivo: 7 modifiche chirurgiche + 1 opzionale, ognuna applicabile e verificabile come A/B isolato (una modifica per run) contro la baseline 211642, senza toccare l'architettura MAPPO.
 
  Baseline di riferimento (run 211642, veicoli, da episodes.jsonl)
 
@@ -404,6 +402,37 @@
  - Integrità episodio: 6 record agente/episodio
 
  Se un candidato fallisce il gate → revert solo di quel candidato, trunk C0+C1+D2 intatto.
+
+
+#########################################################18-05-2026##############################################################
+
+### UPDATE PLAN (LAST OPEN POINTS)
+
+ > Analizza: - Bug determinismo route-seed (hash(ad.agent_id)) — le run non sono route-paired tra processi. + Recap Open-points.
+
+● Sì, la diagnosi è corretta — è un bug reale, e l'ho confermato in codice.
+
+  hash() su str in CPython è salato per-processo (PYTHONHASHSEED randomizzato di default — verificato: non è pinnato da nessuna parte nel repo). Quindi hash(ad.agent_id) cambia ad ogni avvio di processo: il seed RNG della rotta non è riproducibile e, anche con seed=999 fisso, le due run di un A/B vedono rotte diverse → non route-paired. Sito unico (carla_multi_agent_env.py:960), solo veicoli — i pedoni non usano RNG per la rotta.
+
+  Due precisazioni tecniche:
+
+  - Nessuna complicazione worker-index. Il repo non cattura EnvContext/worker_index e i porti CARLA sono fissi (2000/8000) → setup single-env. Quindi il fix semplice è anche sufficiente: non rischia di azzerare la diversità di rotte cross-worker (non ci sono più worker).
+  - C'è anche un bug secondario. Il seed è additivo (reset*1000 + hash%10000): gli intervalli si sovrappongono e i 3 veicoli a
+  reset_count vicini possono collidere sullo stesso seed (→ stessa rotta). Conviene chiuderli insieme usando
+  np.random.SeedSequence([seed, reset_count, agent_key]) con agent_key = hash stabile (zlib.crc32(agent_id)): è la via idiomatica NumPy, mixa correttamente, niente overlap.
+
+  Classificazione: bugfix di correttezza/riproducibilità (stessa categoria del Punto 5), non un candidate di policy. Non cambia la distribuzione delle rotte, solo la riproducibilità → niente gate. Va però notato: cambia le sequenze di rotte, quindi una run post-fix non è bit-identica a 212109.
+
+  Sequenza che propongo — e sì, mi torna:
+
+  1. Docs — aggiorno l'esito Punto 5 + registro il route-seed bug.
+  2. Route-seed fix — prima di O1+O2, così O1+O2 e soprattutto le run-tesi (curriculum vs mixed-batch) + le final-eval saranno
+  route-paired. Ti mostro il diff esatto prima di applicarlo.
+  3. O1+O2 — retrain-from-scratch 47D sulla base corretta.
+  4. Final eval.
+
+  Caveat su O1+O2: vs 212109 non sarà perfettamente paired (212109 è pre-fix), ma O1+O2 cambia la dimensione osservativa → è già un confronto coarse from-scratch, quindi accettabile. Un re-baseline 44D post-fix per il pairing perfetto costerebbe ~2h: lo sconsiglio.
+
 
  ---
  MODIFICHE (7 punti + 1 opzionale)
@@ -623,6 +652,40 @@
 
  Razionale: la docstring promette validazione in [0.5x, 2.0x] ma il codice controlla solo il lower bound → rotte "easy 15 m" possono essere arbitrariamente lunghe (A* che gira l'isolato), gonfiando i timeout e decalibrando la difficoltà del curriculum. Rotte scartate ricadono sul fallback legacy wp.next().
 
+
+### Punto 5 applicato e verificato.
+
+  Punto 5 — fatto
+
+  carla_core/envs/route_planner.py, plan_vehicle_route:
+
+  -        # Validate route length
+  +        # Validate route length: enforce [0.5x, 2.0x] of target (docstring contract)
+           route_len = _waypoints_length(wps)
+  -        if route_len < target_distance_m * 0.5:
+  +        if route_len < target_distance_m * 0.5 or route_len > target_distance_m * 2.0:
+               logger.debug(
+  -                "Route too short: %.0fm vs target %.0fm", route_len, target_distance_m,
+  +                "Route length %.0fm outside [0.5x, 2.0x] of target %.0fm",
+  +                route_len, target_distance_m,
+               )
+               return None
+
+  Verifica: compileall OK, git diff --check pulito; il diff è esattamente la modifica del Punto 3... pardon, del Punto 5 (validazione + messaggio di log).
+
+  Effetto: una rotta veicolo A* più lunga di 2.0× il target ora viene scartata → fallback alla catena legacy wp.next(). La docstring prometteva [0.5x, 2.0x] ma il codice controllava solo il lower bound: ora il contratto è onorato. Una rotta "easy 15m" non può più essere arbitrariamente lunga.
+
+  Come testarlo
+
+  A/B single-knob vs la run R2 20260517_164707 (run più recente / base attuale):
+
+  Gate (veicoli, vs R2): gate progetto standard. Diagnostica specifica del Punto 5: la distribuzione della lunghezza-rotta per livello deve restringersi (è il vero segnale del bugfix).
+
+  Nota onesta sull'interpretazione. Punto 5 è un bugfix di calibrazione d'ambiente, non una leva di policy: accorcia/limita le rotte "easy", quindi un eventuale +SR riflette in parte "il task è diventato davvero 15m" e non "la policy è migliorata" (<do_not_infer>: distinguere misura da policy). Va valutato come "il bounding delle rotte cambia gli esiti / de-confonde i timeout", non come miglioramento di policy. Caveat di base: la run starebbe sopra R1+R2 (R2 non promosso) — l'A/B resta valido single-knob (cambia solo route_planner).
+
+  (distinguere misura da policy). Va valutato come "il bounding delle rotte cambia gli esiti / de-confonde i timeout", non come
+  miglioramento di policy. Caveat di base: la run starebbe sopra R1+R2 (R2 non promosso) — l'A/B resta valido single-knob (cambia solo route_planner).
+
  ---
  Punto 6 — O1: osservabilità dello stato "stuck" (Markov)
 
@@ -655,8 +718,7 @@
          return self._sanitize_obs(obs, ad.agent_id)
 
  Razionale: la reward penalizza no_wp_steps>100 e loop_penalty_active ma l'obs non li contiene → stati identici in obs con reward
- diverse (state aliasing) proprio nella coorte stuck. obs è allocato np.zeros(VEHICLE_OBS_DIM), indici 0-43 già usati, 44/45 liberi;
- valori in [0,1] → nessuna distorsione da _sanitize_obs. global_obs_dim si auto-ricalcola (216→222) via
+ diverse (state aliasing) proprio nella coorte stuck. obs è allocato np.zeros(VEHICLE_OBS_DIM), indici 0-43 già usati, 44/45 liberi; valori in [0,1] → nessuna distorsione da _sanitize_obs. global_obs_dim si auto-ricalcola (216→222) via
  compute_global_obs_dim_with_mask.
 
  ---
@@ -875,6 +937,87 @@
 
   Mia raccomandazione: confermare R1 con 2 seed prima di proseguire. R1 è il trunk e l'unico PASS pulito; due valutazioni di fila (H3, R2) hanno richiesto controlli equal-episode per non farsi ingannare — è il momento di consolidare R1 invece di impilare. Poi Punto 5 (bugfix route-len, che è un fix d'ambiente, gate a sé).
 
+
+### VALUTAZIONE BUG FIX ROUTE PLANNER
+
+● Ho valutato la run. Il bugfix è confermato in codice (git show 24e072e: l'unica modifica di codice è la one-liner in
+  plan_vehicle_route; gli altri 5 file toccati sono solo doc/registry/docx) e i due run_config.json sono identici byte-per-byte → l'A/B isola esattamente il Punto 5.
+
+  1. Integrità
+
+  - 212109: 3174 record = 529 ep × 6, 0 duplicati, 0 episodi malformati, 0 NaN/inf. Integrità perfetta.
+  - results.json e episodes.jsonl concordano (1192/1587 route_complete in entrambi) — nessuna discrepanza di tooling.
+  - Final evaluation: pending (results.json.evaluation vuoto). Evidenza training-only.
+
+  2. Veicoli — metriche cumulative (ricalcolate da episodes.jsonl)
+
+  ┌─────────────────────┬───────────────────────────┬────────────────────────────────┬───────────┐
+  │       Metrica       │ 164707 (R2, bug presente) │ 212109 (Punto 5, bug corretto) │     Δ     │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ Episodi totali      │ 342                       │ 529                            │ +187      │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ SR (route_complete) │ 25.54%                    │ 75.11%                         │ +49.57 pp │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ stuck               │ 23.59%                    │ 17.14%                         │ −6.45 pp  │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ timeout             │ 16.86%                    │ 2.14%                          │ −14.72 pp │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ stuck+timeout       │ 40.45%                    │ 19.28%                         │ −21.17 pp │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ collision           │ 25.54%                    │ 4.28%                          │ −21.25 pp │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ offroad             │ 8.48%                     │ 1.32%                          │ −7.16 pp  │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ route% medio        │ 49.59%                    │ 87.08%                         │ +37.49 pp │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ speed km/h          │ 15.25                     │ 12.28                          │ −2.97     │
+  ├─────────────────────┼───────────────────────────┼────────────────────────────────┼───────────┤
+  │ step medi/ep        │ 900.4                     │ 573.8                          │ −326.6    │
+  └─────────────────────┴───────────────────────────┴────────────────────────────────┴───────────┘
+
+  Conteggi assoluti veicolo — route_complete 262→1192, timeout 173→34, collision 262→68: i cali sono reali (eventi assoluti), non
+  effetto-denominatore.
+
+  SR veicolo per chunk: 164707 → 3.5 / 17.5 / 27.5 / 40.4 / 31.0 / 33.3 (picco ~40 poi decade). 212109 → 10.9 / 70.0 / 91.0 / 93.3 / 94.0 / 92.5 (salita pulita, plateau ~93).
+
+  3. Pedoni (riportati separatamente)
+
+  ┌───────────────┬────────┬────────┬──────────┐
+  │    Metrica    │ 164707 │ 212109 │    Δ     │
+  ├───────────────┼────────┼────────┼──────────┤
+  │ SR            │ 84.41% │ 89.60% │ +5.20 pp │
+  ├───────────────┼────────┼────────┼──────────┤
+  │ stuck+timeout │ 15.59% │ 10.40% │ −5.20 pp │
+  ├───────────────┼────────┼────────┼──────────┤
+  │ collision     │ 0.00%  │ 0.00%  │ 0        │
+  └───────────────┴────────┴────────┴──────────┘
+
+  4. Gate veicolo: formalmente 4/4 PASS — ma il gate qui non va letto come al solito
+
+  SR +49.57 ≥ +2.0 ✓ · stuck+timeout −21.17 ≤ −2.0 ✓ · collision −21.25 ≤ +1.0 ✓ · offroad −7.16 ≤ +1.0 ✓ · integrità ✓.
+
+  Questo NON è un miglioramento di policy. Network, reward, osservazioni e ottimizzatore sono identici tra le due run: l'unica
+  differenza è l'env che genera le rotte. Il +49.57 pp è il cambio di distribuzione del task, non apprendimento.
+
+  Meccanismo: pre-fix plan_vehicle_route accettava qualsiasi rotta ≥ 0.5× target senza limite superiore. Le destinazioni sono scelte a 0.6–1.4× euclidei, ma il percorso A* su strada può essere molto più lungo dell'euclideo → rotte da 40–100m a fronte di un target di 5m. A ~12 km/h una rotta del genere non si chiude nei 1000 step dell'episodio → timeout/stuck per costruzione. Il fix (route_len > target·2.0 → None) le elimina. Le prove che è effetto-distribuzione:
+  - episodi 342→529 (+55%) a parità di budget timestep ⇒ episodi più corti;
+  - step medi 900→574: pre-fix gli episodi morivano vicino al cap 1000 (rotta non finibile), post-fix chiudono a ~574;
+  - route% medio 50→87. Più esposizione su rotte lunghe ⇒ anche più collision/offroad assoluti.
+
+  Le curve per-chunk (salita pulita a 93% vs plateau instabile a ~35%) suggeriscono che il bug degradava anche la qualità del training, non solo la metrica — ma questo singolo A/B non separa "task più facile" da "training più sano". Non rivendicarlo come dimostrato.
+
+  5. Conseguenza importante
+
+  Tutte le run della serie H/R (D2, H1–H3, R3, R1, R2) sono state misurate su questa distribuzione di rotte contaminata. I verdetti single-knob restano direzionalmente plausibili (entrambi i bracci condividevano il bug), ma: i numeri assoluti nel registry sono su distribuzione sbagliata, e R1 in particolare interagisce con la lunghezza rotta (R1 rimuoveva il gate route_completion<0.3: su rotte buggy quel gate restava attivo a lungo, su rotte corrette si disattiva subito) → il +4.69 pp di R1 potrebbe non trasferirsi.
+
+  I pedoni: il bugfix non tocca plan_pedestrian_route_by_distance. Il +5.20 pp è quasi certamente meccanico — episodi congiunti più corti (574 vs 900 step) ⇒ meno tempo per restare stuck/timeout — non un cambio di policy pedonale.
+
+  6. Raccomandazione
+
+  1. Tieni il bugfix (non revertarlo): è una correzione di correttezza che allinea il codice al contratto del docstring [0.5x, 2.0x]. Non è un "candidate promosso" come R1 — nel registry va come env correctness fix, con il +49.57 pp annotato come effetto task-distribution.
+  2. 212109 diventa la nuova baseline post-bugfix; ogni A/B futuro gira sulla distribuzione corretta.
+  3. R2 è il nodo da sciogliere: è "provvisorio, non promosso" ma è dentro al codice che 212109 ha eseguito, e il suo verdetto era su rotte buggy. L'unico modo pulito è un A/B isolante su distribuzione corretta.
+  4. Posso aggiornare CLAUDE.md / AGENTS.md / EXPERIMENT_REGISTRY.md / docx con l'esito e il caveat di contaminazione — confermami tu, non li tocco senza ok.
 
  --- 
  

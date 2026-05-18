@@ -57,6 +57,7 @@ import math
 import os
 import signal
 import sys
+import zlib
 from copy import deepcopy
 from pathlib import Path
 import gymnasium as gym
@@ -955,10 +956,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
         ad.route_source = "legacy_chain"
         if route_distance_m is not None and self._route_planner is not None:
             origin = ad.actor.get_location()
-            rng = np.random.default_rng(
-                self.cfg["traffic"].get("seed", 42) + self._reset_count * 1000
-                + hash(ad.agent_id) % 10000
-            )
+            agent_key = zlib.crc32(ad.agent_id.encode())   # stable per-agent key, process-independent
+            rng = np.random.default_rng(np.random.SeedSequence([
+                int(self.cfg["traffic"].get("seed", 42)),
+                int(self._reset_count),
+                agent_key,
+            ]))
             wps = self._route_planner.plan_vehicle_route(
                 origin, route_distance_m, self._spawn_points, rng,
             )
