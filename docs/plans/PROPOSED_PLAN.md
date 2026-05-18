@@ -686,8 +686,10 @@
   (distinguere misura da policy). Va valutato come "il bounding delle rotte cambia gli esiti / de-confonde i timeout", non come
   miglioramento di policy. Caveat di base: la run starebbe sopra R1+R2 (R2 non promosso) — l'A/B resta valido single-knob (cambia solo route_planner).
 
+
  ---
- Punto 6 — O1: osservabilità dello stato "stuck" (Markov)
+ 
+### Punto 6+7 — O1: osservabilità dello stato "stuck" (Markov)
 
  - File 1: carla_core/envs/carla_multi_agent_env.py — riga 83 (costante)
  - File 2: carla_core/agents/centralized_critic.py — riga 54 (costante)
@@ -722,7 +724,8 @@
  compute_global_obs_dim_with_mask.
 
  ---
- Punto 7 — O2: osservazione del tempo residuo (time-aware)
+ 
+### Punto 6+7 — O2: osservazione del tempo residuo (time-aware)
 
  - File 1: carla_core/envs/carla_multi_agent_env.py — riga 83 (la stessa costante del Punto 6)
  - File 2: carla_core/agents/centralized_critic.py — riga 54 (la stessa costante del Punto 6)
@@ -748,8 +751,10 @@
  > rompe già la compatibilità dei checkpoint ed è non confrontabile col trunk 44D (<do_not_infer>): farne due retrain separati spreca
  > compute senza guadagno di comparabilità. Punti 6 e 7 sono distinti come punti di codice ma vanno trattati come un solo esperimento.
 
+
  ---
- Punto 8 (DONE) — H3: schedule di entropia decrescente
+ 
+### Punto 8 (DONE) — H3: schedule di entropia decrescente
 
  - File 1: carla_core/training/mappo_runtime.py — blocco .training(), dopo riga 280
  - File 2: carla_core/configs/train_mappo.yaml — blocco optimization:
@@ -911,16 +916,12 @@
   │ no_wp_steps (media)       │      232.94 │           204.84 │          210.08 │
   └───────────────────────────┴─────────────┴──────────────────┴─────────────────┘
 
-  A episodi pari (975 ep-veicolo entrambi) R2 ha 401 stuck+timeout vs 421 di R1 — 20 in meno, e no_wp_steps −22.86. Il mio confronto del
-   turno scorso (415 vs 421 → "piatto") metteva a paragone due run di lunghezza diversa (1026 vs 975 ep-veicolo): quello era l'errore.
-  Lo "stuck+timeout PASS" non è un artefatto di denominatore e l'immobilità non è piatta — R2 ha davvero ridotto l'immobilità di ~2 pp,
-  come da progetto.
+  A episodi pari (975 ep-veicolo entrambi) R2 ha 401 stuck+timeout vs 421 di R1 — 20 in meno, e no_wp_steps −22.86. Il mio confronto del turno scorso (415 vs 421 → "piatto") metteva a paragone due run di lunghezza diversa (1026 vs 975 ep-veicolo): quello era l'errore.
+  Lo "stuck+timeout PASS" non è un artefatto di denominatore e l'immobilità non è piatta — R2 ha davvero ridotto l'immobilità di ~2 pp, come da progetto.
 
-  Gate a episodi pari (R2 primi-325 vs R1): SR −2.15 (FAIL), stuck+timeout −2.05 (PASS, reale), collision +0.92 (PASS, sotto canary),
-  offroad +3.28 (FAIL).
+  Gate a episodi pari (R2 primi-325 vs R1): SR −2.15 (FAIL), stuck+timeout −2.05 (PASS, reale), collision +0.92 (PASS, sotto canary), offroad +3.28 (FAIL).
 
-  Quindi non tocco i doc: la voce R2 di Codex (CLAUDE.md, AGENTS.md, EXPERIMENT_REGISTRY.md) è già accurata — ha la troncatura a episodi
-   pari e il verdetto corretto. Inserire "artefatto di denominatore" ci metterebbe dentro il mio errore. Non serve nessuna correzione.
+  Quindi non tocco i doc: la voce R2 di Codex (CLAUDE.md, AGENTS.md, EXPERIMENT_REGISTRY.md) è già accurata — ha la troncatura a episodi pari e il verdetto corretto. Inserire "artefatto di denominatore" ci metterebbe dentro il mio errore. Non serve nessuna correzione.
 
   Verdetto R2 corretto
 
@@ -937,8 +938,7 @@
 
   Mia raccomandazione: confermare R1 con 2 seed prima di proseguire. R1 è il trunk e l'unico PASS pulito; due valutazioni di fila (H3, R2) hanno richiesto controlli equal-episode per non farsi ingannare — è il momento di consolidare R1 invece di impilare. Poi Punto 5 (bugfix route-len, che è un fix d'ambiente, gate a sé).
 
-
-### VALUTAZIONE BUG FIX ROUTE PLANNER
+### VALUTAZIONE P5 (BUG FIX ROUTE PLANNER)
 
 ● Ho valutato la run. Il bugfix è confermato in codice (git show 24e072e: l'unica modifica di codice è la one-liner in
   plan_vehicle_route; gli altri 5 file toccati sono solo doc/registry/docx) e i due run_config.json sono identici byte-per-byte → l'A/B isola esattamente il Punto 5.
@@ -975,8 +975,7 @@
   │ step medi/ep        │ 900.4                     │ 573.8                          │ −326.6    │
   └─────────────────────┴───────────────────────────┴────────────────────────────────┴───────────┘
 
-  Conteggi assoluti veicolo — route_complete 262→1192, timeout 173→34, collision 262→68: i cali sono reali (eventi assoluti), non
-  effetto-denominatore.
+  Conteggi assoluti veicolo — route_complete 262→1192, timeout 173→34, collision 262→68: i cali sono reali (eventi assoluti), non effetto-denominatore.
 
   SR veicolo per chunk: 164707 → 3.5 / 17.5 / 27.5 / 40.4 / 31.0 / 33.3 (picco ~40 poi decade). 212109 → 10.9 / 70.0 / 91.0 / 93.3 / 94.0 / 92.5 (salita pulita, plateau ~93).
 
@@ -1019,7 +1018,75 @@
   3. R2 è il nodo da sciogliere: è "provvisorio, non promosso" ma è dentro al codice che 212109 ha eseguito, e il suo verdetto era su rotte buggy. L'unico modo pulito è un A/B isolante su distribuzione corretta.
   4. Posso aggiornare CLAUDE.md / AGENTS.md / EXPERIMENT_REGISTRY.md / docx con l'esito e il caveat di contaminazione — confermami tu, non li tocco senza ok.
 
- --- 
+
+### VALUTAZIONE O1+O2
+
+• Ho valutato carla_mappo_20260518_152016 da episodes.jsonl. Nessuna modifica ai file.
+
+  Integrità
+  | Check | Esito |
+  |---|---:|
+  | Episodi | 518 |
+  | Record | 3108 = 518 × 6 |
+  | Duplicati | 0 |
+  | NaN/inf | 0 |
+  | final_evaluation_completed | false |
+
+  Questa è training-only, non Town05/final eval.
+
+  Config
+  La run non è direttamente comparabile come checkpoint/config con 20260517_212109: global_obs_dim passa da 216 a 225, coerente con vehicle obs 47D (O1+O2) invece di 44D. Quindi è una run observation-change from scratch.
+
+  Metriche Veicolo
+  | Run | Veh SR | Collision | Stuck+Timeout | Offroad | Route | Speed | no_wp |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | 20260518_152016 | 72.46% | 4.83% | 16.92% | 5.79% | 0.840 | 15.74 | 139.15 |
+  | 20260517_212109 | 75.11% | 4.28% | 19.28% | 1.32% | 0.871 | 12.28 | 131.66 |
+
+  Vs 212109: SR -2.65 pp, collision +0.54 pp, stuck+timeout -2.36 pp, offroad +4.47 pp.
+
+  Equal-window primi 454 episodi: SR -1.69 pp, collision -0.29 pp, stuck+timeout -2.28 pp, offroad +4.26 pp.
+
+  Quindi O1+O2 non passa il gate: migliora il blocco stuck/timeout, ma perde SR e peggiora troppo offroad.
+
+  Route Diagnostics
+  Qui il dato più importante della run:
+
+  | Fonte route veicolo | Quota | SR | Lunghezza media | Sotto 15m |
+  |---|---:|---:|---:|---:|
+  | legacy_fallback | 76.58% | 73.53% | 27.85m | 0.00% |
+  | grp / A* | 23.42% | 68.96% | 12.38m | 75.55% |
+
+  Distribuzione route veicolo reale:
+
+  | Lunghezza route | Quota |
+  |---|---:|
+  | 7.5-12m | 13.58% |
+  | 12-15m | 4.12% |
+  | 15-22.5m | 5.60% |
+  | 22.5-30m | 73.62% |
+  | >30m | 3.09% |
+
+  Tra i soli successi veicolo, 183/1126 = 16.25% sono sotto i 15m dichiarati.
+
+  Questo conferma due cose: A* accetta route sotto target, ma il problema ancora più grosso è che il planner A* fallisce spesso e cade su legacy fallback. Quindi easy=15m oggi in pratica non è “15m”: è una miscela di route A* corte e fallback legacy ~28m.
+
+  Decisione
+  
+  Non promuoverei 20260518_152016 come nuova baseline. È una buona run in assoluto rispetto alle vecchie R1/R2, ma rispetto alla
+  baseline forte 212109 è peggiore su SR e offroad.
+
+  Non procederei nemmeno subito a final eval/O1+O2. Prima sistemerei la parte route:
+
+  1. Fix deterministico hash(ad.agent_id) con seed stabile. (DONE)
+  2. Fix planner: provare più destination candidate prima di fallback, non una sola random.
+  3. Solo dopo valutare se stringere il lower bound a [1.0x, 2.0x].
+  4. Aggiungere anche route_under_target_rate TensorBoard (route_length_ratio < 1.0), perché l’attuale route_too_short_rate misura <0.8x, cioè sotto 12m.
+
+  Sintesi netta: policy forte, critic sano (vf_explained_var=0.966), ma O1+O2 non batte 212109 e la diagnosi route mostra un confound serio. Prossimo passo: route-seed + route-planner fix, poi nuova baseline pulita.
+
+
+ --- ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  ---  --- 
  
  ## Verifica
 
@@ -1077,6 +1144,159 @@
  └──────────────────────────────────────────┴────────────┘
 
 
+#########################################################RECAP##################################################################
+
+### RECAP PLAN 18-05-2026
+
+  Recap Piano EVO Aggiornato
+
+  | Blocco | EVO | Tipo | TensorBoard | Scopo |
+  |---|---|---:|---:|---|
+  | P2.1 | route_under_target_flag/rate | misura | sì | capire quante route sono < 1.0x target |
+  | P2.2 | route_candidate_attempts_configured | misura | sì | sapere se stiamo usando 16/32/64 tentativi |
+  | P2.3 | route_candidate_attempts_used | misura | sì | misurare quanti candidati vengono davvero valutati |
+  | P2.4 | route_candidate_valid_count | misura | sì | capire se A* trova molte route valide o quasi nessuna |
+  | P2.5 | route_candidate_rejected_short_count | misura | sì | quantificare route scartate perché troppo corte |
+  | P2.6 | route_candidate_rejected_long_count | misura | sì | quantificare route scartate perché troppo lunghe |
+  | P2.7 | route_candidate_no_route_count | misura | sì | capire quando GRP/A* non produce una route |
+  | P2.8 | route_planning_latency_ms | misura | sì | misurare costo reale del planner su reset/train |
+  | P2.9 | route_target_error_m | misura | sì | distanza assoluta tra target e route ottenuta |
+  | P2.10 | route_fallback_flag/rate | misura già prevista | sì | distinguere GRP vs fallback distance-based |
+
+  Decisione operativa
+
+  La strategia resta:
+
+  1. Ripristinare distanze curriculum:
+      - easy = 30m
+      - medium = 60m
+      - hard = 100m
+      - Town05 eval = 80m
+  2. Correggere fallback veicolo:
+      - non più fallback fisso ~30m;
+      - fallback coerente con route_distance_m del livello attivo.
+  3. Tenere A*/GRP multi-candidate:
+      - candidate_attempts = 32 come default iniziale;
+      - logging esplicito per capire se è troppo costoso o insufficiente.
+  4. Non attivare subito lower bound [1.0x, 2.0x] come vincolo rigido:
+      - prima logghiamo route_under_target_rate;
+      - se resta alto, allora si valuta il gate P3 con lower bound più severo.
+
+  Gate pratico post-EVO
+
+  Promuoverei la modifica route solo se:
+
+  | Metrica | Gate |
+  |---|---|
+  | route_fallback_rate | scende o resta spiegabile |
+  | route_under_target_rate | scende chiaramente vs 17.7% osservato in 152016 |
+  | route_planning_latency_ms | non introduce overhead train ingestibile |
+  | Vehicle SR | non peggiora oltre rumore |
+  | Collision/offroad | non peggiorano > +1pp |
+  | Integrità episodi | sempre 6 record/episodio, 0 NaN/inf |
+
+  Quindi questi log vanno nel piano come prerequisito empirico: senza di loro non possiamo sapere se candidate_attempts=32 sta aiutando, costando troppo, o mascherando ancora route troppo corte/fallback eccessivi.
+  
+  -> Applicate le EVO route/log in modo chirurgico.
+
+  Modificati:
+
+  - carla_core/envs/route_planner.py: multi-candidate A* con vehicle_route_candidate_attempts, contatori candidati e latency.
+  - carla_core/envs/carla_multi_agent_env.py: nuove metriche per-agent in info, incluso route_under_target_flag e route_target_error_m.
+  - carla_core/agents/centralized_critic.py: tutte le metriche propagate in TensorBoard custom_metrics.
+  - carla_core/training/mappo_runtime.py: tutte le metriche aggiunte a episodes.jsonl.
+  - carla_core/configs/multi_agent.yaml: default vehicle_route_min_ratio: 0.5, vehicle_route_max_ratio: 2.0,
+    vehicle_route_candidate_attempts: 32.
+
+  Log ora disponibili:
+  route_under_target_flag/rate, route_candidate_attempts_configured, route_candidate_attempts_used, route_candidate_valid_count,
+  route_candidate_rejected_short_count, route_candidate_rejected_long_count, route_candidate_no_route_count, route_planning_latency_ms,
+  route_target_error_m.
+
+  Verifiche eseguite:
+
+  - route_planner.py compile: 3/3 pass
+  - carla_multi_agent_env.py + YAML parse: 3/3 pass
+  - centralized_critic.py + mappo_runtime.py compile: 3/3 pass
+  - CodeReviewGraph get_impact_radius: ok, rischio medium; detect_changes invece è andato in timeout.
+  
+### COMPORTAMENTO ATTESO
+
+ -> Dal codice appena verificato, il comportamento atteso è questo.
+
+  Target Route
+
+  - levels_path: easy 30m, medium 60m, hard 100m.
+  - levels_mixed: easy 30m, medium 60m, hard 100m.
+  - levels_traffic: route fissa 60m per tutti i livelli.
+  - test/Town05: 80m.
+
+  Vehicle Route Planner
+  Per ogni veicolo, se route_distance_m è valorizzato:
+
+  1. Usa seed deterministico:
+     traffic.seed + reset_count + crc32(agent_id) via SeedSequence.
+  2. Cerca destinazioni candidate:
+      - prima spawn point a distanza euclidea [0.6x, 1.4x] del target;
+      - se non ne trova, allarga a [0.3x, 2.0x].
+  3. Mescola i candidati con RNG deterministico.
+  4. Prova fino a vehicle_route_candidate_attempts = 32.
+  5. Per ogni candidato:
+      - chiama GlobalRoutePlanner.trace_route;
+      - calcola lunghezza reale WP-to-WP;
+      - accetta solo route dentro [0.5x, 2.0x] del target.
+  6. Se trova più route valide:
+      - sceglie quella con errore minimo rispetto al target, cioè più vicina a 30/60/100/80m.
+  7. Se nessuna route valida viene trovata:
+      - va in fallback.
+
+  Caveat Importante
+  Il fallback veicolo, nel codice attuale, è ancora la chain legacy basata su:
+
+  route_length_vehicle: 15
+
+  quindi circa 15 * 2m = ~30m.
+
+  Questo significa:
+
+  - su easy 30m: fallback coerente;
+  - su medium 60m: fallback accorcia molto;
+  - su hard 100m: fallback accorcia moltissimo.
+
+  Quindi il comportamento corretto dipende da quanto scende route_fallback_rate. Se resta alto, la difficoltà route medium/hard viene
+  ancora compressa dal fallback. Ora però lo vedremo chiaramente nei log.
+
+  Log Attesi
+  In episodes.jsonl e TensorBoard dovremmo vedere:
+
+  - route_fallback_rate
+  - route_under_target_rate
+  - route_too_short_rate
+  - route_candidate_attempts_configured
+  - route_candidate_attempts_used
+  - route_candidate_valid_count
+  - route_candidate_rejected_short_count
+  - route_candidate_rejected_long_count
+  - route_candidate_no_route_count
+  - route_planning_latency_ms
+  - route_target_error_m
+  - route_length_ratio
+
+  Interpretazione Attesa
+  La run è buona lato route planner se osserviamo:
+
+  - route_fallback_rate basso;
+  - route_under_target_rate più basso del 17.7% visto in 152016;
+  - route_target_error_m contenuto;
+  - route_planning_latency_ms non eccessivo;
+  - route_candidate_valid_count > 0 spesso;
+  - pochi route_candidate_no_route_count.
+
+  Se invece route_fallback_rate resta alto, allora prima di usare la run come evidenza forte sul curriculum conviene implementare anche il fallback distance-based coerente con route_distance_m.
+
+
+#########################################################Q&A####################################################################
+
 ###Q&A
 
 ● TensorBoard (TensorFlow è il framework; TensorBoard è la dashboard). E sì, è lo strumento giusto
@@ -1126,57 +1346,8 @@
   - Opzionale (fuori dal piano): il timeseries di results.json non include vf_explained_var — il dato c'è già nel result dict
   (result["info"]["learner"]…, vedi train_carla_mappo.py:284). Aggiungere una riga al timeseries.append (train_carla_mappo.py:1105) lo
   porterebbe nella pipeline del progetto, così compare_results_carla.py può usarlo senza TB. Dimmi se vuoi che lo aggiunga al piano come punto extra.
- 
-
-#########################################################RECAP##################################################################
-
-### RECAP 17/05/2026
-
- ### RACAP OPEN-POINTS
-
-  Dove siamo. Trunk attivo: C0 + C1 + D2 + R1. La base sperimentale porta anche H1/H2/H3/R3 (retained, non promossi) e R2 (provvisorio). Codice attuale in _vehicle_reward: R1 + R2.
-
-  Stato dei Punti di piano:
-
-  ┌─────────────┬─────────────────────────────────────┬────────────────────────────────────────────┐
-  │    Punto    │                Cosa                 │                   Stato                    │
-  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
-  │ 1 — H1+H1.1 │ vf_clip_param / vf_loss_coeff       │ fatto — non promosso, retained come base   │
-  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
-  │ 2 — H2      │ gamma 0.99→0.997                    │ fatto — non promosso, ipotesi falsificata  │
-  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
-  │ 3 — R1      │ rimuove gate route_completion < 0.3 │ fatto — PROMOSSO (unico PASS)              │
-  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
-  │ 4 — R2      │ bonus sterzo gated su speed > 5     │ fatto — non promosso, retained provvisorio │
-  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
-  │ 8 — H3      │ schedule entropy                    │ fatto — non promosso, retained             │
-  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
-  │ (R3)        │ collisione −50→−500                 │ fatto — non promosso, falsificato          │
-  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
-  │ 5           │ bugfix route-len                    │ 🔵 APERTO                                  │
-  ├─────────────┼─────────────────────────────────────┼────────────────────────────────────────────┤
-  │ 6+7         │ O1+O2 — obs 44D→47D                 │ 🔵 APERTO                                  │
-  └─────────────┴─────────────────────────────────────┴────────────────────────────────────────────┘
-
-  Aperti trasversali (non numerati, ma reali)
-
-  - Bug determinismo route-seed (hash(ad.agent_id)) — le run non sono route-paired tra processi.
-  - Conferma multi-seed di R1 — R1 è promosso su una run singola; il calo SR pedoni e il rumore run-to-run restano da chiarire.
-  - Final eval Town05 — mai eseguita; tutte le run hanno final_evaluation_completed=false.  
-
-  I 2 Punti aperti
-
-  -> Punto 5 — Bugfix route-len (route_planner.py, plan_vehicle_route ~184). Una riga: aggiungere il reject route_len > target × 2.0. La docstring promette [0.5x, 2.0x] ma il codice controlla solo il lower bound 0.5x → rotte "easy 15m" possono essere arbitrariamente lunghe, gonfiando i timeout e decalibrando la difficoltà. Tipo: bugfix d'ambiente, checkpoint-comparabile, ma A/B a sé (cambia la distribuzione della lunghezza-rotta).
-
-  -> Punti 6+7 — O1+O2 (carla_multi_agent_env.py cost. riga 83 + centralized_critic.py riga 54 + _get_vehicle_obs). Obs veicolo 44D→47D: O1 = no_wp_steps norm + flag loop_penalty_active; O2 = tempo residuo. Fix di state-aliasing di Markov. Cambia lo spazio osservazione → NON checkpoint-comparabile, retrain da zero; da applicare insieme e per ultimi.
-
-  Candidato di piano in sospeso
-
-  - Full path curriculum — la run di curriculum vera (difficulty=path, niente --lock-curriculum-level, 15/35/60m, budget 0.30/0.32/0.38, pesi 1.00/1.07/1.27, ~3M step). È l'esperimento che risponde alla domanda di tesi (curriculum vs mixed-batch); finora tutte le run sono easy-lock.
   
 
-#########################################################Q&A####################################################################
-  
 ### Q&A
   
   > Domanda: Avrebbe senso aumentare il tempo totale degli episodi (tipo da 1000 a 1500) al fine di recuperare tutti quei veicoli che  vanno in timeout e di conseguenza implementare una logica mirata che vada a troncare l'episodio nel momento in cui il veicolo è stuck (ad esempio se continuous_route_progress < 0.1 e no_wp_steps > 150, o altri valori in combo [ma senza inserire troppo rumore o rigidità]) intercettandolo in tempo così da non aggravare il train? -rispondi criticamente ed in modo empirico in base ai dati che abbiamo a disposizione su episode.jsonl 

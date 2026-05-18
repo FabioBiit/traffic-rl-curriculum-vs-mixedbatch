@@ -161,6 +161,33 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
                         "route_too_short_flag": float(
                             out.get("route_too_short_flag", 0.0)
                         ),
+                        "route_under_target_flag": float(
+                            out.get("route_under_target_flag", 0.0)
+                        ),
+                        "route_candidate_attempts_configured": int(
+                            out.get("route_candidate_attempts_configured", 0)
+                        ),
+                        "route_candidate_attempts_used": int(
+                            out.get("route_candidate_attempts_used", 0)
+                        ),
+                        "route_candidate_valid_count": int(
+                            out.get("route_candidate_valid_count", 0)
+                        ),
+                        "route_candidate_rejected_short_count": int(
+                            out.get("route_candidate_rejected_short_count", 0)
+                        ),
+                        "route_candidate_rejected_long_count": int(
+                            out.get("route_candidate_rejected_long_count", 0)
+                        ),
+                        "route_candidate_no_route_count": int(
+                            out.get("route_candidate_no_route_count", 0)
+                        ),
+                        "route_planning_latency_ms": round(
+                            out.get("route_planning_latency_ms", 0.0), 4
+                        ),
+                        "route_target_error_m": round(
+                            out.get("route_target_error_m", 0.0), 4
+                        ),
                         "step_count": episode.length,
                         "level": current_level,
                     },

@@ -132,6 +132,9 @@ DEFAULT_MA_CONFIG = {
         "route_length_pedestrian": 10,
         "route_distance_m": None,              # Block 5.1: A* route by meters (None=legacy)
         "route_distance_m_pedestrian": None,   # Block 5.1: sidewalk by meters (None=legacy)
+        "vehicle_route_min_ratio": 0.5,
+        "vehicle_route_max_ratio": 2.0,
+        "vehicle_route_candidate_attempts": 32,
     },
 }
 
@@ -242,6 +245,14 @@ class AgentData:
         "prev_location",            # per calcolo distanza incrementale
         "route_source",
         "route_target_distance_m",
+        "route_candidate_attempts_configured",
+        "route_candidate_attempts_used",
+        "route_candidate_valid_count",
+        "route_candidate_rejected_short_count",
+        "route_candidate_rejected_long_count",
+        "route_candidate_no_route_count",
+        "route_planning_latency_ms",
+        "route_target_error_m",
     ]
 
     def __init__(self, agent_id: str, agent_type: str):
@@ -267,6 +278,14 @@ class AgentData:
         self.prev_location = None
         self.route_source = "unknown"
         self.route_target_distance_m = 0.0
+        self.route_candidate_attempts_configured = 0
+        self.route_candidate_attempts_used = 0
+        self.route_candidate_valid_count = 0
+        self.route_candidate_rejected_short_count = 0
+        self.route_candidate_rejected_long_count = 0
+        self.route_candidate_no_route_count = 0
+        self.route_planning_latency_ms = 0.0
+        self.route_target_error_m = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +576,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
             route_too_short_flag = (
                 1.0 if route_target > 0.0 and route_length_ratio < 0.8 else 0.0
             )
+            route_under_target_flag = (
+                1.0 if route_target > 0.0 and route_length_ratio < 1.0 else 0.0
+            )
 
             # Build info dict for this agent
             agent_info = {
@@ -579,6 +601,21 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 "route_length_ratio": route_length_ratio,
                 "route_fallback_flag": route_fallback_flag,
                 "route_too_short_flag": route_too_short_flag,
+                "route_under_target_flag": route_under_target_flag,
+                "route_candidate_attempts_configured": (
+                    ad.route_candidate_attempts_configured
+                ),
+                "route_candidate_attempts_used": ad.route_candidate_attempts_used,
+                "route_candidate_valid_count": ad.route_candidate_valid_count,
+                "route_candidate_rejected_short_count": (
+                    ad.route_candidate_rejected_short_count
+                ),
+                "route_candidate_rejected_long_count": (
+                    ad.route_candidate_rejected_long_count
+                ),
+                "route_candidate_no_route_count": ad.route_candidate_no_route_count,
+                "route_planning_latency_ms": ad.route_planning_latency_ms,
+                "route_target_error_m": ad.route_target_error_m,
             }
 
             if not term and not trunc:
@@ -946,11 +983,55 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.goal_location = carla.Location(x=loc.x + 30.0, y=loc.y, z=loc.z)
             ad.route_waypoints = [_NavPoint(ad.goal_location)]
 
-        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        self._update_route_length_metrics(ad)
         ad.prev_location = ad.actor.get_location()
+
+    def _reset_route_diagnostics(self, ad: AgentData):
+        ad.route_candidate_attempts_configured = 0
+        ad.route_candidate_attempts_used = 0
+        ad.route_candidate_valid_count = 0
+        ad.route_candidate_rejected_short_count = 0
+        ad.route_candidate_rejected_long_count = 0
+        ad.route_candidate_no_route_count = 0
+        ad.route_planning_latency_ms = 0.0
+        ad.route_target_error_m = 0.0
+
+    def _apply_route_diagnostics(self, ad: AgentData, diagnostics: dict | None):
+        if not diagnostics:
+            return
+        ad.route_candidate_attempts_configured = int(
+            diagnostics.get("route_candidate_attempts_configured", 0)
+        )
+        ad.route_candidate_attempts_used = int(
+            diagnostics.get("route_candidate_attempts_used", 0)
+        )
+        ad.route_candidate_valid_count = int(
+            diagnostics.get("route_candidate_valid_count", 0)
+        )
+        ad.route_candidate_rejected_short_count = int(
+            diagnostics.get("route_candidate_rejected_short_count", 0)
+        )
+        ad.route_candidate_rejected_long_count = int(
+            diagnostics.get("route_candidate_rejected_long_count", 0)
+        )
+        ad.route_candidate_no_route_count = int(
+            diagnostics.get("route_candidate_no_route_count", 0)
+        )
+        ad.route_planning_latency_ms = float(
+            diagnostics.get("route_planning_latency_ms", 0.0)
+        )
+
+    def _update_route_length_metrics(self, ad: AgentData):
+        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        route_target = float(ad.route_target_distance_m or 0.0)
+        ad.route_target_error_m = (
+            abs(ad.route_optimal_length - route_target)
+            if route_target > 0.0 else 0.0
+        )
 
     def _setup_vehicle_route(self, ad: AgentData, skip_current_wp: bool = False):
         # Block 5.1: A* route by distance (if configured)
+        self._reset_route_diagnostics(ad)
         route_distance_m = self.cfg["episode"].get("route_distance_m")
         ad.route_target_distance_m = float(route_distance_m or 0.0)
         ad.route_source = "legacy_chain"
@@ -962,13 +1043,30 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 int(self._reset_count),
                 agent_key,
             ]))
-            wps = self._route_planner.plan_vehicle_route(
-                origin, route_distance_m, self._spawn_points, rng,
+            route_min_ratio = float(
+                self.cfg["episode"].get("vehicle_route_min_ratio", 0.5)
             )
+            route_max_ratio = float(
+                self.cfg["episode"].get("vehicle_route_max_ratio", 2.0)
+            )
+            route_attempts = int(
+                self.cfg["episode"].get("vehicle_route_candidate_attempts", 32)
+            )
+            wps, diagnostics = self._route_planner.plan_vehicle_route(
+                origin,
+                route_distance_m,
+                self._spawn_points,
+                rng,
+                min_route_ratio=route_min_ratio,
+                max_route_ratio=route_max_ratio,
+                max_candidate_attempts=route_attempts,
+                return_diagnostics=True,
+            )
+            self._apply_route_diagnostics(ad, diagnostics)
             if wps is not None and len(wps) >= 2:
                 ad.route_waypoints = wps
                 ad.current_wp_idx = 0
-                ad.route_optimal_length = self._compute_route_optimal_length(ad)
+                self._update_route_length_metrics(ad)
                 ad.prev_location = ad.actor.get_location()
                 ad.route_source = "grp"
                 return
@@ -998,12 +1096,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.route_waypoints = [wp]
 
         ad.current_wp_idx = 0
-        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        self._update_route_length_metrics(ad)
         ad.prev_location = ad.actor.get_location()
 
     def _setup_pedestrian_route(self, ad: AgentData):
         """Build a pedestrian route by chaining sidewalk waypoints like vehicles."""
         # Block 5.1: distance-based sidewalk routing (if configured)
+        self._reset_route_diagnostics(ad)
         ped_dist = self.cfg["episode"].get("route_distance_m_pedestrian")
         ad.route_target_distance_m = float(ped_dist or 0.0)
         ad.route_source = "legacy_chain"
@@ -1016,7 +1115,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 ad.route_waypoints = wps
                 ad.current_wp_idx = 0
                 ad.goal_location = wps[0].transform.location
-                ad.route_optimal_length = self._compute_route_optimal_length(ad)
+                self._update_route_length_metrics(ad)
                 ad.prev_location = ad.actor.get_location()
                 ad.route_source = "sidewalk_distance"
                 return
@@ -1053,7 +1152,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return
 
         ad.goal_location = ad.route_waypoints[0].transform.location
-        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        self._update_route_length_metrics(ad)
         ad.prev_location = ad.actor.get_location()
 
     # ------------------------------------------------------------------

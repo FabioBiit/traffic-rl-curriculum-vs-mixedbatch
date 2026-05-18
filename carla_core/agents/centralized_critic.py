@@ -775,6 +775,29 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                     "route_length_ratio": info.get("route_length_ratio", 0.0),
                     "route_fallback_flag": info.get("route_fallback_flag", 0.0),
                     "route_too_short_flag": info.get("route_too_short_flag", 0.0),
+                    "route_under_target_flag": info.get("route_under_target_flag", 0.0),
+                    "route_candidate_attempts_configured": info.get(
+                        "route_candidate_attempts_configured", 0
+                    ),
+                    "route_candidate_attempts_used": info.get(
+                        "route_candidate_attempts_used", 0
+                    ),
+                    "route_candidate_valid_count": info.get(
+                        "route_candidate_valid_count", 0
+                    ),
+                    "route_candidate_rejected_short_count": info.get(
+                        "route_candidate_rejected_short_count", 0
+                    ),
+                    "route_candidate_rejected_long_count": info.get(
+                        "route_candidate_rejected_long_count", 0
+                    ),
+                    "route_candidate_no_route_count": info.get(
+                        "route_candidate_no_route_count", 0
+                    ),
+                    "route_planning_latency_ms": info.get(
+                        "route_planning_latency_ms", 0.0
+                    ),
+                    "route_target_error_m": info.get("route_target_error_m", 0.0),
                 }
 
         # --- Source 2: side-channel for terminated agents ---
@@ -811,6 +834,31 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                         "route_length_ratio": info.get("route_length_ratio", 0.0),
                         "route_fallback_flag": info.get("route_fallback_flag", 0.0),
                         "route_too_short_flag": info.get("route_too_short_flag", 0.0),
+                        "route_under_target_flag": info.get(
+                            "route_under_target_flag", 0.0
+                        ),
+                        "route_candidate_attempts_configured": info.get(
+                            "route_candidate_attempts_configured", 0
+                        ),
+                        "route_candidate_attempts_used": info.get(
+                            "route_candidate_attempts_used", 0
+                        ),
+                        "route_candidate_valid_count": info.get(
+                            "route_candidate_valid_count", 0
+                        ),
+                        "route_candidate_rejected_short_count": info.get(
+                            "route_candidate_rejected_short_count", 0
+                        ),
+                        "route_candidate_rejected_long_count": info.get(
+                            "route_candidate_rejected_long_count", 0
+                        ),
+                        "route_candidate_no_route_count": info.get(
+                            "route_candidate_no_route_count", 0
+                        ),
+                        "route_planning_latency_ms": info.get(
+                            "route_planning_latency_ms", 0.0
+                        ),
+                        "route_target_error_m": info.get("route_target_error_m", 0.0),
                     }
         except (AttributeError, IndexError):
             pass
@@ -889,6 +937,64 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
             )
             episode.custom_metrics[f"{policy_id}/route_too_short_rate"] = float(
                 np.mean([d.get("route_too_short_flag", 0.0) for d in agent_data.values()])
+            )
+            episode.custom_metrics[f"{policy_id}/route_under_target_rate"] = float(
+                np.mean(
+                    [d.get("route_under_target_flag", 0.0) for d in agent_data.values()]
+                )
+            )
+            episode.custom_metrics[
+                f"{policy_id}/route_candidate_attempts_configured"
+            ] = float(
+                np.mean(
+                    [
+                        d.get("route_candidate_attempts_configured", 0)
+                        for d in agent_data.values()
+                    ]
+                )
+            )
+            episode.custom_metrics[f"{policy_id}/route_candidate_attempts_used"] = float(
+                np.mean(
+                    [d.get("route_candidate_attempts_used", 0) for d in agent_data.values()]
+                )
+            )
+            episode.custom_metrics[f"{policy_id}/route_candidate_valid_count"] = float(
+                np.mean(
+                    [d.get("route_candidate_valid_count", 0) for d in agent_data.values()]
+                )
+            )
+            episode.custom_metrics[
+                f"{policy_id}/route_candidate_rejected_short_count"
+            ] = float(
+                np.mean(
+                    [
+                        d.get("route_candidate_rejected_short_count", 0)
+                        for d in agent_data.values()
+                    ]
+                )
+            )
+            episode.custom_metrics[
+                f"{policy_id}/route_candidate_rejected_long_count"
+            ] = float(
+                np.mean(
+                    [
+                        d.get("route_candidate_rejected_long_count", 0)
+                        for d in agent_data.values()
+                    ]
+                )
+            )
+            episode.custom_metrics[f"{policy_id}/route_candidate_no_route_count"] = float(
+                np.mean(
+                    [d.get("route_candidate_no_route_count", 0) for d in agent_data.values()]
+                )
+            )
+            episode.custom_metrics[f"{policy_id}/route_planning_latency_ms"] = float(
+                np.mean(
+                    [d.get("route_planning_latency_ms", 0.0) for d in agent_data.values()]
+                )
+            )
+            episode.custom_metrics[f"{policy_id}/route_target_error_m"] = float(
+                np.mean([d.get("route_target_error_m", 0.0) for d in agent_data.values()])
             )
 
         # Debug: warn about agents with no captured outcome

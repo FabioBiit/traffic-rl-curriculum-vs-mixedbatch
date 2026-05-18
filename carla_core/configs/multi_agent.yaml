@@ -36,6 +36,9 @@ episode:
   terminate_on_route_completion: true       # End episode when route is completed.
   route_distance_m: null                    # Block 5.1: A* vehicle route by meters (null = legacy wp chain)
   route_distance_m_pedestrian: null         # Block 5.1: sidewalk route by meters (null = legacy wp count)
+  vehicle_route_min_ratio: 0.5              # Valid A* route lower bound vs target distance.
+  vehicle_route_max_ratio: 2.0              # Valid A* route upper bound vs target distance.
+  vehicle_route_candidate_attempts: 32      # Max A* destination candidates per vehicle route setup.
   waypoint_lookahead: 8                     # Evo A: recover when an agent skips intermediate waypoints
   vehicle_waypoint_radius_m: 2.0            # Radius for vehicle route progression
   pedestrian_waypoint_radius_m: 2.0         # Radius for pedestrian route progression
