@@ -81,7 +81,7 @@ if sys.platform == "win32":
 # Constants
 # ---------------------------------------------------------------------------
 
-VEHICLE_OBS_DIM = 44
+VEHICLE_OBS_DIM = 47     # O1+O2: +3 (no_wp_norm, loop_flag, time_remaining)
 PEDESTRIAN_OBS_DIM = 26
 N_NEARBY_VEHICLES_FOR_VEHICLE = 3
 N_NEARBY_VEHICLES_FOR_PEDESTRIAN = 2
@@ -1186,7 +1186,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return self._get_pedestrian_obs(ad)
 
     def _get_vehicle_obs(self, ad: AgentData) -> np.ndarray:
-        """44D vehicle obs: legacy features plus route and hazard preview."""
+        """47D vehicle obs: legacy features plus route and hazard preview."""
         obs = np.zeros(VEHICLE_OBS_DIM, dtype=np.float32)
         t = ad.actor.get_transform()
         vel = ad.actor.get_velocity()
@@ -1265,6 +1265,15 @@ class CarlaMultiAgentEnv(ParallelEnv):
         obs[41] = ped_ttc
         obs[42] = veh_occ
         obs[43] = ped_occ
+
+        # O1 — stuck observability (Markov consistency with the no_wp / loop reward terms)
+        no_wp = max(self._step_count - ad.last_wp_advance_step, 0)
+        obs[44] = min(no_wp / 300.0, 1.0)
+        obs[45] = 1.0 if ad.loop_penalty_active else 0.0
+
+        # O2 — time-aware observation (episode truncated at a fixed horizon)
+        max_steps = max(int(self.cfg["episode"]["max_steps"]), 1)
+        obs[46] = 1.0 - min(self._step_count / max_steps, 1.0)
 
         return self._sanitize_obs(obs, ad.agent_id)
 

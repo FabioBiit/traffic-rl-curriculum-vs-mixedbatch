@@ -32,8 +32,8 @@ per candidate.
 | R1 | promoted (trunk) | 20260517_134652 | Reward shaping: dropped the `route_completion < 0.3` guard in `_vehicle_reward` so start/unblock and `target_min_speed` shaping stay active for the whole route. Single-knob A/B vs R3 `20260516_200545`. Vehicle gate PASSES 4/4: SR +4.69 pp (22.70->27.38), stuck+timeout -3.45 pp (46.63->43.18), collision -1.46 pp, offroad +0.22 pp. +45 route-completions in absolute count (222->267); integrity OK (1950 records, 0 dups, 0 NaN/inf). Pedestrians (separate): SR -4.03 pp -- likely run-to-run noise, to confirm with seeds. First gate pass since `D2`; promoted into the trunk, base for `R2`. |
 | R2 | retained provisional / not promoted | 20260517_164707 | Reward shaping: gate the `+0.1` smooth-steering bonus in `_vehicle_reward` (~1803) on `speed_kmh > 5.0`. Checkpoint-comparable. Formal vehicle gate vs `R1` baseline `20260517_134652` FAILS: SR -1.85 pp, stuck+timeout -2.73 pp, collision +1.43 pp, offroad +3.15 pp. User decision: no immediate revert; keep provisionally because immobility improved, but not a validated promotion. |
 | Route-len bugfix (Punto 5) | evaluated / kept (env correctness fix; not a policy promotion) | 20260517_212109 | Env bugfix: `route_planner.py` `plan_vehicle_route` now enforces the docstring `<= 2.0x target` upper bound (commit `24e072e`; previously only the `0.5x` lower bound was checked). Single-knob A/B vs `R2` `20260517_164707` (`run_config.json` byte-identical). Vehicle gate formally PASSES 4/4 (SR +49.57 pp 25.54->75.11, stuck+timeout -21.17 pp, collision -21.25 pp, offroad -7.16 pp; 3174 records, 0 dups/NaN) -- but the delta is a task-distribution change (removes routes >2x target unfinishable in 1000 steps: episodes 342->529, mean step_count 900->574, route% 50->87), NOT a policy improvement. Kept as an env-correctness fix; `20260517_212109` is the post-bugfix vehicle baseline. Final eval pending. |
-| Route-seed determinism fix | pending (user-approved; code not yet applied) | — | Env reproducibility bugfix: `carla_multi_agent_env.py:960` seeds the vehicle route RNG with `hash(ad.agent_id)`; Python `hash()` of a `str` is per-process salted (`PYTHONHASHSEED` not pinned) so route seeds are not reproducible across processes and A/B runs are not route-paired. Fix: `np.random.SeedSequence([traffic_seed, reset_count, zlib.crc32(agent_id)])`. No gate (does not change the route distribution, only reproducibility); to be applied before `O1+O2`. |
-| O1+O2 | pending (obs change; applied last) | — | Vehicle obs `44D -> 47D`: O1 adds normalized `no_wp_steps` + `loop_penalty_active` flag, O2 adds normalized time-remaining. Markov state-aliasing fixes, not hazard/perception features. Not checkpoint-comparable; one retrain-from-scratch 47D variant. |
+| Route-seed determinism fix | applied 2026-05-18 (verified; not yet run) | — | Env reproducibility bugfix: `carla_multi_agent_env.py:960` seeded the vehicle route RNG with `hash(ad.agent_id)`; Python `hash()` of a `str` is per-process salted (`PYTHONHASHSEED` not pinned) so route seeds were not reproducible across processes and A/B runs were not route-paired. Fixed 2026-05-18: `hash(ad.agent_id)` -> `np.random.SeedSequence([traffic_seed, reset_count, zlib.crc32(agent_id)])`; verified (compileall OK, `git diff --check` clean, identical RNG output across two separate processes). No gate (does not change the route distribution, only reproducibility); first exercised in the next run. |
+| O1+O2 | code applied 2026-05-18 (verified; run pending) | — | Vehicle obs `44D -> 47D`: O1 adds normalized `no_wp_steps` + `loop_penalty_active` flag, O2 adds normalized time-remaining. Markov state-aliasing fixes, not hazard/perception features. Code applied 2026-05-18: `VEHICLE_OBS_DIM`/`_VEHICLE_OBS_DIM` 44->47 + `obs[44/45/46]` in `_get_vehicle_obs`; compileall OK; `global_obs_dim` 216->225. Not checkpoint-comparable; one retrain-from-scratch 47D variant, run pending. |
 
 ---
 
@@ -587,7 +587,7 @@ prior H/R-series runs were measured on the bug-contaminated route distribution
 ## Route-seed Determinism Fix — Reproducible Vehicle Route RNG
 
 **Type:** Environment bugfix (correctness / reproducibility)
-**Status:** Pending — user-approved 2026-05-18, code not yet applied
+**Status:** Applied 2026-05-18 (verified; not yet exercised in a run)
 **Files:** `carla_core/envs/carla_multi_agent_env.py` — `_setup_vehicle_route()` (line 960)
 **Comparability:** Changes realized route sequences but not the route
 distribution; a post-fix run is not bit-identical to `20260517_212109`. No
@@ -621,16 +621,17 @@ streams and removes the additive-overlap collisions. The runs use a single
 CARLA env (fixed ports 2000/8000, no `worker_index` captured), so no
 cross-worker term is needed.
 
-**Verification plan:** `python -m compileall carla_core/envs/carla_multi_agent_env.py`;
-`git diff --check`; confirm the derived seed is identical across two separate
-process invocations for the same `(seed, reset_count, agent_id)`.
+**Verification (done 2026-05-18):** `python -m compileall carla_core/envs/carla_multi_agent_env.py` OK;
+`git diff --check` clean; the derived RNG output is identical across two
+separate process invocations for the same `(seed, reset_count, agent_id)` (the
+old `hash()` differed, confirming the bug).
 
 ---
 
 ## O1+O2 — Markov State-Aliasing Observations (44D -> 47D)
 
 **Type:** Observation change (dimensionality-changing)
-**Status:** Pending (applied last; one retrain-from-scratch 47D variant)
+**Status:** Code applied 2026-05-18 (verified; one retrain-from-scratch 47D variant, run pending)
 **Files:** `carla_core/envs/carla_multi_agent_env.py` (obs constant + `_get_vehicle_obs`),
 `carla_core/agents/centralized_critic.py` (obs constant)
 **Comparability:** NOT checkpoint-comparable — breaks checkpoints, requires a

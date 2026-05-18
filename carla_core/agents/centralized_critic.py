@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 GLOBAL_OBS = "global_obs"
 
 # Obs dimensions per agent type (must match env constants)
-_VEHICLE_OBS_DIM = 44
+_VEHICLE_OBS_DIM = 47    # must match VEHICLE_OBS_DIM (env)
 _PEDESTRIAN_OBS_DIM = 26
 
 
