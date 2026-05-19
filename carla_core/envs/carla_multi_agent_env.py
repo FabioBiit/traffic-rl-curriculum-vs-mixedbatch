@@ -12,8 +12,18 @@ Policy mapping:
     vehicle_* -> vehicle_policy
     pedestrian_* -> pedestrian_policy
 
-Vehicle obs (25D): same as CarlaEnv v0.3
-Pedestrian obs (19D):
+Vehicle obs (44D):
+    [0:25]  legacy vehicle kinematics/route/traffic/nearby/steer features
+    [25:31] route preview offsets [1,3,5]: (longitudinal, lateral) x 3
+    [31]    route heading error
+    [32]    future route turn angle / curvature proxy
+    [33]    signed lateral error to route segment
+    [34:40] nearest 2 pedestrians: (rel_x, rel_y, rel_speed) x 2
+    [40]    TTC risk for vehicles ahead/on-path
+    [41]    TTC risk for pedestrians ahead/on-path
+    [42]    occupancy risk for vehicles ahead/on-path
+    [43]    occupancy risk for pedestrians ahead/on-path
+Pedestrian obs (26D):
     [0:3]   position (x, y, z) normalized
     [3:6]   velocity (vx, vy, vz) normalized
     [6]     speed scalar normalized
@@ -23,6 +33,10 @@ Pedestrian obs (19D):
     [11]    on_sidewalk (0 or 1)
     [12:18] nearest 2 vehicles: (rel_x, rel_y, rel_speed) x 2
     [18]    route_completion (0..1)
+    [19:23] route preview offsets [1,3]: (dist, angle) x 2
+    [23]    route heading error
+    [24]    TTC risk for vehicles ahead/on-path
+    [25]    occupancy risk for vehicles ahead/on-path
 
 Vehicle action (2D continuous): [throttle_brake, steer]
 Pedestrian action (2D continuous): [speed_frac, direction_delta]
@@ -43,6 +57,7 @@ import math
 import os
 import signal
 import sys
+import zlib
 from copy import deepcopy
 from pathlib import Path
 import gymnasium as gym
@@ -66,10 +81,11 @@ if sys.platform == "win32":
 # Constants
 # ---------------------------------------------------------------------------
 
-VEHICLE_OBS_DIM = 25
-PEDESTRIAN_OBS_DIM = 19
+VEHICLE_OBS_DIM = 47     # O1+O2: +3 (no_wp_norm, loop_flag, time_remaining)
+PEDESTRIAN_OBS_DIM = 26
 N_NEARBY_VEHICLES_FOR_VEHICLE = 3
 N_NEARBY_VEHICLES_FOR_PEDESTRIAN = 2
+N_NEARBY_PEDESTRIANS_FOR_VEHICLE = 2
 PEDESTRIAN_MAX_SPEED = 5.0  # m/s (~18 km/h, running)
 
 # ---------------------------------------------------------------------------
@@ -116,6 +132,9 @@ DEFAULT_MA_CONFIG = {
         "route_length_pedestrian": 10,
         "route_distance_m": None,              # Block 5.1: A* route by meters (None=legacy)
         "route_distance_m_pedestrian": None,   # Block 5.1: sidewalk by meters (None=legacy)
+        "vehicle_route_min_ratio": 0.5,
+        "vehicle_route_max_ratio": 2.0,
+        "vehicle_route_candidate_attempts": 32,
     },
 }
 
@@ -219,9 +238,21 @@ class AgentData:
         "position_history",
         "last_wp_advance_step",
         "loop_penalty_active",
+        "skipped_waypoints",
+        "last_skipped_waypoints",
         "route_optimal_length",     # somma distanze WP-to-WP (calcolata al reset)
         "actual_distance_traveled", # accumulata step-by-step
-        "prev_location"             # per calcolo distanza incrementale
+        "prev_location",            # per calcolo distanza incrementale
+        "route_source",
+        "route_target_distance_m",
+        "route_candidate_attempts_configured",
+        "route_candidate_attempts_used",
+        "route_candidate_valid_count",
+        "route_candidate_rejected_short_count",
+        "route_candidate_rejected_long_count",
+        "route_candidate_no_route_count",
+        "route_planning_latency_ms",
+        "route_target_error_m",
     ]
 
     def __init__(self, agent_id: str, agent_type: str):
@@ -240,9 +271,21 @@ class AgentData:
         self.position_history = []
         self.last_wp_advance_step = 0
         self.loop_penalty_active = False
+        self.skipped_waypoints = 0
+        self.last_skipped_waypoints = 0
         self.route_optimal_length = 0.0
         self.actual_distance_traveled = 0.0
         self.prev_location = None
+        self.route_source = "unknown"
+        self.route_target_distance_m = 0.0
+        self.route_candidate_attempts_configured = 0
+        self.route_candidate_attempts_used = 0
+        self.route_candidate_valid_count = 0
+        self.route_candidate_rejected_short_count = 0
+        self.route_candidate_rejected_long_count = 0
+        self.route_candidate_no_route_count = 0
+        self.route_planning_latency_ms = 0.0
+        self.route_target_error_m = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +432,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.position_history = []
             ad.last_wp_advance_step = 0
             ad.loop_penalty_active = False
+            ad.skipped_waypoints = 0
+            ad.last_skipped_waypoints = 0
 
         observations = {a: self._get_obs(a) for a in self.agents}
         infos = {a: {} for a in self.agents}
@@ -444,13 +489,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad = self._agent_data[agent_id]
 
             # Advance waypoints
+            wp_idx_before_advance = ad.current_wp_idx
             if ad.agent_type == "vehicle":
                 self._advance_vehicle_waypoint(ad)
-                # Fix finding 1: update last_wp_advance_step HERE, after advance
-                if ad.current_wp_idx > ad.prev_wp_idx:
-                    ad.last_wp_advance_step = self._step_count
             else:
                 self._advance_pedestrian_waypoint(ad)
+            if ad.current_wp_idx > wp_idx_before_advance:
+                ad.last_wp_advance_step = self._step_count
 
             reward = self._compute_reward(agent_id)
             rewards[agent_id] = self._validate_reward(reward, agent_id)
@@ -487,10 +532,16 @@ class CarlaMultiAgentEnv(ParallelEnv):
                     termination_reason = "route_complete"
                 elif ad.agent_type == "pedestrian" and ad.current_wp_idx >= len(ad.route_waypoints):
                     termination_reason = "route_complete"
-                elif ad.agent_type == "vehicle" and self.cfg["episode"].get("terminate_on_offroad", True):
-                    el = ad.actor.get_location()
-                    wp_check = self._map.get_waypoint(el, project_to_road=True)
-                    if wp_check is None or el.distance(wp_check.transform.location) > 5.0:
+                elif ad.agent_type == "vehicle":
+                    is_offroad = False
+                    if self.cfg["episode"].get("terminate_on_offroad", True):
+                        el = ad.actor.get_location()
+                        wp_check = self._map.get_waypoint(el, project_to_road=True)
+                        is_offroad = (
+                            wp_check is None
+                            or el.distance(wp_check.transform.location) > 5.0
+                        )
+                    if is_offroad:
                         termination_reason = "offroad"
                     elif trunc:
                         # Stuck: timeout + (low route_completion OR loop_penalty)
@@ -516,13 +567,55 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if termination_reason == "stuck":
                 path_eff = 0.0
 
+            route_target = float(ad.route_target_distance_m or 0.0)
+            route_length_ratio = (
+                ad.route_optimal_length / route_target
+                if route_target > 0.0 else 0.0
+            )
+            route_fallback_flag = 1.0 if "fallback" in ad.route_source else 0.0
+            route_too_short_flag = (
+                1.0 if route_target > 0.0 and route_length_ratio < 0.8 else 0.0
+            )
+            route_under_target_flag = (
+                1.0 if route_target > 0.0 and route_length_ratio < 1.0 else 0.0
+            )
+
             # Build info dict for this agent
             agent_info = {
                 "step": self._step_count,
                 "collision": ad.collision_flag,
                 "route_completion": self._route_completion(ad),
+                "continuous_route_progress": self._continuous_route_progress(ad),
                 "path_efficiency": path_eff,
                 "termination_reason": termination_reason,
+                "skipped_waypoints": ad.skipped_waypoints,
+                "last_skipped_waypoints": ad.last_skipped_waypoints,
+                "no_wp_steps": max(self._step_count - ad.last_wp_advance_step, 0),
+                "stuck_cause": self._stuck_cause(ad, termination_reason),
+                "dist_to_next_wp": self._distance_to_next_waypoint(ad),
+                "speed_kmh": self._speed_kmh(ad),
+                "route_source": ad.route_source,
+                "route_target_distance_m": route_target,
+                "route_optimal_length_m": ad.route_optimal_length,
+                "actual_distance_traveled_m": ad.actual_distance_traveled,
+                "route_length_ratio": route_length_ratio,
+                "route_fallback_flag": route_fallback_flag,
+                "route_too_short_flag": route_too_short_flag,
+                "route_under_target_flag": route_under_target_flag,
+                "route_candidate_attempts_configured": (
+                    ad.route_candidate_attempts_configured
+                ),
+                "route_candidate_attempts_used": ad.route_candidate_attempts_used,
+                "route_candidate_valid_count": ad.route_candidate_valid_count,
+                "route_candidate_rejected_short_count": (
+                    ad.route_candidate_rejected_short_count
+                ),
+                "route_candidate_rejected_long_count": (
+                    ad.route_candidate_rejected_long_count
+                ),
+                "route_candidate_no_route_count": ad.route_candidate_no_route_count,
+                "route_planning_latency_ms": ad.route_planning_latency_ms,
+                "route_target_error_m": ad.route_target_error_m,
             }
 
             if not term and not trunc:
@@ -890,33 +983,105 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.goal_location = carla.Location(x=loc.x + 30.0, y=loc.y, z=loc.z)
             ad.route_waypoints = [_NavPoint(ad.goal_location)]
 
-        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        self._update_route_length_metrics(ad)
         ad.prev_location = ad.actor.get_location()
+
+    def _reset_route_diagnostics(self, ad: AgentData):
+        ad.route_candidate_attempts_configured = 0
+        ad.route_candidate_attempts_used = 0
+        ad.route_candidate_valid_count = 0
+        ad.route_candidate_rejected_short_count = 0
+        ad.route_candidate_rejected_long_count = 0
+        ad.route_candidate_no_route_count = 0
+        ad.route_planning_latency_ms = 0.0
+        ad.route_target_error_m = 0.0
+
+    def _apply_route_diagnostics(self, ad: AgentData, diagnostics: dict | None):
+        if not diagnostics:
+            return
+        ad.route_candidate_attempts_configured = int(
+            diagnostics.get("route_candidate_attempts_configured", 0)
+        )
+        ad.route_candidate_attempts_used = int(
+            diagnostics.get("route_candidate_attempts_used", 0)
+        )
+        ad.route_candidate_valid_count = int(
+            diagnostics.get("route_candidate_valid_count", 0)
+        )
+        ad.route_candidate_rejected_short_count = int(
+            diagnostics.get("route_candidate_rejected_short_count", 0)
+        )
+        ad.route_candidate_rejected_long_count = int(
+            diagnostics.get("route_candidate_rejected_long_count", 0)
+        )
+        ad.route_candidate_no_route_count = int(
+            diagnostics.get("route_candidate_no_route_count", 0)
+        )
+        ad.route_planning_latency_ms = float(
+            diagnostics.get("route_planning_latency_ms", 0.0)
+        )
+
+    def _update_route_length_metrics(self, ad: AgentData):
+        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        route_target = float(ad.route_target_distance_m or 0.0)
+        ad.route_target_error_m = (
+            abs(ad.route_optimal_length - route_target)
+            if route_target > 0.0 else 0.0
+        )
 
     def _setup_vehicle_route(self, ad: AgentData, skip_current_wp: bool = False):
         # Block 5.1: A* route by distance (if configured)
+        self._reset_route_diagnostics(ad)
         route_distance_m = self.cfg["episode"].get("route_distance_m")
+        ad.route_target_distance_m = float(route_distance_m or 0.0)
+        ad.route_source = "legacy_chain"
         if route_distance_m is not None and self._route_planner is not None:
             origin = ad.actor.get_location()
-            rng = np.random.default_rng(
-                self.cfg["traffic"].get("seed", 42) + self._reset_count * 1000
-                + hash(ad.agent_id) % 10000
+            agent_key = zlib.crc32(ad.agent_id.encode())   # stable per-agent key, process-independent
+            rng = np.random.default_rng(np.random.SeedSequence([
+                int(self.cfg["traffic"].get("seed", 42)),
+                int(self._reset_count),
+                agent_key,
+            ]))
+            route_min_ratio = float(
+                self.cfg["episode"].get("vehicle_route_min_ratio", 0.5)
             )
-            wps = self._route_planner.plan_vehicle_route(
-                origin, route_distance_m, self._spawn_points, rng,
+            route_max_ratio = float(
+                self.cfg["episode"].get("vehicle_route_max_ratio", 2.0)
             )
+            route_attempts = int(
+                self.cfg["episode"].get("vehicle_route_candidate_attempts", 32)
+            )
+            wps, diagnostics = self._route_planner.plan_vehicle_route(
+                origin,
+                route_distance_m,
+                self._spawn_points,
+                rng,
+                min_route_ratio=route_min_ratio,
+                max_route_ratio=route_max_ratio,
+                max_candidate_attempts=route_attempts,
+                return_diagnostics=True,
+            )
+            self._apply_route_diagnostics(ad, diagnostics)
             if wps is not None and len(wps) >= 2:
                 ad.route_waypoints = wps
                 ad.current_wp_idx = 0
-                ad.route_optimal_length = self._compute_route_optimal_length(ad)
+                self._update_route_length_metrics(ad)
                 ad.prev_location = ad.actor.get_location()
+                ad.route_source = "grp"
                 return
+            ad.route_source = "legacy_fallback"
             logger.debug("GRP fallback to legacy chain for %s", ad.agent_id)
+        elif route_distance_m is not None:
+            ad.route_source = "legacy_fallback"
 
         # Legacy: chain waypoints via wp.next()
         loc = ad.actor.get_location()
         wp = self._map.get_waypoint(loc, project_to_road=True)
-        route_len = self.cfg["episode"].get("route_length_vehicle", 10) # 50 -> 10 Reward v5 - Waypoints for vehicle route
+        fallback_spacing_m = 2.0
+        route_len = int(self.cfg["episode"].get("route_length_vehicle", 10))
+        if route_distance_m is not None:
+            route_len = max(1, int(math.ceil(float(route_distance_m) / fallback_spacing_m)))
         ad.route_waypoints = []
         current_wp = wp
 
@@ -924,7 +1089,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.route_waypoints.append(current_wp)
 
         for _ in range(route_len):
-            nexts = current_wp.next(2.0)  # 2.0m spacing vehicle (ratio 1:1)
+            nexts = current_wp.next(fallback_spacing_m)
             if not nexts:
                 break
             current_wp = nexts[0]
@@ -934,13 +1099,16 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.route_waypoints = [wp]
 
         ad.current_wp_idx = 0
-        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        self._update_route_length_metrics(ad)
         ad.prev_location = ad.actor.get_location()
 
     def _setup_pedestrian_route(self, ad: AgentData):
         """Build a pedestrian route by chaining sidewalk waypoints like vehicles."""
         # Block 5.1: distance-based sidewalk routing (if configured)
+        self._reset_route_diagnostics(ad)
         ped_dist = self.cfg["episode"].get("route_distance_m_pedestrian")
+        ad.route_target_distance_m = float(ped_dist or 0.0)
+        ad.route_source = "legacy_chain"
         if ped_dist is not None and self._route_planner is not None:
             origin = ad.actor.get_location()
             wps = self._route_planner.plan_pedestrian_route_by_distance(
@@ -950,10 +1118,14 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 ad.route_waypoints = wps
                 ad.current_wp_idx = 0
                 ad.goal_location = wps[0].transform.location
-                ad.route_optimal_length = self._compute_route_optimal_length(ad)
+                self._update_route_length_metrics(ad)
                 ad.prev_location = ad.actor.get_location()
+                ad.route_source = "sidewalk_distance"
                 return
+            ad.route_source = "sidewalk_fallback"
             logger.debug("Ped distance routing fallback for %s", ad.agent_id)
+        elif ped_dist is not None:
+            ad.route_source = "sidewalk_fallback"
 
         route_len = self.cfg["episode"].get("route_length_pedestrian", 10)
         ad.route_waypoints = []
@@ -983,7 +1155,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return
 
         ad.goal_location = ad.route_waypoints[0].transform.location
-        ad.route_optimal_length = self._compute_route_optimal_length(ad)
+        self._update_route_length_metrics(ad)
         ad.prev_location = ad.actor.get_location()
 
     # ------------------------------------------------------------------
@@ -1116,14 +1288,18 @@ class CarlaMultiAgentEnv(ParallelEnv):
             return self._get_pedestrian_obs(ad)
 
     def _get_vehicle_obs(self, ad: AgentData) -> np.ndarray:
-        """Same 24D obs as CarlaEnv v0.3."""
+        """47D vehicle obs: legacy features plus route and hazard preview."""
         obs = np.zeros(VEHICLE_OBS_DIM, dtype=np.float32)
         t = ad.actor.get_transform()
         vel = ad.actor.get_velocity()
         acc = ad.actor.get_acceleration()
         fwd = t.get_forward_vector()
 
-        obs[0:3] = [vel.x / 30, vel.y / 30, vel.z / 30]
+        obs[0:3] = [
+            vel.x / 30,
+            vel.y / 30,
+            vel.z / 30,
+        ]
         obs[3:6] = [acc.x / 10, acc.y / 10, acc.z / 10]
         speed = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
         obs[6] = min(speed / 120, 1)
@@ -1144,9 +1320,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 wf = wp_ego.transform.get_forward_vector()
                 cross = (el.x - wp_ego.transform.location.x) * wf.y - \
                         (el.y - wp_ego.transform.location.y) * wf.x
-                obs[11] = np.clip(math.copysign(ld, cross) / 4, -1, 1)
+                obs[11] = np.clip(
+                    math.copysign(ld, cross) / self._waypoint_lane_width(wp_ego),
+                    -1,
+                    1,
+                )
 
-        obs[12] = self._route_completion(ad)
+        obs[12] = self._continuous_route_progress(ad, t.location)
 
         if ad.actor.is_at_traffic_light():
             obs[13] = 1.0
@@ -1162,10 +1342,45 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Previous steering value (Block 4.3)
         obs[24] = np.clip(ad.prev_steer, -1.0, 1.0)
 
+        self._fill_route_preview(obs, 25, ad, t, offsets=(1, 3, 5), distance_scale=50.0)
+        obs[31] = self._route_heading_error(ad, t)
+        obs[32] = self._route_turn_angle(ad)
+        obs[33] = self._signed_lateral_error_to_route(ad, t.location)
+        self._fill_nearby(
+            obs, 34, ad, N_NEARBY_PEDESTRIANS_FOR_VEHICLE, "walker.pedestrian.*"
+        )
+        veh_ttc, veh_occ = self._path_hazard_risk(
+            ad,
+            filter_str="vehicle.*",
+            corridor_width_m=3.5,
+            max_distance_m=40.0,
+            horizon_s=5.0,
+        )
+        ped_ttc, ped_occ = self._path_hazard_risk(
+            ad,
+            filter_str="walker.pedestrian.*",
+            corridor_width_m=3.0,
+            max_distance_m=30.0,
+            horizon_s=4.0,
+        )
+        obs[40] = veh_ttc
+        obs[41] = ped_ttc
+        obs[42] = veh_occ
+        obs[43] = ped_occ
+
+        # O1 — stuck observability (Markov consistency with the no_wp / loop reward terms)
+        no_wp = max(self._step_count - ad.last_wp_advance_step, 0)
+        obs[44] = min(no_wp / 300.0, 1.0)
+        obs[45] = 1.0 if ad.loop_penalty_active else 0.0
+
+        # O2 — time-aware observation (episode truncated at a fixed horizon)
+        max_steps = max(int(self.cfg["episode"]["max_steps"]), 1)
+        obs[46] = 1.0 - min(self._step_count / max_steps, 1.0)
+
         return self._sanitize_obs(obs, ad.agent_id)
 
     def _get_pedestrian_obs(self, ad: AgentData) -> np.ndarray:
-        """18D obs for pedestrian — now uses waypoint route like vehicles."""
+        """26D pedestrian obs: legacy waypoint features plus hazard preview."""
         obs = np.zeros(PEDESTRIAN_OBS_DIM, dtype=np.float32)
         t = ad.actor.get_transform()
         vel = ad.actor.get_velocity()
@@ -1214,7 +1429,312 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # Route completion fraction (Block 4.3)
         obs[18] = self._route_completion(ad)
 
+        self._fill_route_preview_legacy(obs, 19, ad, t, offsets=(1, 3), distance_scale=100.0)
+        obs[23] = self._route_heading_error(ad, t)
+        veh_ttc, veh_occ = self._path_hazard_risk(
+            ad,
+            filter_str="vehicle.*",
+            corridor_width_m=4.0,
+            max_distance_m=30.0,
+            horizon_s=4.0,
+        )
+        obs[24] = veh_ttc
+        obs[25] = veh_occ
+
         return self._sanitize_obs(obs, ad.agent_id)
+
+    @staticmethod
+    def _wrap_angle_rad(angle: float) -> float:
+        return (angle + math.pi) % (2 * math.pi) - math.pi
+
+    @staticmethod
+    def _location_xy_delta(a, b) -> tuple[float, float]:
+        return b.x - a.x, b.y - a.y
+
+    @staticmethod
+    def _waypoint_lane_width(waypoint, default: float = 4.0) -> float:
+        lane_width = getattr(waypoint, "lane_width", default)
+        try:
+            lane_width = float(lane_width)
+        except (TypeError, ValueError):
+            return default
+        if not math.isfinite(lane_width) or lane_width <= 0.0:
+            return default
+        return lane_width
+
+    def _route_lane_width(self, ad: AgentData, default: float = 4.0) -> float:
+        if not ad.route_waypoints:
+            return default
+        idx = int(np.clip(ad.current_wp_idx, 0, len(ad.route_waypoints) - 1))
+        return self._waypoint_lane_width(ad.route_waypoints[idx], default=default)
+
+    def _fill_route_preview(
+        self,
+        obs: np.ndarray,
+        start_idx: int,
+        ad: AgentData,
+        transform,
+        offsets: tuple[int, ...],
+        distance_scale: float,
+    ):
+        loc = transform.location
+        yaw = math.radians(transform.rotation.yaw)
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        for i, offset in enumerate(offsets):
+            if not ad.route_waypoints:
+                continue
+            target_idx = int(np.clip(
+                ad.current_wp_idx + offset, 0, len(ad.route_waypoints) - 1
+            ))
+            target_wp = ad.route_waypoints[target_idx]
+            target = target_wp.transform.location
+            dx, dy = target.x - loc.x, target.y - loc.y
+            longitudinal = dx * cos_yaw + dy * sin_yaw
+            lateral = -dx * sin_yaw + dy * cos_yaw
+            lateral_scale = self._waypoint_lane_width(
+                target_wp, default=self._route_lane_width(ad)
+            )
+            idx = start_idx + i * 2
+            obs[idx] = np.clip(longitudinal / max(distance_scale, 1e-6), -1.0, 1.0)
+            obs[idx + 1] = np.clip(lateral / max(lateral_scale, 1e-6), -1.0, 1.0)
+
+    def _fill_route_preview_legacy(
+        self,
+        obs: np.ndarray,
+        start_idx: int,
+        ad: AgentData,
+        transform,
+        offsets: tuple[int, ...],
+        distance_scale: float,
+    ):
+        loc = transform.location
+        yaw = math.radians(transform.rotation.yaw)
+        for i, offset in enumerate(offsets):
+            if not ad.route_waypoints:
+                continue
+            target_idx = int(np.clip(
+                ad.current_wp_idx + offset, 0, len(ad.route_waypoints) - 1
+            ))
+            target = ad.route_waypoints[target_idx].transform.location
+            dx, dy = target.x - loc.x, target.y - loc.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            angle = self._wrap_angle_rad(math.atan2(dy, dx) - yaw)
+            idx = start_idx + i * 2
+            obs[idx] = np.clip(dist / max(distance_scale, 1e-6), 0.0, 1.0)
+            obs[idx + 1] = np.clip(angle / math.pi, -1.0, 1.0)
+
+    def _route_tangent_angle(self, ad: AgentData):
+        if len(ad.route_waypoints) < 2:
+            return None
+
+        last_idx = len(ad.route_waypoints) - 1
+        idx = int(np.clip(ad.current_wp_idx, 0, last_idx))
+        start_idx = max(idx - 1, 0)
+        end_idx = idx if idx > 0 else min(idx + 1, last_idx)
+        if start_idx == end_idx and end_idx < last_idx:
+            end_idx += 1
+
+        start = ad.route_waypoints[start_idx].transform.location
+        end = ad.route_waypoints[end_idx].transform.location
+        dx, dy = self._location_xy_delta(start, end)
+        if math.hypot(dx, dy) < 1e-6:
+            return None
+        return math.atan2(dy, dx)
+
+    def _route_heading_error(self, ad: AgentData, transform) -> float:
+        tangent = self._route_tangent_angle(ad)
+        if tangent is None:
+            return 0.0
+        yaw = math.radians(transform.rotation.yaw)
+        return float(np.clip(self._wrap_angle_rad(tangent - yaw) / math.pi, -1.0, 1.0))
+
+    def _route_turn_angle(self, ad: AgentData) -> float:
+        if len(ad.route_waypoints) < 3:
+            return 0.0
+
+        last_idx = len(ad.route_waypoints) - 1
+        i0 = int(np.clip(ad.current_wp_idx, 0, last_idx))
+        i1 = min(i0 + 1, last_idx)
+        i2 = min(i0 + 5, last_idx)
+        if i0 == i1 or i1 == i2:
+            return 0.0
+
+        p0 = ad.route_waypoints[i0].transform.location
+        p1 = ad.route_waypoints[i1].transform.location
+        p2 = ad.route_waypoints[i2].transform.location
+        dx1, dy1 = self._location_xy_delta(p0, p1)
+        dx2, dy2 = self._location_xy_delta(p1, p2)
+        if math.hypot(dx1, dy1) < 1e-6 or math.hypot(dx2, dy2) < 1e-6:
+            return 0.0
+
+        a1 = math.atan2(dy1, dx1)
+        a2 = math.atan2(dy2, dx2)
+        return float(np.clip(self._wrap_angle_rad(a2 - a1) / math.pi, -1.0, 1.0))
+
+    def _signed_lateral_error_to_route(self, ad: AgentData, loc) -> float:
+        if len(ad.route_waypoints) < 2:
+            return 0.0
+
+        last_idx = len(ad.route_waypoints) - 1
+        idx = int(np.clip(ad.current_wp_idx, 0, last_idx))
+        start_idx = max(idx - 1, 0)
+        end_idx = idx if idx > 0 else min(idx + 1, last_idx)
+        if start_idx == end_idx and end_idx < last_idx:
+            end_idx += 1
+
+        start = ad.route_waypoints[start_idx].transform.location
+        end = ad.route_waypoints[end_idx].transform.location
+        sx, sy = self._location_xy_delta(start, end)
+        seg_len = math.hypot(sx, sy)
+        if seg_len < 1e-6:
+            return 0.0
+
+        rx, ry = loc.x - start.x, loc.y - start.y
+        signed = (sx * ry - sy * rx) / seg_len
+        distance_scale = self._route_lane_width(ad)
+        return float(np.clip(signed / max(distance_scale, 1e-6), -1.0, 1.0))
+
+    def _continuous_route_progress(self, ad: AgentData, loc=None) -> float:
+        if not ad.route_waypoints:
+            return 0.0
+        route_len = len(ad.route_waypoints)
+        if ad.current_wp_idx >= route_len:
+            return 1.0
+        if route_len < 2:
+            return self._route_completion(ad)
+        if loc is None:
+            if ad.actor is None or not ad.actor.is_alive:
+                return self._route_completion(ad)
+            loc = ad.actor.get_location()
+
+        end_idx = int(np.clip(ad.current_wp_idx, 1, route_len - 1))
+        start_idx = end_idx - 1
+        start = ad.route_waypoints[start_idx].transform.location
+        end = ad.route_waypoints[end_idx].transform.location
+        sx, sy = self._location_xy_delta(start, end)
+        seg_len_sq = sx * sx + sy * sy
+        if seg_len_sq < 1e-6:
+            return self._route_completion(ad)
+
+        rx, ry = loc.x - start.x, loc.y - start.y
+        segment_t = float(np.clip((rx * sx + ry * sy) / seg_len_sq, 0.0, 1.0))
+        progress = (start_idx + segment_t) / max(route_len - 1, 1)
+        return float(np.clip(progress, 0.0, 1.0))
+
+    def _distance_to_next_waypoint(self, ad: AgentData) -> float:
+        if (
+            ad.actor is None
+            or not ad.actor.is_alive
+            or ad.current_wp_idx >= len(ad.route_waypoints)
+        ):
+            return 0.0
+        loc = ad.actor.get_location()
+        target = ad.route_waypoints[ad.current_wp_idx].transform.location
+        return float(loc.distance(target))
+
+    @staticmethod
+    def _speed_kmh(ad: AgentData) -> float:
+        if ad.actor is None or not ad.actor.is_alive:
+            return 0.0
+        vel = ad.actor.get_velocity()
+        return float(3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2))
+
+    @staticmethod
+    def _vehicle_waiting_at_red_or_yellow(ad: AgentData) -> bool:
+        if ad.actor is None or not ad.actor.is_alive:
+            return False
+        if not ad.actor.is_at_traffic_light():
+            return False
+        tl = ad.actor.get_traffic_light()
+        if tl is None:
+            return False
+        state = tl.get_state()
+        return state in (carla.TrafficLightState.Red, carla.TrafficLightState.Yellow)
+
+    def _route_alignment_to_next_waypoint(self, ad: AgentData, loc, transform) -> float:
+        if not ad.route_waypoints or ad.current_wp_idx >= len(ad.route_waypoints):
+            return 0.0
+        target = ad.route_waypoints[ad.current_wp_idx].transform.location
+        dx, dy = target.x - loc.x, target.y - loc.y
+        dist = math.hypot(dx, dy)
+        if dist < 1e-6:
+            return 0.0
+        yaw = math.radians(transform.rotation.yaw)
+        forward_x = math.cos(yaw)
+        forward_y = math.sin(yaw)
+        alignment = (forward_x * dx + forward_y * dy) / dist
+        return float(np.clip(alignment, 0.0, 1.0))
+
+    def _stuck_cause(self, ad: AgentData, termination_reason: str) -> str:
+        if termination_reason != "stuck":
+            return ""
+        causes = []
+        if self._route_completion(ad) < 0.3:
+            causes.append("low_route_completion")
+        if ad.loop_penalty_active:
+            causes.append("loop_penalty")
+        if self._step_count - ad.last_wp_advance_step >= 200:
+            causes.append("no_waypoint_advance")
+        return "+".join(causes) if causes else "unknown"
+
+    def _path_frame(self, ad: AgentData, transform) -> tuple[float, float, float, float]:
+        tangent = self._route_tangent_angle(ad)
+        if tangent is None:
+            fwd = transform.get_forward_vector()
+            norm = math.hypot(fwd.x, fwd.y)
+            if norm < 1e-6:
+                return 1.0, 0.0, 0.0, 1.0
+            fx, fy = fwd.x / norm, fwd.y / norm
+        else:
+            fx, fy = math.cos(tangent), math.sin(tangent)
+        return fx, fy, -fy, fx
+
+    def _path_hazard_risk(
+        self,
+        ad: AgentData,
+        filter_str: str,
+        corridor_width_m: float,
+        max_distance_m: float,
+        horizon_s: float,
+    ) -> tuple[float, float]:
+        """Return max TTC and occupancy risk for actors ahead in the route corridor."""
+        transform = ad.actor.get_transform()
+        e_loc = transform.location
+        e_vel = ad.actor.get_velocity()
+        fx, fy, rx, ry = self._path_frame(ad, transform)
+
+        max_ttc_risk = 0.0
+        max_occupancy_risk = 0.0
+        for actor in self._world.get_actors().filter(filter_str):
+            if actor.id == ad.actor.id:
+                continue
+
+            loc = actor.get_location()
+            dx, dy = loc.x - e_loc.x, loc.y - e_loc.y
+            longitudinal = dx * fx + dy * fy
+            lateral = abs(dx * rx + dy * ry)
+            if (
+                longitudinal <= 0.0
+                or longitudinal > max_distance_m
+                or lateral > corridor_width_m
+            ):
+                continue
+
+            occupancy = 1.0 - np.clip(longitudinal / max(max_distance_m, 1e-6), 0.0, 1.0)
+            max_occupancy_risk = max(max_occupancy_risk, float(occupancy))
+
+            vel = actor.get_velocity()
+            rel_vx = vel.x - e_vel.x
+            rel_vy = vel.y - e_vel.y
+            closing_speed = -(rel_vx * fx + rel_vy * fy)
+            if closing_speed <= 1e-6:
+                continue
+            ttc = longitudinal / closing_speed
+            ttc_risk = 1.0 - np.clip(ttc / max(horizon_s, 1e-6), 0.0, 1.0)
+            max_ttc_risk = max(max_ttc_risk, float(ttc_risk))
+
+        return max_ttc_risk, max_occupancy_risk
 
     def _fill_nearby(self, obs, start_idx, ad, n, filter_str):
         """Fill obs with relative position/speed of nearest actors."""
@@ -1246,28 +1766,55 @@ class CarlaMultiAgentEnv(ParallelEnv):
     # Waypoint / route tracking
     # ------------------------------------------------------------------
 
-    def _advance_vehicle_waypoint(self, ad: AgentData):
-        """Advance vehicle along waypoint route"""
+    def _route_tracking_config(self, agent_type: str) -> tuple[int, float]:
+        ep_cfg = self.cfg["episode"]
+        lookahead = max(int(ep_cfg.get("waypoint_lookahead", 1)), 1)
+        if agent_type == "vehicle":
+            radius = float(ep_cfg.get("vehicle_waypoint_radius_m", 2.0))
+        else:
+            radius = float(ep_cfg.get("pedestrian_waypoint_radius_m", 2.0))
+        return lookahead, max(radius, 0.1)
+
+    def _advance_route_waypoint(self, ad: AgentData) -> int:
+        """Advance to the nearest reached waypoint within the lookahead window."""
+        ad.last_skipped_waypoints = 0
         if ad.current_wp_idx >= len(ad.route_waypoints):
-            return
+            return 0
+
         loc = ad.actor.get_location()
-        wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 2.0: # 2.0m threshold vehicle (ratio 1:1)
-            ad.current_wp_idx += 1
-            ad.prev_dist_to_wp = 0.0
+        lookahead, radius = self._route_tracking_config(ad.agent_type)
+        start_idx = ad.current_wp_idx
+        stop_idx = min(len(ad.route_waypoints), start_idx + lookahead)
+
+        best_idx = None
+        best_dist = None
+        for idx in range(start_idx, stop_idx):
+            wp_loc = ad.route_waypoints[idx].transform.location
+            dist = loc.distance(wp_loc)
+            if dist < radius and (best_dist is None or dist < best_dist):
+                best_idx = idx
+                best_dist = dist
+
+        if best_idx is None:
+            return 0
+
+        advance_by = best_idx - start_idx + 1
+        skipped = max(advance_by - 1, 0)
+        ad.current_wp_idx += advance_by
+        ad.prev_dist_to_wp = 0.0
+        ad.last_skipped_waypoints = skipped
+        ad.skipped_waypoints += skipped
+        return advance_by
+
+    def _advance_vehicle_waypoint(self, ad: AgentData):
+        """Advance vehicle along waypoint route."""
+        self._advance_route_waypoint(ad)
 
     def _advance_pedestrian_waypoint(self, ad: AgentData):
-        """Advance pedestrian along waypoint route"""
-        if ad.current_wp_idx >= len(ad.route_waypoints):
-            return
-        loc = ad.actor.get_location()
-        wp_loc = ad.route_waypoints[ad.current_wp_idx].transform.location
-        if loc.distance(wp_loc) < 2.0: # 2.0m threshold for pedestrians
-            ad.current_wp_idx += 1
-            ad.prev_dist_to_wp = 0.0
-            # Update goal_location for obs fallback
-            if ad.current_wp_idx < len(ad.route_waypoints):
-                ad.goal_location = ad.route_waypoints[ad.current_wp_idx].transform.location
+        """Advance pedestrian along waypoint route."""
+        self._advance_route_waypoint(ad)
+        if ad.current_wp_idx < len(ad.route_waypoints):
+            ad.goal_location = ad.route_waypoints[ad.current_wp_idx].transform.location
 
     def _route_completion(self, ad: AgentData) -> float:
         """Unified route completion for both vehicles and pedestrians."""
@@ -1320,12 +1867,18 @@ class CarlaMultiAgentEnv(ParallelEnv):
         reward = 0.0
         vel = ad.actor.get_velocity()
         speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
+        transform = ad.actor.get_transform()
         el = ad.actor.get_location()
+        hold_for_light = self._vehicle_waiting_at_red_or_yellow(ad)
+        ctrl = ad.actor.get_control()
 
-        # ---- 1. Waypoint reach bonus (DOMINANT — sole positive signal) ----
+        # ---- 1. Waypoint reach bonus (dominant sparse route signal) ----
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
-            reward += wp_delta * 50.0  # very high, must be THE reason to move
+            reward += wp_delta * 100.0
+        if ad.last_skipped_waypoints > 0:
+            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
+            reward -= ad.last_skipped_waypoints * penalty
         ad.prev_wp_idx = ad.current_wp_idx
 
         # ---- 2. Distance to next WP (dense guidance — gets closer = good) ----
@@ -1334,15 +1887,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
             curr_dist = el.distance(wp_loc)
             if ad.prev_dist_to_wp > 0:
                 # Positive when getting closer, negative when getting farther
-                reward += (ad.prev_dist_to_wp - curr_dist) * 2.0
+                reward += (ad.prev_dist_to_wp - curr_dist) * 4.0
             ad.prev_dist_to_wp = curr_dist
 
         # ---- 3. Collision penalty (large, immediate) ----
         if ad.collision_flag and ad.collision_step == 0:
-            reward -= 50.0
-
-            # Future Finetuing: scale by speed at collision (normalized)
-            # reward -= (20.0 + speed_kmh * 0.5)  # range: -20 (fermo) a -45 (50 km/h)
+            reward -= 500.0
 
         # ---- 4. Off-lane penalty (stay on road) ----
         wp = self._map.get_waypoint(el, project_to_road=True)
@@ -1351,20 +1901,53 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if lane_dist > 2.0:
                 reward -= lane_dist * 0.5
 
-        # ---- 5. Speed target (moderate speed = good, too fast/slow = bad) ----
-        # Target: 15-30 km/h. Below 5 = idle penalty. Above 50 = speed penalty
-        if speed_kmh < 2.5:
-            reward -= 0.15  # idle penalty
-        elif 15.0 <= speed_kmh <= 50.0:
-            reward += 0.3  # optimal speed bonus
-        elif speed_kmh > 50.0:
+        # ---- 5. Start/unblock shaping + no-advance pressure ----
+        if not hold_for_light:
+            alignment = self._route_alignment_to_next_waypoint(ad, el, transform)
+            no_wp_steps = max(self._step_count - ad.last_wp_advance_step, 0)
+            veh_ttc, veh_occ = self._path_hazard_risk(
+                ad,
+                filter_str="vehicle.*",
+                corridor_width_m=3.5,
+                max_distance_m=40.0,
+                horizon_s=5.0,
+            )
+            ped_ttc, ped_occ = self._path_hazard_risk(
+                ad,
+                filter_str="walker.pedestrian.*",
+                corridor_width_m=3.0,
+                max_distance_m=30.0,
+                horizon_s=4.0,
+            )
+            hazard_risk = max(veh_ttc, veh_occ, ped_ttc, ped_occ)
+            safe_to_push = hazard_risk < 0.75
+
+            if speed_kmh < 2.5:
+                reward -= 0.15  # idle penalty
+
+                if safe_to_push and alignment > 0.25:
+                    urgency = min(no_wp_steps / 200.0, 1.0)
+                    start_gain = 0.20 + 0.30 * urgency
+                    reward += start_gain * ctrl.throttle * alignment
+                    reward -= start_gain * ctrl.brake
+
+            if safe_to_push and alignment > 0.25:
+                target_min_speed = 8.0
+                if speed_kmh < target_min_speed:
+                    reward -= 0.04 * (target_min_speed - speed_kmh) * alignment
+                else:
+                    reward += 0.15 * alignment
+
+            if no_wp_steps > 100:
+                reward -= min(1.0, 0.004 * (no_wp_steps - 100))
+
+        if speed_kmh > 50.0:
             reward -= (speed_kmh - 50.0) * 0.10 # speed penalty (scaled)
 
         # ---- 6. Steering smoothness ----
-        ctrl = ad.actor.get_control()
         steer_delta = abs(ctrl.steer - ad.prev_steer)
-        if steer_delta < 0.1:
-            reward += 0.1   # smooth driving bonus
+        if steer_delta < 0.1 and speed_kmh > 5.0:
+            reward += 0.1   # smooth driving bonus (only when the vehicle is moving)
         elif steer_delta > 0.5:
             reward -= 0.3   # jerk penalty
         ad.prev_steer = ctrl.steer
@@ -1386,6 +1969,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
             reward += wp_delta * 50.0
+        if ad.last_skipped_waypoints > 0:
+            penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
+            reward -= ad.last_skipped_waypoints * penalty
         ad.prev_wp_idx = ad.current_wp_idx
 
         # ---- 2. Distance to next WP (dense guidance) ----

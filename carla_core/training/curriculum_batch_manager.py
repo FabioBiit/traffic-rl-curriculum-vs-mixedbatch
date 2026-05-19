@@ -180,6 +180,8 @@ class CurriculumManager:
         probation_sampling_weights=None,
         probation_blocks_after_unlock=2,
         probation_blocks_after_cap_pressure=1,
+        require_policy_success=False,
+        policy_ids=None,
         teacher_seed=42,
         window_size=50,
     ):
@@ -192,6 +194,8 @@ class CurriculumManager:
         self.window_size = max(int(window_size), 1)
         self.probation_blocks_after_unlock = max(0, int(probation_blocks_after_unlock))
         self.probation_blocks_after_cap_pressure = max(0, int(probation_blocks_after_cap_pressure))
+        self.require_policy_success = bool(require_policy_success)
+        self.policy_ids = tuple(policy_ids or ("vehicle_policy", "pedestrian_policy"))
         self._rng = random.Random(teacher_seed)
         self._validate_share(
             self.default_success_rate_threshold,
@@ -351,33 +355,124 @@ class CurriculumManager:
             "collision_rate_threshold": float(collision_rate_threshold),
         }
 
-    def _unlock_reason(self, tracker: EpisodeTracker | None, target_level: str) -> tuple[str | None, dict]:
+    def _policy_gate_details(self, policy_trackers: dict | None, criteria: dict) -> tuple[bool, dict]:
+        if not self.require_policy_success:
+            return True, {}
+
+        policy_trackers = policy_trackers or {}
+        details = {}
+        ok = True
+
+        for policy_id in self.policy_ids:
+            tracker = policy_trackers.get(policy_id)
+            if tracker is None:
+                details[policy_id] = {"available": False}
+                ok = False
+                continue
+
+            details[policy_id] = {
+                "available": True,
+                "level_episodes": tracker.level_episodes,
+                "window_size": len(tracker.successes),
+                "window_success_rate": tracker.window_success_rate,
+                "window_collision_rate": tracker.window_collision_rate,
+            }
+            if tracker.level_episodes < criteria["min_episodes"]:
+                ok = False
+            if not tracker.window_full:
+                ok = False
+            if tracker.window_success_rate < criteria["success_rate_threshold"]:
+                ok = False
+            if tracker.window_collision_rate > criteria["collision_rate_threshold"]:
+                ok = False
+
+        return ok, details
+
+    def _balanced_policy_success_details(
+        self,
+        policy_trackers: dict | None,
+    ) -> tuple[float | None, dict]:
+        policy_trackers = policy_trackers or {}
+        details = {}
+        success_rates = []
+
+        for policy_id in self.policy_ids:
+            tracker = policy_trackers.get(policy_id)
+            if tracker is None:
+                details[policy_id] = {"available": False}
+                continue
+
+            success_rate = tracker.window_success_rate
+            details[policy_id] = {
+                "available": True,
+                "total_episodes": tracker.total_episodes,
+                "total_successes": tracker.total_successes,
+                "window_success_rate": success_rate,
+                "window_collision_rate": tracker.window_collision_rate,
+                "window_full": tracker.window_full,
+                "cumulative_success_rate": tracker.cumulative_success_rate,
+                "level_timesteps": tracker.level_timesteps,
+                "level_episodes": tracker.level_episodes,
+            }
+            success_rates.append(success_rate)
+
+        if len(success_rates) != len(self.policy_ids):
+            return None, details
+
+        return sum(success_rates) / len(success_rates), details
+
+    def _unlock_reason(
+        self,
+        tracker: EpisodeTracker | None,
+        target_level: str,
+        policy_trackers: dict | None = None,
+        global_timestep=None,
+    ) -> tuple[str | None, dict]:
         if tracker is None:
             return None, {}
 
         criteria = self._criteria_for(target_level)
+        balanced_sr, balanced_details = self._balanced_policy_success_details(
+            policy_trackers
+        )
+        policy_ok, policy_details = self._policy_gate_details(policy_trackers, criteria)
+        criteria = deepcopy(criteria)
+        criteria["balanced_policy_success"] = {
+            "available": balanced_sr is not None,
+            "value": balanced_sr,
+            "policy_details": balanced_details,
+        }
+        if policy_details:
+            criteria["policy_gate"] = policy_details
         required_timesteps = int(criteria["min_budget_share"] * self.total_budget_timesteps)
         force_unlock_share_cap = criteria["force_unlock_global_share_cap"]
         force_unlock_timesteps = None
         if force_unlock_share_cap is not None:
             force_unlock_timesteps = int(force_unlock_share_cap * self.total_budget_timesteps)
+        cap_basis_timestep = self.total_assigned_timesteps
+        if global_timestep is not None:
+            cap_basis_timestep = max(cap_basis_timestep, int(global_timestep))
+        criteria["pressure_cap"] = {
+            "basis_timestep": cap_basis_timestep,
+            "force_unlock_timesteps": force_unlock_timesteps,
+            "force_unlock_global_share_cap": force_unlock_share_cap,
+        }
 
-        if tracker.level_episodes < criteria["min_episodes"]:
-            return None, criteria
-        if not tracker.window_full:
-            return None, criteria
-        if tracker.window_collision_rate > criteria["collision_rate_threshold"]:
-            return None, criteria
-        if (
-            tracker.level_timesteps >= required_timesteps
-            and tracker.window_success_rate >= criteria["success_rate_threshold"]
-        ):
-            return "competence_unlocked", criteria
         if (
             force_unlock_timesteps is not None
-            and self.total_assigned_timesteps >= force_unlock_timesteps
+            and cap_basis_timestep >= force_unlock_timesteps
         ):
-            return "forced_global_budget_cap", criteria
+            return "pressure_cap_unlocked", criteria
+
+        if balanced_sr is None:
+            return None, criteria
+
+        if tracker.level_timesteps >= required_timesteps and (
+            tracker.window_full
+            and balanced_sr >= criteria["success_rate_threshold"]
+            and policy_ok
+        ):
+            return "competence_unlocked", criteria
         return None, criteria
 
     def _sampling_levels(self) -> list[str]:
@@ -398,8 +493,14 @@ class CurriculumManager:
             "probation_blocks": blocks,
         })
 
-    def _maybe_unlock_levels(self, trackers: dict | None = None, global_timestep=None) -> list[str]:
+    def _maybe_unlock_levels(
+        self,
+        trackers: dict | None = None,
+        policy_trackers: dict | None = None,
+        global_timestep=None,
+    ) -> list[str]:
         trackers = trackers or {}
+        policy_trackers = policy_trackers or {}
         events = []
 
         for idx in range(1, len(self.levels)):
@@ -412,7 +513,12 @@ class CurriculumManager:
                 break
 
             tracker = trackers.get(source_level)
-            unlock_reason, criteria = self._unlock_reason(tracker, target_level)
+            unlock_reason, criteria = self._unlock_reason(
+                tracker,
+                target_level,
+                policy_trackers=policy_trackers.get(source_level),
+                global_timestep=global_timestep,
+            )
             if unlock_reason is None:
                 break
 
@@ -421,11 +527,23 @@ class CurriculumManager:
                 "to": target_level,
                 "episodes_on_level": tracker.level_episodes,
                 "timesteps_on_level": tracker.level_timesteps,
-                "success_rate_at_unlock": tracker.window_success_rate,
+                "success_rate_at_unlock": criteria.get(
+                    "balanced_policy_success", {}
+                ).get("value", tracker.window_success_rate),
+                "balanced_window_success_rate_at_unlock": criteria.get(
+                    "balanced_policy_success", {}
+                ).get("value"),
+                "cumulative_success_rate_at_unlock": tracker.cumulative_success_rate,
+                "window_success_rate_at_unlock": tracker.window_success_rate,
                 "collision_rate_at_unlock": tracker.window_collision_rate,
+                "cumulative_collision_rate_at_unlock": tracker.cumulative_collision_rate,
                 "timestep_at_unlock": global_timestep,
                 "assigned_budget_share_at_unlock": (
                     float(self.total_assigned_timesteps) / float(self.total_budget_timesteps)
+                ),
+                "global_budget_share_at_unlock": (
+                    float(global_timestep) / float(self.total_budget_timesteps)
+                    if global_timestep is not None else None
                 ),
                 "reason": unlock_reason,
                 "criteria_snapshot": deepcopy(criteria),
@@ -435,11 +553,11 @@ class CurriculumManager:
             events.append(f"unlock:{target_level}")
 
             logger.info(
-                "Unlocked %s from %s at timestep %s (SR=%.2f, CR=%.2f)",
+                "Unlocked %s from %s at timestep %s (balanced window SR=%s, window CR=%.2f)",
                 target_level,
                 source_level,
                 global_timestep,
-                tracker.window_success_rate,
+                unlock_event["balanced_window_success_rate_at_unlock"],
                 tracker.window_collision_rate,
             )
 
@@ -625,8 +743,17 @@ class CurriculumManager:
                 return level_name
         return fallback_level
 
-    def get_episode_level(self, trackers: dict | None = None, global_timestep=None):
-        events = self._maybe_unlock_levels(trackers=trackers, global_timestep=global_timestep)
+    def get_episode_level(
+        self,
+        trackers: dict | None = None,
+        policy_trackers: dict | None = None,
+        global_timestep=None,
+    ):
+        events = self._maybe_unlock_levels(
+            trackers=trackers,
+            policy_trackers=policy_trackers,
+            global_timestep=global_timestep,
+        )
 
         base_levels = self._sampling_levels()
         probation_active = self._probation_remaining > 0 and self.hard_unlocked
@@ -711,6 +838,7 @@ class CurriculumManager:
         sample_total = max(sum(self._sample_counts.values()), 1)
         return {
             "teacher_type": "budget_normalized_distributional",
+            "promotion_logic": "balanced_window_sr_or_pressure_cap",
             "current_level": self.current_level,
             "levels": list(self.levels),
             "window_size": self.window_size,
@@ -743,6 +871,8 @@ class CurriculumManager:
                 "collision_rate_threshold": self.default_collision_rate_threshold,
                 "min_episodes": self.default_min_episodes,
             },
+            "require_policy_success": self.require_policy_success,
+            "policy_ids": list(self.policy_ids),
             "unlock_history": deepcopy(self.unlock_history),
             "promotion_history": deepcopy(self.unlock_history),
             "probation_remaining": self._probation_remaining,

@@ -132,7 +132,62 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
                         "policy": policy_id,
                         "termination_reason": out["termination_reason"],
                         "route_completion": round(out["route_completion"], 4),
+                        "continuous_route_progress": round(
+                            out.get("continuous_route_progress", 0.0), 4
+                        ),
                         "path_efficiency": round(out["path_efficiency"], 4),
+                        "skipped_waypoints": int(out.get("skipped_waypoints", 0)),
+                        "last_skipped_waypoints": int(out.get("last_skipped_waypoints", 0)),
+                        "no_wp_steps": int(out.get("no_wp_steps", 0)),
+                        "stuck_cause": out.get("stuck_cause", ""),
+                        "dist_to_next_wp": round(out.get("dist_to_next_wp", 0.0), 4),
+                        "speed_kmh": round(out.get("speed_kmh", 0.0), 4),
+                        "route_source": out.get("route_source", "unknown"),
+                        "route_target_distance_m": round(
+                            out.get("route_target_distance_m", 0.0), 4
+                        ),
+                        "route_optimal_length_m": round(
+                            out.get("route_optimal_length_m", 0.0), 4
+                        ),
+                        "actual_distance_traveled_m": round(
+                            out.get("actual_distance_traveled_m", 0.0), 4
+                        ),
+                        "route_length_ratio": round(
+                            out.get("route_length_ratio", 0.0), 4
+                        ),
+                        "route_fallback_flag": float(
+                            out.get("route_fallback_flag", 0.0)
+                        ),
+                        "route_too_short_flag": float(
+                            out.get("route_too_short_flag", 0.0)
+                        ),
+                        "route_under_target_flag": float(
+                            out.get("route_under_target_flag", 0.0)
+                        ),
+                        "route_candidate_attempts_configured": int(
+                            out.get("route_candidate_attempts_configured", 0)
+                        ),
+                        "route_candidate_attempts_used": int(
+                            out.get("route_candidate_attempts_used", 0)
+                        ),
+                        "route_candidate_valid_count": int(
+                            out.get("route_candidate_valid_count", 0)
+                        ),
+                        "route_candidate_rejected_short_count": int(
+                            out.get("route_candidate_rejected_short_count", 0)
+                        ),
+                        "route_candidate_rejected_long_count": int(
+                            out.get("route_candidate_rejected_long_count", 0)
+                        ),
+                        "route_candidate_no_route_count": int(
+                            out.get("route_candidate_no_route_count", 0)
+                        ),
+                        "route_planning_latency_ms": round(
+                            out.get("route_planning_latency_ms", 0.0), 4
+                        ),
+                        "route_target_error_m": round(
+                            out.get("route_target_error_m", 0.0), 4
+                        ),
                         "step_count": episode.length,
                         "level": current_level,
                     },
@@ -269,6 +324,7 @@ def _build_mappo_config(
             lambda_=opt.get("gae_lambda", 0.95),
             clip_param=opt.get("clip_param", 0.2),
             entropy_coeff=opt.get("entropy_coeff", 0.01),
+            entropy_coeff_schedule=opt.get("entropy_coeff_schedule"),
             vf_loss_coeff=opt.get("vf_loss_coeff", 0.5),
             grad_clip=opt.get("grad_clip", 0.5),
             vf_clip_param=opt.get("vf_clip_param", 10.0),

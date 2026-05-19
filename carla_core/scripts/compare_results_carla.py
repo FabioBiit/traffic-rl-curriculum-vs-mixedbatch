@@ -54,6 +54,38 @@ FONT_SIZE_LABEL = 12
 FONT_SIZE_TICK = 10
 FONT_SIZE_LEGEND = 11
 
+EVAL_LEVELS = ("easy", "medium", "hard", "test")
+EVAL_GROUP_ORDER = ("all_agents", "vehicles", "pedestrians")
+EVAL_GROUP_LABELS = {
+    "all_agents": "All agents",
+    "vehicles": "Vehicles",
+    "pedestrians": "Pedestrians",
+}
+EVAL_METRIC_LABELS = {
+    "success_rate": "SR",
+    "collision_rate": "Collision",
+    "stuck_rate": "Stuck",
+    "offroad_rate": "Offroad",
+    "timeout_rate": "Timeout",
+    "route_completion": "Route",
+    "path_efficiency": "Path eff.",
+}
+EVAL_REPORT_METRICS = (
+    "success_rate",
+    "stuck_rate",
+    "timeout_rate",
+    "collision_rate",
+    "offroad_rate",
+    "route_completion",
+    "path_efficiency",
+)
+LOWER_IS_BETTER = {
+    "collision_rate",
+    "stuck_rate",
+    "offroad_rate",
+    "timeout_rate",
+}
+
 
 # ============================================================
 # CARICAMENTO DATI
@@ -149,6 +181,37 @@ def is_valid_metric(value):
 
 def fmt_pct_or_na(value):
     return f"{value:.1%}" if is_valid_metric(value) else "N/A"
+
+
+def get_eval_metric(eval_data, level, metric, group="all_agents"):
+    level_metrics = eval_data.get(level, {}) or {}
+    groups = level_metrics.get("groups", {}) or {}
+    group_metrics = groups.get(group, {}) or {}
+    if metric in group_metrics:
+        return group_metrics.get(metric)
+    if group == "all_agents":
+        return level_metrics.get(metric)
+    return None
+
+
+def _numeric_comparison_symbol(batch_value, curriculum_value):
+    if not is_valid_metric(batch_value) or not is_valid_metric(curriculum_value):
+        return ""
+    if batch_value > curriculum_value:
+        return " >"
+    if batch_value < curriculum_value:
+        return " <"
+    return " ="
+
+
+def _winner_label(batch_value, curriculum_value, metric):
+    if not is_valid_metric(batch_value) or not is_valid_metric(curriculum_value):
+        return "N/A"
+    if batch_value == curriculum_value:
+        return "Pari"
+    if metric in LOWER_IS_BETTER:
+        return "Batch" if batch_value < curriculum_value else "Curriculum"
+    return "Batch" if batch_value > curriculum_value else "Curriculum"
 
 
 # ============================================================
@@ -291,19 +354,24 @@ def plot_reward_over_time(batch_data, curriculum_data, output_path):
 def plot_evaluation_comparison(batch_data, curriculum_data, output_path):
     """
     Bar chart della valutazione finale su Easy/Medium/Hard/Test.
-    Due metriche affiancate: Success Rate e Collision Rate.
+    Mostra Success Rate e Collision Rate per all_agents, vehicles, pedestrians.
     """
     eval_b = batch_data["evaluation"]
     eval_c = curriculum_data["evaluation"]
-    levels = ["easy", "medium", "hard", "test"]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    metrics = ("success_rate", "collision_rate")
+    fig, axes = plt.subplots(
+        len(EVAL_GROUP_ORDER),
+        len(metrics),
+        figsize=(15, 11),
+        sharex=True,
+    )
 
-    def extract_eval_values(eval_data, metric, label):
+    def extract_eval_values(eval_data, metric, group, label):
         values = []
         missing_levels = []
-        for level in levels:
-            value = eval_data.get(level, {}).get(metric)
+        for level in EVAL_LEVELS:
+            value = get_eval_metric(eval_data, level, metric, group)
             if value is None:
                 values.append(np.nan)
                 missing_levels.append(level)
@@ -312,47 +380,52 @@ def plot_evaluation_comparison(batch_data, curriculum_data, output_path):
         if missing_levels:
             missing = ", ".join(missing_levels)
             print(
-                f"ATTENZIONE: {label} non ha dati '{metric}' per livelli: "
-                f"{missing}. Mostrati come N/A."
+                f"ATTENZIONE: {label} non ha dati '{metric}' "
+                f"per gruppo '{group}' nei livelli: {missing}. "
+                "Mostrati come N/A."
             )
         return values
 
-    for ax, metric, title in [
-        (axes[0], "success_rate", "Success Rate - Valutazione Finale"),
-        (axes[1], "collision_rate", "Collision Rate - Valutazione Finale"),
-    ]:
-        batch_vals = extract_eval_values(eval_b, metric, "Batch")
-        curric_vals = extract_eval_values(eval_c, metric, "Curriculum")
+    for row_idx, group in enumerate(EVAL_GROUP_ORDER):
+        for col_idx, metric in enumerate(metrics):
+            ax = axes[row_idx, col_idx]
+            batch_vals = extract_eval_values(eval_b, metric, group, "Batch")
+            curric_vals = extract_eval_values(eval_c, metric, group, "Curriculum")
 
-        x = np.arange(len(levels))
-        width = 0.35
+            x = np.arange(len(EVAL_LEVELS))
+            width = 0.35
 
-        bars_b = ax.bar(x - width / 2, batch_vals, width,
-                        label="Batch", color=COLOR_BATCH, alpha=0.85)
-        bars_c = ax.bar(x + width / 2, curric_vals, width,
-                        label="Curriculum", color=COLOR_CURRICULUM, alpha=0.85)
+            bars_b = ax.bar(x - width / 2, batch_vals, width,
+                            label="Batch", color=COLOR_BATCH, alpha=0.85)
+            bars_c = ax.bar(x + width / 2, curric_vals, width,
+                            label="Curriculum", color=COLOR_CURRICULUM, alpha=0.85)
 
-        ax.set_title(title, fontsize=FONT_SIZE_TITLE, fontweight="bold")
-        ax.set_xticks(x)
-        ax.set_xticklabels([lv.capitalize() for lv in levels],
-                           fontsize=FONT_SIZE_TICK)
-        ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
-        ax.set_ylim(0, 1.0)
-        ax.legend(fontsize=FONT_SIZE_LEGEND)
-        ax.grid(True, alpha=0.3, linestyle="--", axis="y")
+            ax.set_title(
+                f"{EVAL_METRIC_LABELS[metric]} - {EVAL_GROUP_LABELS[group]}",
+                fontsize=FONT_SIZE_TITLE,
+                fontweight="bold",
+            )
+            ax.set_xticks(x)
+            ax.set_xticklabels([lv.capitalize() for lv in EVAL_LEVELS],
+                               fontsize=FONT_SIZE_TICK)
+            ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+            ax.set_ylim(0, 1.0)
+            ax.grid(True, alpha=0.3, linestyle="--", axis="y")
+            if row_idx == 0 and col_idx == 0:
+                ax.legend(fontsize=FONT_SIZE_LEGEND)
 
-        # Etichette sulle barre
-        for bars in [bars_b, bars_c]:
-            for bar in bars:
-                height = bar.get_height()
-                if np.isnan(height):
-                    ax.text(bar.get_x() + bar.get_width() / 2., 0.02,
-                            "N/A", ha="center", va="bottom",
-                            fontsize=8, fontweight="bold")
-                elif height > 0.02:  # Non mostrare etichette per valori troppo piccoli
-                    ax.text(bar.get_x() + bar.get_width() / 2., height + 0.015,
-                            f"{height:.0%}", ha="center", va="bottom",
-                            fontsize=9, fontweight="bold")
+            # Etichette sulle barre
+            for bars in [bars_b, bars_c]:
+                for bar in bars:
+                    height = bar.get_height()
+                    if np.isnan(height):
+                        ax.text(bar.get_x() + bar.get_width() / 2., 0.02,
+                                "N/A", ha="center", va="bottom",
+                                fontsize=8, fontweight="bold")
+                    elif height > 0.02:
+                        ax.text(bar.get_x() + bar.get_width() / 2., height + 0.015,
+                                f"{height:.0%}", ha="center", va="bottom",
+                                fontsize=9, fontweight="bold")
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=FIGURE_DPI, bbox_inches="tight")
@@ -388,32 +461,29 @@ def plot_summary_table(batch_data, curriculum_data, output_path):
          fmt_pct_or_na(summ_c["cumulative_collision_rate"])],
     ]
 
-    # Aggiungi eval per livello
-    for level in ["easy", "medium", "hard", "test"]:
-        if level in eval_b and level in eval_c:
-            sr_b = eval_b[level]["success_rate"]
-            sr_c = eval_c[level]["success_rate"]
-            cr_b = eval_b[level]["collision_rate"]
-            cr_c = eval_c[level]["collision_rate"]
+    # Aggiungi eval per livello e gruppo agenti.
+    for level in EVAL_LEVELS:
+        if level not in eval_b and level not in eval_c:
+            continue
+        for group in EVAL_GROUP_ORDER:
+            group_label = EVAL_GROUP_LABELS[group]
+            sr_b = get_eval_metric(eval_b, level, "success_rate", group)
+            sr_c = get_eval_metric(eval_c, level, "success_rate", group)
+            cr_b = get_eval_metric(eval_b, level, "collision_rate", group)
+            cr_c = get_eval_metric(eval_c, level, "collision_rate", group)
 
-            # Evidenzia il vincitore con freccia
-            if is_valid_metric(sr_b) and is_valid_metric(sr_c):
-                sr_winner = " >" if sr_b > sr_c else " <" if sr_b < sr_c else " ="
-            else:
-                sr_winner = ""
-
-            if is_valid_metric(cr_b) and is_valid_metric(cr_c):
-                cr_winner = " <" if cr_b < cr_c else " >" if cr_b > cr_c else " ="
-            else:
-                cr_winner = ""
+            if not any(is_valid_metric(v) for v in (sr_b, sr_c, cr_b, cr_c)):
+                continue
 
             rows.append([
-                f"Eval {level.capitalize()} SR",
-                f"{fmt_pct_or_na(sr_b)}{sr_winner}", fmt_pct_or_na(sr_c)
+                f"Eval {level.capitalize()} {group_label} SR",
+                f"{fmt_pct_or_na(sr_b)}{_numeric_comparison_symbol(sr_b, sr_c)}",
+                fmt_pct_or_na(sr_c),
             ])
             rows.append([
-                f"Eval {level.capitalize()} CR",
-                f"{fmt_pct_or_na(cr_b)}{cr_winner}", fmt_pct_or_na(cr_c)
+                f"Eval {level.capitalize()} {group_label} CR",
+                f"{fmt_pct_or_na(cr_b)}{_numeric_comparison_symbol(cr_b, cr_c)}",
+                fmt_pct_or_na(cr_c),
             ])
 
     # Crea tabella come immagine
@@ -472,28 +542,28 @@ def save_comparison_txt(batch_data, curriculum_data, output_path):
         f.write(f"Budget per esperimento: "
                 f"{meta_b['total_timesteps_budget']:,} step\n\n")
 
-        f.write(f"{'Livello':<10} {'Batch SR':<12} {'Curric SR':<12} "
-                f"{'Batch CR':<12} {'Curric CR':<12} {'Winner SR':<12}\n")
-        f.write(f"{'-' * 72}\n")
+        f.write("Final evaluation per gruppo agenti\n")
+        f.write(
+            f"{'Livello':<10} {'Gruppo':<12} {'Metrica':<16} "
+            f"{'Batch':<12} {'Curric':<12} {'Winner':<12}\n"
+        )
+        f.write(f"{'-' * 78}\n")
 
-        for level in ["easy", "medium", "hard", "test"]:
-            if level in eval_b and level in eval_c:
-                b_sr = eval_b[level]["success_rate"]
-                c_sr = eval_c[level]["success_rate"]
-                b_cr = eval_b[level]["collision_rate"]
-                c_cr = eval_c[level]["collision_rate"]
-
-                if is_valid_metric(b_sr) and is_valid_metric(c_sr) and b_sr > c_sr:
-                    winner = "Batch"
-                elif is_valid_metric(b_sr) and is_valid_metric(c_sr) and c_sr > b_sr:
-                    winner = "Curriculum"
-                elif not is_valid_metric(b_sr) or not is_valid_metric(c_sr):
-                    winner = "N/A"
-                else:
-                    winner = "Pari"
-
-                f.write(f"{level:<10} {fmt_pct_or_na(b_sr):<12} {fmt_pct_or_na(c_sr):<12} "
-                        f"{fmt_pct_or_na(b_cr):<12} {fmt_pct_or_na(c_cr):<12} {winner:<12}\n")
+        for level in EVAL_LEVELS:
+            if level not in eval_b and level not in eval_c:
+                continue
+            for group in EVAL_GROUP_ORDER:
+                for metric in EVAL_REPORT_METRICS:
+                    b_value = get_eval_metric(eval_b, level, metric, group)
+                    c_value = get_eval_metric(eval_c, level, metric, group)
+                    if not is_valid_metric(b_value) and not is_valid_metric(c_value):
+                        continue
+                    f.write(
+                        f"{level:<10} {EVAL_GROUP_LABELS[group]:<12} "
+                        f"{EVAL_METRIC_LABELS[metric]:<16} "
+                        f"{fmt_pct_or_na(b_value):<12} {fmt_pct_or_na(c_value):<12} "
+                        f"{_winner_label(b_value, c_value, metric):<12}\n"
+                    )
 
         # Curriculum promotions
         f.write("\nCurriculum Unlocks:\n")

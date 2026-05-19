@@ -4,9 +4,9 @@ Train MAPPO on CarlaMultiAgentEnv - Multi-Agent via RLlib (v0.1)
 MAPPO = PPO + centralized critic (CTDE paradigm).
 
 Architecture:
-  - vehicle_policy:    actor sees 25D local obs, critic sees global_obs (138D)
-  - pedestrian_policy: actor sees 19D local obs, critic sees global_obs (138D)
-  - global_obs = fixed-slot concat [v0_25D|v1|v2|p0_19D|p1|p2|alive_mask_6D] = 138D
+  - vehicle_policy:    actor sees 44D local obs, critic sees global_obs (216D)
+  - pedestrian_policy: actor sees 26D local obs, critic sees global_obs (216D)
+  - global_obs = fixed-slot concat [v0_44D|v1|v2|p0_26D|p1|p2|alive_mask_6D] = 216D
   
 Components:
   - CarlaMultiAgentEnv (PettingZoo ParallelEnv) -> ParallelPettingZooEnv
@@ -24,6 +24,7 @@ import argparse
 import gc
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -134,6 +135,36 @@ def _resolve_checkpoint_path(checkpoint_result, *, project_root):
             pending.append(nested)
 
     return None
+
+
+def _derive_resume_source_name(resume_from):
+    return _derive_resume_run_dir(resume_from).name
+
+
+def _derive_resume_run_dir(resume_from):
+    path = Path(resume_from)
+    if path.parent.name == "checkpoints":
+        return path.parent.parent
+    return path
+
+
+def _copy_parent_episode_log_for_resume(*, resume_from, out_dir):
+    resume_run_dir = _derive_resume_run_dir(resume_from)
+    parent_episode_log = resume_run_dir / "episodes.jsonl"
+    child_episode_log = Path(out_dir) / "episodes.jsonl"
+
+    if not parent_episode_log.exists():
+        raise FileNotFoundError(
+            f"Parent episodes.jsonl not found for resume: {parent_episode_log}"
+        )
+    if child_episode_log.exists():
+        raise FileExistsError(
+            "Resume child episodes.jsonl already exists; refusing to append on top of "
+            f"an existing log: {child_episode_log}"
+        )
+
+    shutil.copy2(parent_episode_log, child_episode_log)
+    return parent_episode_log, child_episode_log
 
 
 def _validate_final_eval_artifacts(*, checkpoint_path, out_dir):
@@ -283,8 +314,23 @@ def _safe_rate(numerator, denominator):
     return float(numerator) / float(denominator)
 
 
+POLICY_OUTCOME_KEYS = ("vehicle_policy", "pedestrian_policy")
+
+
+def _empty_outcome_stats():
+    return {
+        "total": 0,
+        "success": 0,
+        "collision": 0,
+        "by_policy": {
+            policy_id: {"total": 0, "success": 0, "collision": 0}
+            for policy_id in POLICY_OUTCOME_KEYS
+        },
+    }
+
+
 def _read_episode_log_delta(log_path, start_offset):
-    stats = {"total": 0, "success": 0, "collision": 0}
+    stats = _empty_outcome_stats()
     if not log_path or not os.path.exists(log_path):
         return 0, stats
 
@@ -305,11 +351,19 @@ def _read_episode_log_delta(log_path, start_offset):
                 continue
 
             termination_reason = record.get("termination_reason")
+            policy_id = record.get("policy")
             stats["total"] += 1
+            policy_stats = stats["by_policy"].get(policy_id)
+            if policy_stats is not None:
+                policy_stats["total"] += 1
             if termination_reason == "route_complete":
                 stats["success"] += 1
+                if policy_stats is not None:
+                    policy_stats["success"] += 1
             if termination_reason == "collision":
                 stats["collision"] += 1
+                if policy_stats is not None:
+                    policy_stats["collision"] += 1
 
     return offset, stats
 
@@ -322,6 +376,14 @@ def _apply_delta_stats_to_tracker(tracker, delta_stats):
         collisions=delta_stats.get("collision", 0),
         total=delta_stats.get("total", 0),
     )
+
+
+def _apply_policy_delta_stats_to_trackers(policy_trackers, delta_stats):
+    if not policy_trackers:
+        return
+    by_policy = delta_stats.get("by_policy", {})
+    for policy_id, tracker in policy_trackers.items():
+        _apply_delta_stats_to_tracker(tracker, by_policy.get(policy_id, {}))
 
 
 def _extract_custom_metric(result, *names):
@@ -571,6 +633,8 @@ def main():
     parser.add_argument("--no-gpu", action="store_true")
     parser.add_argument("--mode", type=str, choices=["batch", "curriculum"], default=None)
     parser.add_argument("--checkpoint-dir", type=str, default=None)
+    parser.add_argument("--resume-from", type=str, default=None,
+                        help="Restore MAPPO state from an existing checkpoint/run directory.")
     parser.add_argument("--train-config", type=str, default=None)
     parser.add_argument("--env-config", type=str, default=None)
     parser.add_argument("--use-popart", action="store_true",
@@ -583,6 +647,12 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--difficulty", type=str, choices=["path", "traffic", "mixed"],
                         required=True)
+    parser.add_argument("--lock-curriculum-level", type=str,
+                        choices=["easy", "medium", "hard"], default=None,
+                        help=(
+                            "Exploratory curriculum override: keep training fixed on "
+                            "one level and disable promotions."
+                        ))
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -612,6 +682,11 @@ def main():
     eval_section = eval_cfg.get("evaluation", {})
 
     total_ts = args.timesteps or sched.get("total_timesteps", 50_000)
+    resume_from = None
+    if args.resume_from:
+        resume_from = _resolve_project_path(args.resume_from, project_root=base.parent)
+        if not resume_from.exists():
+            raise FileNotFoundError(f"--resume-from path not found: {resume_from}")
     n_workers = args.workers if args.workers is not None else res.get("num_workers", 0)
     
     if n_workers > 0:
@@ -648,6 +723,15 @@ def main():
         tentative_out_dir = str(
             _resolve_project_path(args.checkpoint_dir, project_root=project_root)
         )
+    elif resume_from is not None:
+        resume_name = _derive_resume_source_name(resume_from)
+        resume_mode_hint = _derive_mode(exp_cfg, str(resume_from))
+        tentative_out_dir = str(
+            (
+                _scope_output_base_by_mode(out_base_path, resume_mode_hint)
+                / f"{resume_name}_resume_to_{int(total_ts)}_{ts_str}"
+            ).resolve(strict=False)
+        )
     else:
         tentative_out_dir = str((out_base_path / f"{name}_{ts_str}").resolve(strict=False))
     resolved_mode = _derive_mode(
@@ -663,17 +747,39 @@ def main():
 
     if args.checkpoint_dir:
         out_dir = tentative_out_dir
+    elif resume_from is not None:
+        out_base_path = _scope_output_base_by_mode(out_base_path, resolved_mode)
+        exp_cfg["output_dir"] = str(out_base_path)
+        out_dir = tentative_out_dir
+        if os.path.exists(out_dir) and os.listdir(out_dir):
+            raise FileExistsError(
+                "Resume output directory already exists and is not empty: "
+                f"{out_dir}. Pass --checkpoint-dir to choose an explicit output path."
+            )
     else:
         out_base_path = _scope_output_base_by_mode(out_base_path, resolved_mode)
         exp_cfg["output_dir"] = str(out_base_path)
         out_dir = str((out_base_path / f"{name}_{ts_str}").resolve(strict=False))
     os.makedirs(out_dir, exist_ok=True)
 
+    resume_run_dir = _derive_resume_run_dir(resume_from) if resume_from is not None else None
+    parent_episode_log = None
+    child_episode_log = None
+    if resume_from is not None:
+        parent_episode_log, child_episode_log = _copy_parent_episode_log_for_resume(
+            resume_from=resume_from,
+            out_dir=out_dir,
+        )
+
     # Episode-level JSON log path (read by MAPPOTrainingCallbacks)
     os.environ["MAPPO_EPISODE_LOG"] = os.path.join(out_dir, "episodes.jsonl")
     episode_log_path = os.environ["MAPPO_EPISODE_LOG"]
     episode_log_offset = os.path.getsize(episode_log_path) if os.path.exists(episode_log_path) else 0
     cumulative_agent_outcomes = {"total": 0, "success": 0, "collision": 0}
+    cumulative_policy_outcomes = {
+        policy_id: {"total": 0, "success": 0, "collision": 0}
+        for policy_id in POLICY_OUTCOME_KEYS
+    }
     cb_cfg = load_yaml(base / "configs" / "curriculum_batch.yaml")
 
     # Apply conservative optimizer overrides for multi-level runs
@@ -689,11 +795,21 @@ def main():
 
     lv = load_yaml(base / "configs" / "levels.yaml")
     env_cfg["levels"] = lv[f"levels_{args.difficulty}"]
+    lock_curriculum_level = args.lock_curriculum_level
+    if lock_curriculum_level is not None:
+        if resolved_mode != "curriculum":
+            raise ValueError("--lock-curriculum-level requires --mode curriculum")
+        if lock_curriculum_level not in env_cfg["levels"]:
+            raise ValueError(
+                f"--lock-curriculum-level={lock_curriculum_level!r} is not defined "
+                f"for difficulty {args.difficulty!r}"
+            )
 
     build_env_cfg = deepcopy(env_cfg)
     level_manager = None
     level_tracker = None
     executed_level_trackers = None
+    executed_level_policy_trackers = None
     current_training_level = None
     initial_level = None
     initial_map = None
@@ -702,8 +818,13 @@ def main():
     if resolved_mode == "curriculum":
         cc = cb_cfg.get("curriculum", {}) # Finetuning Run3
         window_size = cc.get("window_size", 50)
+        curriculum_levels = (
+            [lock_curriculum_level]
+            if lock_curriculum_level is not None
+            else cc.get("levels", ["easy", "medium", "hard"])
+        )
         level_manager = CurriculumManager(
-            levels=cc.get("levels", ["easy", "medium", "hard"]),
+            levels=curriculum_levels,
             total_budget_timesteps=total_ts,
             default_success_rate_threshold=cc.get("success_rate_threshold", 0.45),
             default_collision_rate_threshold=cc.get(
@@ -711,17 +832,40 @@ def main():
                 cc.get("collision_threshold", 0.30),
             ),
             default_min_episodes=cc.get("min_episodes", 50),
-            unlock_criteria=cc.get("unlock_criteria", {}),
-            budget_constraints=cc.get("budget_constraints", {}),
-            base_sampling_weights=cc.get("base_sampling_weights", {}),
-            probation_sampling_weights=cc.get("probation_sampling_weights", {}),
-            probation_blocks_after_unlock=cc.get("probation_blocks_after_unlock", 2),
-            probation_blocks_after_cap_pressure=cc.get("probation_blocks_after_cap_pressure", 1),
+            unlock_criteria={} if lock_curriculum_level is not None else cc.get("unlock_criteria", {}),
+            budget_constraints={} if lock_curriculum_level is not None else cc.get("budget_constraints", {}),
+            base_sampling_weights=(
+                {lock_curriculum_level: 1.0}
+                if lock_curriculum_level is not None
+                else cc.get("base_sampling_weights", {})
+            ),
+            probation_sampling_weights=(
+                {}
+                if lock_curriculum_level is not None
+                else cc.get("probation_sampling_weights", {})
+            ),
+            probation_blocks_after_unlock=(
+                0 if lock_curriculum_level is not None else cc.get("probation_blocks_after_unlock", 2)
+            ),
+            probation_blocks_after_cap_pressure=(
+                0
+                if lock_curriculum_level is not None
+                else cc.get("probation_blocks_after_cap_pressure", 1)
+            ),
+            require_policy_success=cc.get("require_policy_success", False),
+            policy_ids=cc.get("policy_ids", list(POLICY_OUTCOME_KEYS)),
             teacher_seed=cc.get("teacher_seed", exp_seed),
             window_size=window_size,
         )
         executed_level_trackers = {
             level_name: EpisodeTracker(window_size=window_size)
+            for level_name in level_manager.levels
+        }
+        executed_level_policy_trackers = {
+            level_name: {
+                policy_id: EpisodeTracker(window_size=window_size)
+                for policy_id in level_manager.policy_ids
+            }
             for level_name in level_manager.levels
         }
         level_tracker = None
@@ -759,6 +903,20 @@ def main():
         "rollout": roll,
         "model": model_cfg,
         "runtime": runtime_cfg,
+        "curriculum_lock": {
+            "enabled": lock_curriculum_level is not None,
+            "level": lock_curriculum_level,
+        },
+        "resume": {
+            "enabled": resume_from is not None,
+            "source_checkpoint": str(resume_from) if resume_from is not None else None,
+            "source_run_dir": str(resume_run_dir) if resume_run_dir is not None else None,
+            "source_episodes_jsonl": (
+                str(parent_episode_log) if parent_episode_log is not None else None
+            ),
+            "copied_parent_episodes": parent_episode_log is not None,
+            "target_total_timesteps": int(total_ts),
+        },
         "env_config": build_env_cfg,
         "eval_config": eval_cfg,
     }
@@ -789,6 +947,10 @@ def main():
 
     # --- Build & Train ---
     algo = config.build()
+    if resume_from is not None:
+        algo.restore(str(resume_from))
+        print(f"\nCheckpoint ripristinato: {resume_from}")
+        print(f"Budget totale target: {total_ts:,} steps")
     print("\nMAPPO training avviato.\n")
 
     # --- Block 5.4: Level manager setup ---
@@ -797,6 +959,7 @@ def main():
         level_manager = None
         level_tracker = None
         executed_level_trackers = None
+        executed_level_policy_trackers = None
         current_training_level = None
         initial_level = None
         initial_map = None
@@ -805,6 +968,8 @@ def main():
     if isinstance(level_manager, CurriculumManager):
         current_training_level = initial_level
         print(f"  Curriculum mode: starting at '{initial_level}' (map={initial_map})")
+        if lock_curriculum_level is not None:
+            print(f"  Curriculum lock: fixed level '{lock_curriculum_level}' (promotions disabled)")
     elif isinstance(level_manager, BatchLevelSampler):
         current_training_level = initial_level
         print(f"  Batch mode: starting at '{initial_level}' (map={initial_map})")
@@ -817,6 +982,7 @@ def main():
             raw_env.set_level(current_training_level)
 
     ts_done = 0
+    session_start_ts = None
     iteration = 0
     t0 = time.time()
     best_reward = float("-inf")
@@ -838,6 +1004,12 @@ def main():
             result = algo.train()
             iteration += 1
             ts_done = result.get("timesteps_total", 0)
+            iter_ts = result.get(
+                "num_env_steps_sampled_this_iter",
+                result.get("timesteps_this_iter", 0),
+            )
+            if session_start_ts is None:
+                session_start_ts = max(0, int(ts_done) - int(iter_ts or 0))
 
             if stop_on_nan:
                 _raise_on_nonfinite_result(result)
@@ -853,8 +1025,14 @@ def main():
             episode_log_offset, delta_stats = _read_episode_log_delta(
                 episode_log_path, episode_log_offset
             )
-            for key, value in delta_stats.items():
-                cumulative_agent_outcomes[key] += value
+            for key in ("total", "success", "collision"):
+                cumulative_agent_outcomes[key] += delta_stats.get(key, 0)
+            for policy_id, policy_stats in delta_stats.get("by_policy", {}).items():
+                cumulative_stats = cumulative_policy_outcomes.get(policy_id)
+                if cumulative_stats is None:
+                    continue
+                for key in ("total", "success", "collision"):
+                    cumulative_stats[key] += policy_stats.get(key, 0)
             cumulative_success_rate = _safe_rate(
                 cumulative_agent_outcomes["success"],
                 cumulative_agent_outcomes["total"],
@@ -866,10 +1044,6 @@ def main():
 
             # --- Block 5.4: Level management per iteration ---
             if level_manager is not None:
-                iter_ts = result.get(
-                    "num_env_steps_sampled_this_iter",
-                    result.get("timesteps_this_iter", 0),
-                )
                 raw_env = _unwrap_carla_env(algo)
 
                 if isinstance(level_manager, CurriculumManager):
@@ -881,12 +1055,20 @@ def main():
                     if executed_tracker is not None:
                         executed_tracker.add_timesteps(iter_ts)
                         _apply_delta_stats_to_tracker(executed_tracker, delta_stats)
+                    executed_policy_trackers = None
+                    if executed_level_policy_trackers is not None:
+                        executed_policy_trackers = executed_level_policy_trackers.get(executed_level)
+                    if executed_policy_trackers is not None:
+                        for tracker in executed_policy_trackers.values():
+                            tracker.add_timesteps(iter_ts)
+                        _apply_policy_delta_stats_to_trackers(executed_policy_trackers, delta_stats)
 
                     level_manager.record_execution(executed_level, iter_ts)
 
                     if raw_env:
                         next_level, teacher_diagnostics = level_manager.get_episode_level(
                             trackers=executed_level_trackers,
+                            policy_trackers=executed_level_policy_trackers,
                             global_timestep=ts_done,
                         )
                         for teacher_event in teacher_diagnostics.get("events", []):
@@ -917,7 +1099,8 @@ def main():
             if ts_done >= total_ts:
                 eta = 0.0
             else:
-                eta = (elapsed / max(ts_done, 1)) * (total_ts - ts_done)
+                session_ts_done = max(int(ts_done) - int(session_start_ts or 0), 1)
+                eta = (elapsed / session_ts_done) * (total_ts - ts_done)
 
             timeseries.append({
                 "timestep": int(ts_done),
@@ -951,7 +1134,13 @@ def main():
                 best_reward = tot_r
 
             if ts_done % ckpt_freq < batch_size:
-                ckpt = algo.save(out_dir)
+                ckpt_dir = os.path.join(
+                    out_dir,
+                    "checkpoints",
+                    f"step_{int(ts_done):09d}",
+                )
+                os.makedirs(ckpt_dir, exist_ok=True)
+                ckpt = algo.save(ckpt_dir)
                 ckpt_path = _resolve_checkpoint_path(ckpt, project_root=project_root)
                 print(f"    -> Checkpoint: {ckpt_path or ckpt}")
 
@@ -1083,6 +1272,10 @@ def main():
                 if isinstance(level_manager, CurriculumManager):
                     results_payload["curriculum"] = level_manager.summary()
                     results_payload["curriculum"]["current_training_level"] = current_training_level
+                    results_payload["curriculum"]["lock"] = {
+                        "enabled": lock_curriculum_level is not None,
+                        "level": lock_curriculum_level,
+                    }
                     if teacher_diagnostics is not None:
                         results_payload["curriculum"]["last_decision"] = deepcopy(teacher_diagnostics)
                     results_payload["curriculum_history"] = deepcopy(
@@ -1099,6 +1292,30 @@ def main():
                         results_payload["level_trackers"] = {
                             level_name: tracker.summary()
                             for level_name, tracker in executed_level_trackers.items()
+                        }
+                    if executed_level_policy_trackers:
+                        results_payload["policy_level_trackers"] = {
+                            level_name: {
+                                policy_id: tracker.summary()
+                                for policy_id, tracker in policy_trackers.items()
+                            }
+                            for level_name, policy_trackers in executed_level_policy_trackers.items()
+                        }
+                        results_payload["training_summary"]["policy_outcomes"] = {
+                            policy_id: {
+                                "total": stats["total"],
+                                "success": stats["success"],
+                                "collision": stats["collision"],
+                                "cumulative_success_rate": _safe_rate(
+                                    stats["success"],
+                                    stats["total"],
+                                ),
+                                "cumulative_collision_rate": _safe_rate(
+                                    stats["collision"],
+                                    stats["total"],
+                                ),
+                            }
+                            for policy_id, stats in cumulative_policy_outcomes.items()
                         }
                 elif isinstance(level_manager, BatchLevelSampler):
                     results_payload["batch_sampling"] = level_manager.summary()

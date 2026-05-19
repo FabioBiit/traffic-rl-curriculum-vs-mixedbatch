@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import sys
+import time
 from importlib import import_module
 from pathlib import Path
 
@@ -141,53 +142,109 @@ class CARLARoutePlanner:
         target_distance_m: float,
         spawn_points: list,
         rng: np.random.Generator | None = None,
+        min_route_ratio: float = 0.5,
+        max_route_ratio: float = 2.0,
+        max_candidate_attempts: int = 32,
+        return_diagnostics: bool = False,
     ):
         """Plan a vehicle route of approximately target_distance_m meters.
 
         Strategy:
           1. Filter spawn_points within [0.6x, 1.4x] euclidean distance.
-          2. Random-pick one as destination.
+          2. Shuffle candidates deterministically with rng.
           3. A* trace_route → extract waypoints.
-          4. Validate: route length in [0.5x, 2.0x] target.
+          4. Keep routes within [min_route_ratio, max_route_ratio] target.
+          5. Return the valid route closest to target distance.
 
         Args:
             origin_loc: carla.Location of the vehicle.
             target_distance_m: desired route length in meters.
             spawn_points: list of carla.Transform (map spawn points).
             rng: numpy Generator for reproducibility.
+            min_route_ratio: lower route-length bound relative to target.
+            max_route_ratio: upper route-length bound relative to target.
+            max_candidate_attempts: maximum destinations to try.
+            return_diagnostics: if True, return (waypoints, diagnostics).
 
         Returns:
-            list[carla.Waypoint] or None if no valid route found.
+            list[carla.Waypoint] or None if no valid route found. If
+            return_diagnostics=True, returns (waypoints_or_none, diagnostics).
         """
         if rng is None:
             rng = np.random.default_rng()
 
-        dest = self._pick_destination(origin_loc, target_distance_m, spawn_points, rng)
-        if dest is None:
+        start_t = time.perf_counter()
+        attempts_configured = max(1, int(max_candidate_attempts))
+        diagnostics = {
+            "route_candidate_attempts_configured": attempts_configured,
+            "route_candidate_attempts_used": 0,
+            "route_candidate_valid_count": 0,
+            "route_candidate_rejected_short_count": 0,
+            "route_candidate_rejected_long_count": 0,
+            "route_candidate_no_route_count": 0,
+            "route_planning_latency_ms": 0.0,
+        }
+
+        def finish(wps):
+            diagnostics["route_planning_latency_ms"] = (
+                time.perf_counter() - start_t
+            ) * 1000.0
+            if return_diagnostics:
+                return wps, diagnostics
+            return wps
+
+        candidates = self._candidate_destinations(
+            origin_loc, target_distance_m, spawn_points, rng
+        )
+        if not candidates:
             logger.warning("No suitable destination at ~%.0fm from origin", target_distance_m)
-            return None
+            return finish(None)
 
-        try:
-            raw_route = self._grp.trace_route(origin_loc, dest.location)
-        except Exception as e:
-            logger.warning("trace_route failed: %s", e)
-            return None
+        best_wps = None
+        best_error = float("inf")
+        max_attempts = min(attempts_configured, len(candidates))
+        lower = target_distance_m * float(min_route_ratio)
+        upper = target_distance_m * float(max_route_ratio)
 
-        if not raw_route:
-            return None
+        for dest in candidates[:max_attempts]:
+            diagnostics["route_candidate_attempts_used"] += 1
+            try:
+                raw_route = self._grp.trace_route(origin_loc, dest.location)
+            except Exception as e:
+                diagnostics["route_candidate_no_route_count"] += 1
+                logger.debug("trace_route failed for candidate: %s", e)
+                continue
 
-        # Extract waypoints from (wp, RoadOption) tuples
-        wps = [wp for wp, _ in raw_route]
+            if not raw_route:
+                diagnostics["route_candidate_no_route_count"] += 1
+                continue
 
-        # Validate route length
-        route_len = _waypoints_length(wps)
-        if route_len < target_distance_m * 0.5:
+            # Extract waypoints from (wp, RoadOption) tuples
+            wps = [wp for wp, _ in raw_route]
+
+            route_len = _waypoints_length(wps)
+            if route_len < lower:
+                diagnostics["route_candidate_rejected_short_count"] += 1
+                continue
+            if route_len > upper:
+                diagnostics["route_candidate_rejected_long_count"] += 1
+                continue
+
+            diagnostics["route_candidate_valid_count"] += 1
+            error = abs(route_len - target_distance_m)
+            if error < best_error:
+                best_error = error
+                best_wps = wps
+
+        if best_wps is None:
             logger.debug(
-                "Route too short: %.0fm vs target %.0fm", route_len, target_distance_m,
+                "No valid route after %d candidates for target %.0fm",
+                diagnostics["route_candidate_attempts_used"],
+                target_distance_m,
             )
-            return None
+            return finish(None)
 
-        return wps
+        return finish(best_wps)
 
     # ------------------------------------------------------------------
     # Pedestrian routing (sidewalk chain by distance — no A*)
@@ -245,8 +302,8 @@ class CARLARoutePlanner:
     # Internal
     # ------------------------------------------------------------------
 
-    def _pick_destination(self, origin_loc, target_m, spawn_points, rng):
-        """Pick a random spawn point within [0.6x, 1.4x] of target distance."""
+    def _candidate_destinations(self, origin_loc, target_m, spawn_points, rng):
+        """Return shuffled spawn points near the target euclidean distance."""
         lo, hi = target_m * 0.6, target_m * 1.4
         candidates = []
         for sp in spawn_points:
@@ -260,10 +317,10 @@ class CARLARoutePlanner:
             candidates = [sp for sp in spawn_points if lo2 <= origin_loc.distance(sp.location) <= hi2]
 
         if not candidates:
-            return None
+            return []
 
-        idx = rng.integers(0, len(candidates))
-        return candidates[idx]
+        order = rng.permutation(len(candidates))
+        return [candidates[int(idx)] for idx in order]
 
 
 # ---------------------------------------------------------------------------
