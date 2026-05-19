@@ -1452,6 +1452,43 @@
 
 #########################################################Q&A####################################################################
 
+### Q&A 20-05-2026
+
+> Vanno testate 1 ad 1 con run esplorative da 300K o posso aggiungerle tutte in blocco e lanciare la long run?                          
+
+● Nessuna delle due opzioni è ottimale per tutti i 7. Si dividono in due insiemi con orizzonti di osservabilità diversi, e la scelta
+  dipende da quello:
+
+  Osservabili in short-horizon (300K easy-locked) — il meccanismo agisce per-step dal primo episodio:
+  - R-norm — cambia la scala del reward veicolo. Da testare individualmente perché ridefinisce il plateau (sotto la nuova
+  normalizzazione il reward totale di rotta scende da ~`N×100` a ~100; il critico deve ribilanciarsi). 300K easy-only è il minimo; 500K
+  è più sicuro per vedere il plateau sotto la nuova scala.
+  - Ped-speed — cambia il reward pedone per-step. 300K easy-locked vede se i pedoni convergono verso la nuova banda 1.2–2.6 m/s.
+  Sufficiente.
+  - Entropy — il riscalamento dell'endpoint agisce sull'esplorazione globale ma il decadimento iniziale è osservabile a 300K (entropia
+  media, KL, vf_explained_var). 300K sufficiente per confermare il meccanismo; effetto su SR no.
+
+  NON osservabili in short-horizon (richiedono long run) — il meccanismo si attiva solo dopo l'unlock di hard, che nella tua run
+  precedente è arrivato a 1.66M timesteps:
+  - P1 — il floor di rehearsal si attiva post-unlock di hard + dopo la probation. A 300K non si tocca.
+  - P2 — min(SR) cambia la metrica di unlock, ma in 300K non c'è alcun unlock candidato.
+  - P3 — la cap a 0.70 farebbe scattare il force-unlock a 2.1M (su 3M). A 300K non si vede nulla.
+  - Ped-route — diagnostico: la distribuzione route_source cambia subito, ma il segnale di SR non è il suo bersaglio. Da imbarcare in
+  una qualsiasi run come strumentazione.
+
+  Raccomandazione (4 run totali, ~3.9M timesteps cumulativi ≈ 1.3× una baseline):
+  (TURUN) 1. EVO/r-norm — 500K easy-locked. Gate: SR easy ≥−2pp vs 20260518_195947 (plateau ~79%), vf_explained_var≥0.8.
+  2. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile.
+  3. EVO/ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
+  4. P1+P2+P3+Ped-route stackati — 3M --difficulty path. Mergi i 4 branch in un branch EVO/curriculum-stack, una sola long run. Il
+  confounding tra P1/P2/P3 è inevitabile (testarli individualmente costerebbe 9M); però condividono lo stesso bersaglio (forgetting +
+  premature unlock) e hanno logging diagnostico distinguibile (unlock-event reason, min_probabilities, balanced_sr vs nuovo min_sr
+  registrato).
+
+  Non merge su tutti e 7 in una sola long run: avresti un solo numero finale e zero capacità di attribuzione tra reward-side
+  (R-norm/Ped-speed/Entropy) e curriculum-side (P1/P2/P3). Se la run regredisce, è epistemologicamente peggio di adesso.
+
+
 ### Q&A 18-05-2026
 
 > Qual è il vantaggio di avere A* e la logica che abbiamo fiaxato al posto di avere una route statica e crescente per tutti e 3 i livelli?
