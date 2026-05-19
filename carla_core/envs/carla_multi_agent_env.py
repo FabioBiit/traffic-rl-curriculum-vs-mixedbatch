@@ -1111,8 +1111,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
         ad.route_source = "legacy_chain"
         if ped_dist is not None and self._route_planner is not None:
             origin = ad.actor.get_location()
+            ped_route_min_ratio = float(
+                self.cfg["episode"].get("pedestrian_route_min_ratio", 0.5)
+            )
             wps = self._route_planner.plan_pedestrian_route_by_distance(
                 origin, ped_dist, self._map,
+                min_route_ratio=ped_route_min_ratio,
             )
             if wps is not None and len(wps) >= 2:
                 ad.route_waypoints = wps
