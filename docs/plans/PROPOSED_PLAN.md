@@ -1314,14 +1314,15 @@
      2. P1 — curriculum_batch_manager.py:565 + get_episode_level:799: rimuovere l'esclusione di easy; floor min_probabilities
      easy≥0.10/medium≥0.20 in fase hard (rehearsal).
      3. P2 — curriculum_batch_manager.py _balanced_policy_success_details:422: mean(SR)→min(SR); unlock gated sulla policy più debole.
-     4. P3 — curriculum_batch.yaml unlock_criteria.hard: force_unlock_global_share_cap 0.55→0.70.
+     4. P3 — curriculum_batch.yaml unlock_criteria.hard: force_unlock_global_share_cap 0.55→0.70. (Portandolo a 0.70 non si lascia troppo poco budget per hard?)
      5. Entropy — train_mappo.yaml:27: entropy_coeff_schedule endpoint 250000→2500000.
      6. Ped-route — route_planner.py plan_pedestrian_route_by_distance + _setup_pedestrian_route:1117 + multi_agent.yaml: rifiutare
      rotta <target×0.5 (specchia il pattern veicolo min_route_ratio), param pedestrian_route_min_ratio:0.5.
      7. Ped-speed — _pedestrian_reward:2000: banda comfort 0.8–1.8→1.2–2.6 m/s.
 
      Overlap file: P1+P2 (curriculum_batch_manager.py); R-norm/Ped-route/Ped-speed (carla_multi_agent_env.py) → ordinati, mai paralleli.
-      Ordine: Entropy→P1→P2→P3→R-norm→Ped-route→Ped-speed.
+      
+	 -> Ordine: Entropy→P1→P2→P3→R-norm→Ped-route→Ped-speed.
 
      Gate (per candidato, vs baseline 20260519_001217; fallito → revert solo quello)
 
@@ -1335,6 +1336,50 @@
 
      Per branch: python -m compileall sui file toccati + git diff --check + integration-check ≤3 iterazioni. Le run le lancia l'utente;
      metriche ricalcolate da episodes.jsonl (+results.json per la final-eval).
+	 
+	 
+### AFTER GATE EVO PLAN
+
+  2. Non usare la run carla_mappo_20260519_001217 come verdetto finale
+      - È meccanicamente healthy.
+      - Però è contaminata lato pedoni dal bug sulle rotte sidewalk troppo corte.
+      - Resta utile per diagnostica vehicle/curriculum, ma non thesis-grade per pedoni o confronto curriculum vs mixed.
+  3. Rifare una baseline pulita MLP 47D
+      - Stessa architettura attuale: no Attention, no PopArt, no GNN.
+      - Serve come riferimento corretto dopo il fix pedoni.
+      - Senza questa baseline, Attention/PopArt/GNN non sono interpretabili.
+  4. Run esplorative da 300K solo come screening
+     Ordine consigliato:
+      - MLP 47D clean baseline
+      - PopArt only
+      - Attention critic only
+      - Attention + PopArt
+      - GNN/GAT only
+      - GNN/GAT + PopArt
+      - eventuale GNN/GAT + Attention/PopArt solo se i risultati precedenti giustificano il costo
+  5. Non scegliere “best metrics” da una singola 300K
+      - Una run 300K serve per eliminare candidati deboli.
+      - Per promuovere una variante servono almeno 3 validazioni/seed.
+      - Solo dopo si lancia una long run comparativa.
+  6. Priorità decisionale
+      - Primario: vehicle hard SR.
+      - Secondario: ridurre stuck+timeout.
+      - Canary: collision/offroad non devono peggiorare.
+      - Easy/medium non devono degradare troppo, altrimenti la policy diventa specializzata su hard.
+  7. Gate proposti
+      - Integrità: 6 record per episodio, 0 malformed, 0 incompleti.
+      - Route quality: veicoli route_ratio < 0.5 = 0; pedoni idem dopo fix.
+      - Vehicle hard: SR almeno +3 pp vs baseline.
+      - Stuck+timeout hard: almeno -2 pp.
+      - Collision/offroad: non oltre +1 pp.
+      - Easy/medium SR: degradazione massima circa -2 pp.
+  8. Valutazione architetture
+      - PopArt: priorità alta, perché normalizza target critic multi-scala; utile ma va verificato perché vf_clip_param=1e6 è già
+        attivo.
+      - Attention: priorità alta-media, plausibile per CTDE multi-agent.
+      - GNN/GAT: priorità più bassa, blast radius alto e solo 6 agenti fissi; da testare dopo Attention/PopArt, non prima.
+
+  Conclusione operativa: screening 300K delle architetture, poi 3-seed validation, poi long run comparativa
 
 
 #########################################################BUGS###################################################################
