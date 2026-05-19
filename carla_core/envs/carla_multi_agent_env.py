@@ -1997,8 +1997,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # ---- 5. Speed target (walking pace) ----
         if speed < 0.15:
             reward -= 0.15  # idle
-        elif 0.8 <= speed <= 1.8:
-            reward += 0.3  # comfortable walking pace
+        elif 1.2 <= speed <= 2.6:
+            reward += 0.3  # Ped-speed: pace band sized so 100m routes fit max_steps (was 0.8-1.8)
         elif speed > 3.0:
             reward -= (speed - 3.0) * 0.7  # running too fast
 
