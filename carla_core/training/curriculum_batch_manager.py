@@ -561,8 +561,8 @@ class CurriculumManager:
                 tracker.window_collision_rate,
             )
 
+            # P1: do not exclude easy on hard unlock — keep it sampleable for rehearsal
             if target_level == "hard":
-                self._excluded_from_sampling.add("easy")
                 self._activate_probation(
                     reason="unlock_hard",
                     global_timestep=global_timestep,
@@ -802,6 +802,19 @@ class CurriculumManager:
             max_probabilities["medium"] = constraint_state["medium_dynamic_ceiling"]
         if "hard" in sampling_levels:
             min_probabilities["hard"] = constraint_state["hard_dynamic_floor"]
+
+        # P1: rehearsal floors once hard is unlocked (post-probation).
+        # Why: keep easy/medium sampled to mitigate forgetting; lift the max ceilings so
+        # the floor is not silently clamped to 0 by the budget cap in _project_probabilities.
+        if self.hard_unlocked and not probation_active:
+            if "easy" in sampling_levels:
+                min_probabilities["easy"] = max(min_probabilities.get("easy", 0.0), 0.10)
+                if "easy" in max_probabilities:
+                    max_probabilities["easy"] = max(max_probabilities["easy"], 0.10)
+            if "medium" in sampling_levels:
+                min_probabilities["medium"] = max(min_probabilities.get("medium", 0.0), 0.20)
+                if "medium" in max_probabilities:
+                    max_probabilities["medium"] = max(max_probabilities["medium"], 0.20)
 
         probabilities = self._project_probabilities(
             sampling_levels,
