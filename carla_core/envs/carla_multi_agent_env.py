@@ -1865,6 +1865,9 @@ class CarlaMultiAgentEnv(ParallelEnv):
     def _vehicle_reward(self, ad: AgentData) -> float:
         """Vehicle Reward v5"""
         reward = 0.0
+        # R-norm: normalize per-step waypoint/distance shaping by route length so
+        # the total route reward is ~constant across easy/medium/hard.
+        route_wp_count = max(len(ad.route_waypoints), 1)
         vel = ad.actor.get_velocity()
         speed_kmh = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
         transform = ad.actor.get_transform()
@@ -1875,7 +1878,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # ---- 1. Waypoint reach bonus (dominant sparse route signal) ----
         wp_delta = ad.current_wp_idx - ad.prev_wp_idx
         if wp_delta > 0:
-            reward += wp_delta * 100.0
+            reward += wp_delta * (100.0 / route_wp_count)
         if ad.last_skipped_waypoints > 0:
             penalty = float(self.cfg["episode"].get("skipped_waypoint_penalty", 10.0))
             reward -= ad.last_skipped_waypoints * penalty
@@ -1887,7 +1890,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             curr_dist = el.distance(wp_loc)
             if ad.prev_dist_to_wp > 0:
                 # Positive when getting closer, negative when getting farther
-                reward += (ad.prev_dist_to_wp - curr_dist) * 4.0
+                reward += (ad.prev_dist_to_wp - curr_dist) * (4.0 / route_wp_count)
             ad.prev_dist_to_wp = curr_dist
 
         # ---- 3. Collision penalty (large, immediate) ----
