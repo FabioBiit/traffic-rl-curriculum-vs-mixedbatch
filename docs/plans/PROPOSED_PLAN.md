@@ -1314,7 +1314,7 @@
      2. P1 — curriculum_batch_manager.py:565 + get_episode_level:799: rimuovere l'esclusione di easy; floor min_probabilities
      easy≥0.10/medium≥0.20 in fase hard (rehearsal).
      3. P2 — curriculum_batch_manager.py _balanced_policy_success_details:422: mean(SR)→min(SR); unlock gated sulla policy più debole.
-     4. P3 — curriculum_batch.yaml unlock_criteria.hard: force_unlock_global_share_cap 0.55→0.70. (Portandolo a 0.70 non si lascia troppo poco budget per hard?)
+   ? 4. P3 — curriculum_batch.yaml unlock_criteria.hard: force_unlock_global_share_cap 0.55→0.70. (Portandolo a 0.70 non si lascia troppo poco budget per hard?)
      5. Entropy — train_mappo.yaml:27: entropy_coeff_schedule endpoint 250000→2500000.
      6. Ped-route — route_planner.py plan_pedestrian_route_by_distance + _setup_pedestrian_route:1117 + multi_agent.yaml: rifiutare
      rotta <target×0.5 (specchia il pattern veicolo min_route_ratio), param pedestrian_route_min_ratio:0.5.
