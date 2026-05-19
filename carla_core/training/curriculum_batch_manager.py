@@ -419,7 +419,8 @@ class CurriculumManager:
         if len(success_rates) != len(self.policy_ids):
             return None, details
 
-        return sum(success_rates) / len(success_rates), details
+        # P2: unlock gate on the weakest policy (min), not the mean across policies
+        return min(success_rates), details
 
     def _unlock_reason(
         self,
