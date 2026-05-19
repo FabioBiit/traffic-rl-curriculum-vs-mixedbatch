@@ -1294,9 +1294,52 @@
   Se invece route_fallback_rate resta alto, allora prima di usare la run come evidenza forte sul curriculum conviene implementare anche il fallback distance-based coerente con route_distance_m.
 
 
+#########################################################PLAN###################################################################
+
+### NEW PLAN 19-05-2026
+
+### Piano chirurgico gate-driven — veicolo + curriculum + pedoni
+
+     Context
+
+     Run 20260519_001217 (2.94M/3M, integra). Problemi misurati da episodes.jsonl: forgetting (SR medium veicolo 52.6%→38.7%, pedone
+     70.7%→40.6% in fase hard); hard force-unlocked a 0.552 del budget col veicolo a 46% SR; reward non normalizzata alla lunghezza
+     rotta (collision 6/18/25% su easy/medium/hard). Obiettivo: SR massimale veicoli+pedoni, minima degradazione multi-livello; solo
+     evo/fix mirate, niente modifiche obs/architettura.
+
+     Candidati (1 per branch; pipeline sequenziale dal trunk, l'ordine risolve gli overlap di file)
+
+     1. R-norm — carla_multi_agent_env.py _vehicle_reward:1877,1890: normalizzare bonus waypoint (×100) e termine distanza (×4) per
+     len(route_waypoints) → valore-rotta ~costante a ogni livello.
+     2. P1 — curriculum_batch_manager.py:565 + get_episode_level:799: rimuovere l'esclusione di easy; floor min_probabilities
+     easy≥0.10/medium≥0.20 in fase hard (rehearsal).
+     3. P2 — curriculum_batch_manager.py _balanced_policy_success_details:422: mean(SR)→min(SR); unlock gated sulla policy più debole.
+     4. P3 — curriculum_batch.yaml unlock_criteria.hard: force_unlock_global_share_cap 0.55→0.70.
+     5. Entropy — train_mappo.yaml:27: entropy_coeff_schedule endpoint 250000→2500000.
+     6. Ped-route — route_planner.py plan_pedestrian_route_by_distance + _setup_pedestrian_route:1117 + multi_agent.yaml: rifiutare
+     rotta <target×0.5 (specchia il pattern veicolo min_route_ratio), param pedestrian_route_min_ratio:0.5.
+     7. Ped-speed — _pedestrian_reward:2000: banda comfort 0.8–1.8→1.2–2.6 m/s.
+
+     Overlap file: P1+P2 (curriculum_batch_manager.py); R-norm/Ped-route/Ped-speed (carla_multi_agent_env.py) → ordinati, mai paralleli.
+      Ordine: Entropy→P1→P2→P3→R-norm→Ped-route→Ped-speed.
+
+     Gate (per candidato, vs baseline 20260519_001217; fallito → revert solo quello)
+
+     - R-norm/Entropy/Ped-speed: <gate_policy> per-livello + vf_explained_var≥0.8 per fase.
+     - P1/P2/P3: final-eval per-scenario (il training non misura il forgetting di easy): hard SR +≥2pp, easy/medium SR ≥−2pp
+     (no-forgetting), Town05 non peggiora.
+     - Ped-route: diagnostico — pedoni route_length_ratio<0.5 → ~0%.
+     - Sempre: 6 record/ep, 0 NaN/inf.
+
+     Verifica
+
+     Per branch: python -m compileall sui file toccati + git diff --check + integration-check ≤3 iterazioni. Le run le lancia l'utente;
+     metriche ricalcolate da episodes.jsonl (+results.json per la final-eval).
+
+
 #########################################################BUGS###################################################################
 
-### NEW BUG FOUND 19-05-2026 (FIXARE POST RUN)
+### NEW BUG FOUND [19-05-2026] (FIX INTO NEW PLAN 19-05-2026)
 
 • Sì. Confermo: è un bug reale del routing pedonale, non solo un caso isolato.
 
