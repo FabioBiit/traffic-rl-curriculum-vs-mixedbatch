@@ -1294,7 +1294,125 @@
   Se invece route_fallback_rate resta alto, allora prima di usare la run come evidenza forte sul curriculum conviene implementare anche il fallback distance-based coerente con route_distance_m.
 
 
+#########################################################BUGS###################################################################
+
+### NEW BUG FOUND 19-05-2026 (FIXARE POST RUN)
+
+• Sì. Confermo: è un bug reale del routing pedonale, non solo un caso isolato.
+
+  Evidenza Da Run Live
+  Snapshot 2026-05-19 18:13:02, run carla_mappo_20260519_001217.
+
+  | Scope | Pedoni con route_length_ratio < 0.5 | route_too_short_flag | SR pedoni | Stuck+Timeout |
+  |---|---:|---:|---:|---:|
+  | Totale pedoni | 3183/8784 = 36.24% | 49.61% | 67.83% | 31.86% |
+  | Easy | 635/3063 = 20.73% | 32.45% | 88.80% | 11.17% |
+  | Medium | 1219/3243 = 37.59% | 52.91% | 69.13% | 30.68% |
+  | Hard | 1329/2478 = 53.63% | 66.51% | 40.19% | 59.00% |
+
+  Confronto: veicoli con route_length_ratio < 0.5 = 0/8784. Quindi il lower-bound è rispettato per i veicoli, non per i pedoni.
+
+  Causa Nel Codice
+
+  - /C:/Users/kyros/OneDrive/Desktop/TESI_PROJECT_traffic-rl-curriculum-vs-mixedbatch/traffic-rl-curriculum-vs-mixedbatch/carla_core/
+    envs/route_planner.py:253 plan_pedestrian_route_by_distance: concatena waypoint sidewalk finché può, ma se la chain finisce prima
+    del target ritorna comunque wps se non vuoto.
+  - /C:/Users/kyros/OneDrive/Desktop/TESI_PROJECT_traffic-rl-curriculum-vs-mixedbatch/traffic-rl-curriculum-vs-mixedbatch/carla_core/
+    envs/carla_multi_agent_env.py:1117 _setup_pedestrian_route: accetta qualsiasi wps con len(wps) >= 2, senza validare
+    route_optimal_length / target.
+  - /C:/Users/kyros/OneDrive/Desktop/TESI_PROJECT_traffic-rl-curriculum-vs-mixedbatch/traffic-rl-curriculum-vs-mixedbatch/carla_core/
+    envs/route_planner.py:206 invece per veicoli calcola lower = target_distance_m * min_route_ratio e rigetta route_len < lower.
+
+  Impatto Sul Verdetto
+  La mia valutazione precedente va corretta così:
+
+  | Aspetto | Verdetto aggiornato |
+  |---|---|
+  | Health meccanica run | ancora OK: JSONL integro, curriculum avanza, nessun crash |
+  | Vehicle hard | interpretabile |
+  | Pedestrian hard | confonded / non interpretabile pulitamente |
+  | Degradazione pedoni su hard | non si può attribuire solo alla difficoltà; il task pedonale hard è contaminato da route troppo corte
+  |
+
+  Quindi: la run può restare utile come diagnostica veicoli e curriculum live, ma non la userei come evidenza finale thesis-grade per i
+  pedoni o per il confronto curriculum vs mixed-batch senza correggere il routing pedonale e rilanciare.
+
+  Patch Proposta, Non Applicata
+  File impattati:
+
+  - carla_core/envs/route_planner.py
+  - carla_core/envs/carla_multi_agent_env.py
+  - opzionale ma consigliato: carla_core/configs/multi_agent.yaml
+
+  Modifica mirata:
+
+  - aggiungere pedestrian_route_min_ratio: 0.5;
+  - fare rifiutare a plan_pedestrian_route_by_distance rotte con lunghezza < target * min_ratio;
+  - passare il parametro da _setup_pedestrian_route;
+  - lasciare logging/flag per quantificare quante rotte vengono scartate.
+
+  Rischio sperimentale: alto se applicata mid-run, perché cambia la distribuzione del task. Non va applicata dentro 20260519_001217
+  continuandola come se nulla fosse.
+
+  Verifica prevista:
+
+  - compileall;
+  - git diff --check;
+  - mini-check su JSONL post-run: pedoni route_length_ratio < 0.5 deve scendere a 0 per sidewalk_distance;
+  - nuova run breve sanity, poi restart full curriculum 47D pulito.
+
+
 #########################################################Q&A####################################################################
+
+### Q&A 18-05-2026
+
+> Qual è il vantaggio di avere A* e la logica che abbiamo fiaxato al posto di avere una route statica e crescente per tutti e 3 i livelli?
+
+● Domanda di design sperimentale — rispondo confrontando le due opzioni rispetto alla tua research question (curriculum vs mixed-batch, generalizzazione Town03→Town05).
+
+  Cosa fa oggi plan_vehicle_route
+
+  Per ogni episodio/reset: sceglie uno spawn point casuale a ~`target_distance_m euclidei, traccia un percorso con **A\* sul 
+  road-graph** (GlobalRoutePlanner.trace_route), valida la lunghezza nel contratto [0.5x, 2.0x]del target, e tiene il candidato più vicino al target. I 3 livelli varianoroute_distance_m` (30/60/100m), quindi la difficoltà è una distribuzione di route che cresce, non una route fissa che cresce.
+
+  L'alternativa che proponi — una route statica (geometria fissa) per ciascuno dei 3 livelli — ha un solo vantaggio reale: determinismo banale e zero fallback. Tutto il resto è a sfavore.
+
+  Vantaggi di A* + logica di validazione
+
+  1. Evita la memorizzazione della traiettoria — è un punto ottimale per la tesi. (più generalizzazione)
+  Con una route statica la policy può raggiungere SR alta imparando a memoria una sola traiettoria ("curva a sinistra qui, accelera lì") senza imparare a guidare. A quel punto:
+  - il test di generalizzazione Town03→Town05 misurerebbe solo overfitting;
+  - il confronto curriculum vs mixed-batch diventerebbe "scheduling di memorizzazione di 3 traiettorie" invece di "l'ordinamento di difficoltà aiuta a imparare una policy generalizzabile". La domanda di ricerca verrebbe svuotata.
+  A* per-episodio espone l'agente a una distribuzione di incroci, curve, curvature, rettilinei → costringe a una competenza
+  trasferibile.
+
+  2. La difficoltà è un asse pulito, non confuso con una geometria.
+  Con route statiche, "hard" = quella curva difficile che hai scelto tu. Con A* + target distance, "hard" = route statisticamente più lunghe → più incroci, più punti di decisione, più esposizione al traffico. La difficoltà è monotòna e non confusa con un layout specifico — condizione necessaria perché il curriculum sia un esperimento controllato.
+
+  3. Validità del road-graph gratis.
+  A* sulla topologia CARLA garantisce corsie percorribili, sensi di marcia, connettività degli incroci. Una route statica andrebbe verificata a mano su ogni mappa.
+
+  4. Multi-agent: i 3 veicoli RL devono avere route diverse.
+  3 veicoli sulla stessa route statica si accodano/collidono banalmente. A* da ogni spawn dà percorsi spazialmente distinti — requisito per un setup multi-agente sensato.
+
+  5. Le metriche di gate hanno senso solo su una distribuzione.
+  SR/collision/stuck misurati su route variate sono onesti; su una route memorizzata il gate +2pp SR non significherebbe nulla.
+
+  Il costo di A* — ed è esattamente ciò che abbiamo "fixato"
+
+  A* verso destinazione casuale può produrre detour molto più lunghi della distanza euclidea. I costi e le relative mitigazioni:
+
+  - Route infattibili → il contratto [0.5x, 2.0x] (bugfix Punto 5) scarta le route > 2x target, non finibili nei 1000 step. Senza, SR strutturalmente depressa.
+  - Non riproducibilità → il fix del route-seed (SeedSequence al posto di hash()) rende le run A/B route-paired. Una route statica sarebbe deterministica gratis; A* lo diventa solo con seeding corretto.
+  - Fallback → quando A* non trova route valide entro 32 candidati ricade su legacy_fallback (osservato al 16.4% nella run
+  20260518_195947). Una route statica non fallisce mai — ma questo è il prezzo accettabile della varietà, ed è proprio il punto aperto da diagnosticare prima della long run.
+
+  In sintesi
+
+  La route statica vince solo su semplicità/determinismo. A* + validazione vince su tutto ciò che la tua tesi richiede:
+  generalizzazione, difficoltà come asse controllato, multi-agente sensato, metriche oneste. I "fix" che hai messo ([0.5x,2.0x],
+  route-seed) non sono toppe a un design fragile — sono il modo corretto di pagare il costo di A* mantenendone i benefici. Con route statiche non avresti niente da fixare, ma non avresti nemmeno un esperimento valido.
+
 
 ### Q&A 18-05-2026
 
