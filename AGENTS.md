@@ -37,6 +37,21 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 3. Use `get_affected_flows` to understand impact.
 4. Use `query_graph` pattern="tests_for" to check coverage.
 
+### When running shell commands that may produce verbose output, prefer RTK-prefixed commands
+
+- rtk git status
+- rtk git diff
+- rtk pytest
+- rtk grep
+- rtk find
+Avoid reading full logs unless necessary.
+
+### Recap Workflow
+
+Use CodeReviewGraph before code changes to understand repo structure and impacted files.
+Use RTK for verbose terminal commands such as git diff, git status, pytest, grep, find and logs.
+Prefer targeted commands and avoid full raw logs unless necessary.
+
 ---
 
 # Project Operating Brief
