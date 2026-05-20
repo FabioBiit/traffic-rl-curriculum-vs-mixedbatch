@@ -1470,7 +1470,7 @@
   - nuova run breve sanity, poi restart full curriculum 47D pulito.
 
 
-#########################################################Q&A####################################################################
+#########################################################Q&A#############################################################################
 
 ### Q&A 20-05-2026
 
@@ -1493,17 +1493,15 @@
   - P1 — il floor di rehearsal si attiva post-unlock di hard + dopo la probation. A 300K non si tocca.
   - P2 — min(SR) cambia la metrica di unlock, ma in 300K non c'è alcun unlock candidato.
   - P3 — la cap a 0.70 farebbe scattare il force-unlock a 2.1M (su 3M). A 300K non si vede nulla.
-  - Ped-route — diagnostico: la distribuzione route_source cambia subito, ma il segnale di SR non è il suo bersaglio. Da imbarcare in
-  una qualsiasi run come strumentazione.
 
   Raccomandazione (3 run totali):
   1. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile.
-  2. P1+P2+P3+Ped-route stackati — 3M --difficulty path. Mergi i 4 branch in un branch EVO/curriculum-stack, una sola long run. Il
+  2. P1+P2+P3 stackati — 3M --difficulty path. Mergi i 4 branch in un branch EVO/curriculum-stack, una sola long run. Il
   confounding tra P1/P2/P3 è inevitabile (testarli individualmente costerebbe 9M); però condividono lo stesso bersaglio (forgetting +
   premature unlock) e hanno logging diagnostico distinguibile (unlock-event reason, min_probabilities, balanced_sr vs nuovo min_sr
   registrato).
   3. R-norm v2 (Block 3: skip se P1+P2+P3+Ped-route appiattiscono il gradiente collision easy→hard; procedi se persiste.)
-  4. EVO/ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
+  4. EVO/ped-route+ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
 
   -> Ordine: Entropy→(P1→P2→P3)→R-norm→(Ped-route→Ped-speed).
 
