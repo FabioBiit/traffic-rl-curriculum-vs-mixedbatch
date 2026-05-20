@@ -1496,8 +1496,8 @@
   - P3 — la cap a 0.70 farebbe scattare il force-unlock a 2.1M (su 3M). A 300K non si vede nulla.
 
   Raccomandazione (3 run totali):
-  1. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile. (PASS)
-  2. EVO/ped-route+ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
+  (DONE) 1. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile. (PASS)
+  (TODO) 2. EVO/ped-route+ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
   3. P1+P2+P3 stackati — 3M --difficulty path. Mergi i 4 branch in un branch EVO/curriculum-stack, una sola long run. Il
   confounding tra P1/P2/P3 è inevitabile (testarli individualmente costerebbe 9M); però condividono lo stesso bersaglio (forgetting +
   premature unlock) e hanno logging diagnostico distinguibile (unlock-event reason, min_probabilities, balanced_sr vs nuovo min_sr
@@ -1563,7 +1563,40 @@
   - Run finale di tesi: forbice troncata sul setup vincente.
 
 
+### Q&A 20-05-2026 (P2)
+
+> Ricordami come avviene la promoption tra livelli adesso, usiamo la media minima tra le due SR veicoli e pedoni?                       
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Risposta breve: no, non è il minimo — è la media aritmetica tra vehicle_policy e pedestrian_policy (entrambe in policy_ids).
+
+  Logica attuale di unlock (curriculum_batch_manager.py:391-475):
+
+  1. Metrica usata: balanced_sr = mean(window_success_rate(vehicle), window_success_rate(pedestrian)) — riga 422, semplice sum/len.
+  2. Gate hard per-policy DISATTIVATO: require_policy_success: false in curriculum_batch.yaml:11. Quindi il check per-policy
+  (_policy_gate_details, righe 358-389) che richiederebbe window_success_rate >= threshold su ciascuna policy non viene applicato. Resta
+   solo la media.
+  3. Condizioni per unlock "competence_unlocked" (riga 470-475):
+    - tracker.level_timesteps >= min_budget_share * total_budget_timesteps (es. medium serve ≥20% budget)
+    - tracker.window_full (window di 50 episodi piena sul livello aggregato)
+    - balanced_sr >= success_rate_threshold
+  4. Fallback "pressure_cap_unlocked" (riga 461-465): se si supera force_unlock_global_share_cap, si sblocca a forza ignorando la SR.
+
+  Implicazione per il tuo caso: con pedoni a ~95% SR e veicoli a ~50%, la media è ~72% — sopra molte threshold tipiche (0.5-0.6), quindi
+   il veicolo da solo non bloccherebbe la promozione. Se vuoi che il veicolo (policy debole) sia il vincolo, le opzioni minime invasive
+  sono:
+
+  - Mettere require_policy_success: true → riattiva il gate hard per-policy (de facto un min(SR_v, SR_p) >= threshold + collision
+  check).
+  - Cambiare l'aggregazione in _balanced_policy_success_details da mean a min (one-liner alla riga 422).
+  - Pesare la media (es. 0.7*veicolo + 0.3*pedone) — più invasivo.
+
+  Vuoi che proceda con una di queste? (Solo proposta, non eseguo finché non confermi.)
+
+
 ##########################################################################################################################################
+
 
 ### Q&A 18-05-2026
 
