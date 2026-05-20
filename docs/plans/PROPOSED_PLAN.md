@@ -1477,7 +1477,7 @@
   una qualsiasi run come strumentazione.
 
   Raccomandazione (4 run totali, ~3.9M timesteps cumulativi ≈ 1.3× una baseline):
-  (TURUN) 1. EVO/r-norm — 500K easy-locked. Gate: SR easy ≥−2pp vs 20260518_195947 (plateau ~79%), vf_explained_var≥0.8.
+  (SCALARE TUTTE LE REWARD COINVOLTE) 1. EVO/r-norm — 500K easy-locked. Gate: SR easy ≥−2pp vs 20260518_195947 (plateau ~79%), vf_explained_var≥0.8.
   2. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile.
   3. EVO/ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
   4. P1+P2+P3+Ped-route stackati — 3M --difficulty path. Mergi i 4 branch in un branch EVO/curriculum-stack, una sola long run. Il
