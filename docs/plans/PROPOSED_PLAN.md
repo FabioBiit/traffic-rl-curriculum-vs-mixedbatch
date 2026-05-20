@@ -1316,7 +1316,7 @@
 			find/replace.
 		- (b) Schema-clean — aggiungi entropy_coeff_schedule_fraction: [[0.0, 0.03], [0.83, 0.005]] in YAML + preprocessor in
 			train_carla_mappo.py che lo espande in entropy_coeff_schedule assoluto dopo aver letto total_timesteps. Richiede ~10 righe e una modifica al config schema.
-		- Raccomandazione: (b). È più difendibile in tesi ("schedule scala col budget") e costo basso. Trasforma Entropy in candidato +
+		- Raccomandazione (IMPLEMENTED): (b). È più difendibile in tesi ("schedule scala col budget") e costo basso. Trasforma Entropy in candidato +
 			piccolo infra-fix. Se preferisci scope chirurgico, (a).
 	2. P1 — curriculum_batch_manager.py:565 + get_episode_level:799: rimuovere l'esclusione di easy; floor min_probabilities easy≥0.10 /
 		medium≥0.20 in fase hard (rehearsal).
@@ -1470,7 +1470,7 @@
   - nuova run breve sanity, poi restart full curriculum 47D pulito.
 
 
-#########################################################Q&A#############################################################################
+##############################################################Q&A#########################################################################
 
 ### Q&A 20-05-2026
 
@@ -1508,6 +1508,61 @@
   Non merge su tutti e 7 in una sola long run: avresti un solo numero finale e zero capacità di attribuzione tra reward-side
   (R-norm/Ped-speed/Entropy) e curriculum-side (P1/P2/P3). Se la run regredisce, è epistemologicamente peggio di adesso.
 
+
+### Q&A 20-05-2026
+
+> Non so se lasciare la difficoltà dei path livelli as-is o riportarla a 15-30-60 metri, con la forbice dinamica, in cui può         
+  prendere solo valori maggiori o uguali al lower bound o vicini, ma mai superiori all'upper bound, cosa mi consigli?                
+
+● Sul merito: as-is vs 15/30/60 con forbice dinamica
+
+  Tre opzioni reali, non due:
+
+  Opzione: A. As-is 30/60/100
+  Pro: nessuna variabile cambia in corsa; pulizia scientifica
+  Contro: easy=30m è già duro per veh policy 47D (stuck 84% nei primi 60 ep); rischio di non sbloccare medium e bruciare budget
+  ────────────────────────────────────────
+  Opzione: B. Punto fisso 15/30/60
+  Pro: riduce sparse-reward bottleneck su easy; salti geometrici 2×/2× (più clean del 2×/1.67× attuale)
+  Contro: introduce un'altra variabile rispetto al baseline 47D 20260518_195947; non testa generalizzazione intra-stage
+  ────────────────────────────────────────
+  Opzione: C. Forbice [L,U] con bias al lower bound
+  Pro: diversità intra-stage → migliore transfer Town05; bridge naturale tra livelli; allineata a best practice curriculum-RL
+  Contro: aggiunge un knob; rende la windowed-SR "soglia di unlock" un target mobile; più difficile attribuire risultati al singolo
+    asse
+
+  Cosa ti consiglio
+
+  Non cambiare in corsa il run 20260520_133747. Stoppare/riavviare ora costa ore di compute e rende non comparabile la run;
+  lasciala arrivare almeno a ~150k env-step e guarda:
+  - vehicle SR windowed su easy (cresce?)
+  - curriculum_level corrente (resta su easy o sblocca?)
+  - vf_explained_var (il critic regge?)
+
+  Per la PROSSIMA iterazione, ordine di priorità:
+
+  1. Prima: passa a 15/30/60 punto fisso (Opzione B). Singolo cambio rispetto al baseline 47D, salti geometrici puliti, easy=15m è
+  dentro il range in cui sai che la policy 47D riesce a chiudere (pilota easy-locked plateau 79%). Mantieni windowed-SR come gate.
+  2. Solo dopo che B ha verificato che il meccanismo di unlock funziona end-to-end, introduci la forbice (Opzione C) come
+  final-comparison config per il confronto curriculum-vs-mixed-batch. È lì che la diversità intra-stage paga davvero (transfer
+  Town05).
+
+  Sulla forbice specifica che proponi ("≥ lower o vicini, mai > upper"): tecnicamente è una distribuzione troncata con moda al lower
+  bound (es. esponenziale troncata, o Beta sbilanciata a sinistra). Concretamente:
+  - easy: clip(Exp(λ=1/5) + 15, 15, 30) → moda 15m, coda fino a 30m
+  - medium: clip(Exp(λ=1/8) + 30, 30, 60) → moda 30m, coda fino a 60m
+  - hard: clip(Exp(λ=1/15) + 60, 60, 100) → moda 60m, coda fino a 100m
+
+  Così ogni livello sovrappone il floor con il ceiling del precedente, smussando le transizioni. Ma di nuovo: questo è il passo 2,
+  non da introdurre ora.
+
+  Sintesi operativa:
+  - Adesso: lascia il run, niente cambi.
+  - Prossimo run: 15/30/60 punto fisso, allinea CLAUDE.md ↔ levels.yaml.
+  - Run finale di tesi: forbice troncata sul setup vincente.
+
+
+##########################################################################################################################################
 
 ### Q&A 18-05-2026
 

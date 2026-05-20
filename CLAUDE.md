@@ -40,7 +40,7 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 ---
 
 <metadata>
-Last updated: 2026-05-19
+Last updated: 2026-05-20
 Purpose: Repository-level operating instructions for Claude Code.
 Language rule: Write all future additions and updates to this file in English.
 </metadata>
@@ -126,14 +126,18 @@ are comparatively stronger and must always be reported separately.
 
 ## Curriculum Configuration (`curriculum_batch.yaml`, updated 2026-05-18)
 
-- `difficulty=path`; distances: `easy=15m / medium=35m / hard=60m`.
+- `difficulty=path`; distances: **`easy=30m / medium=60m / hard=100m`** (source of truth:
+  `carla_core/configs/levels.yaml::levels_path`; verified against `run_config.json` of in-flight
+  run `20260520_133747`). Previously documented as `15/35/60` — corrected on 2026-05-20 (doc-config
+  drift, no code change). A move to `15/30/60` punto fisso, or a truncated-range "forbice"
+  `[L,U]` sampler, is on the table for the next iteration but **not** in the current run.
 - Budget shares: `easy=0.30 / medium=0.35 / hard=0.35`.
 - Base sampling weights: `1.00 / 1.17 / 1.17`; medium `min_budget_share=0.20`.
 - Probation weights: `medium=1.00 / hard=0.85`.
 - Unlock metric: balanced **windowed** policy SR (`window_full` required; not cumulative).
   Rationale: cumulative SR is a lagging integrator dragged by cold-start failures
   (pilot `20260518_195947`: 86% windowed vs 67% cumulative). Reporting remains cumulative.
-  Not yet exercised in a full unlock-path run.
+  First full unlock-path run in flight: `20260520_133747` (300k-step budget).
 
 ## Next Step
 
@@ -154,7 +158,7 @@ routes seen in `20260518_195947`.
 | D2-Safety | rejected/reverted | 20260514_155151 | D2 safety variant. SR down, no safety improvement. |
 | D3 | rejected/reverted | 20260514_190424 | Early vehicle-stuck termination (`no_wp_steps>=300`, `route<0.3`, `hazard<0.75`). SR -2.90 pp vs D2, stuck+timeout +7.07 pp. |
 | Path curriculum easy-only | candidate evidence only | 20260514_211642 | Lock easy, `15m/15m`. Does not test budget or sampling weights. |
-| Full path curriculum | pending/conditional | — | `difficulty=path`, no lock, `15/35/60m`, budget `0.30/0.35/0.35`, windowed-SR unlock metric (updated 2026-05-18). |
+| Full path curriculum | pending/conditional | — | `difficulty=path`, no lock, `30/60/100m`, budget `0.30/0.35/0.35`, windowed-SR unlock metric (updated 2026-05-18). |
 | H1+H1.1 | not promoted / not reverted | 20260515_175921 | `vf_clip_param` 10→1e6 + `vf_loss_coeff` 0.5→0.05. Mechanism: `vf_explained_var` ~0→0.87. Gate FAILS 3/4: SR +1.51 pp, stuck+timeout -1.98 pp, collision +3.28 pp. Confounded (two knobs). `vf_clip` retained (reverting restores non-functional critic). |
 | H2 | not promoted / hypothesis falsified | 20260515_211055 | `gamma` 0.99→0.997. Gate FAILS 3/4: collision +5.18 pp. Longer horizon amplified route incentive, converted timeout→collision 1:1; SR flat (+0.14 pp). Retained by user decision. |
 | H3 | not promoted / mechanism confirmed | 20260516_144007 | Entropy schedule `[[0,0.03],[250000,0.005]]`. Mechanism: entropy 4.78→3.25. Gate FAILS 3/4: SR delta denominator-only (216 completions in both runs); all deltas within run-to-run noise. Retained by user decision. |
@@ -233,7 +237,8 @@ git diff --check
 python -m compileall carla_core\envs\carla_multi_agent_env.py carla_core\training\curriculum_batch_manager.py carla_core\training\train_carla_mappo.py
 
 # Candidate full path-curriculum run (user launches; never run autonomously)
-python -m carla_core.training.train_carla_mappo --mode curriculum --difficulty path --timesteps 3000000 --seed 999
+# Current operating budget is 300k timesteps (in-flight reference: 20260520_133747); 3M is reserved for the final long run.
+python -m carla_core.training.train_carla_mappo --mode curriculum --difficulty path --timesteps 300000 --seed 999
 ```
 </common_commands>
 
