@@ -1307,22 +1307,42 @@
      rotta (collision 6/18/25% su easy/medium/hard). Obiettivo: SR massimale veicoli+pedoni, minima degradazione multi-livello; solo
      evo/fix mirate, niente modifiche obs/architettura.
 
-     Candidati (1 per branch; pipeline sequenziale dal trunk, l'ordine risolve gli overlap di file)
+    Candidati (1 per branch; pipeline sequenziale dal trunk, l'ordine risolve gli overlap di file)
 
-     1. R-norm — carla_multi_agent_env.py _vehicle_reward:1877,1890: normalizzare bonus waypoint (×100) e termine distanza (×4) per
-     len(route_waypoints) → valore-rotta ~costante a ogni livello.
-     2. P1 — curriculum_batch_manager.py:565 + get_episode_level:799: rimuovere l'esclusione di easy; floor min_probabilities
-     easy≥0.10/medium≥0.20 in fase hard (rehearsal).
-     3. P2 — curriculum_batch_manager.py _balanced_policy_success_details:422: mean(SR)→min(SR); unlock gated sulla policy più debole.
-   ? 4. P3 — curriculum_batch.yaml unlock_criteria.hard: force_unlock_global_share_cap 0.55→0.70. (Portandolo a 0.70 non si lascia troppo poco budget per hard?)
-   ? 5. Entropy — train_mappo.yaml:27: entropy_coeff_schedule endpoint 250000→2500000. (così il valore è hardcodato, c'è un modo per renderlo dinamico in base al budget?)
-     6. Ped-route — route_planner.py plan_pedestrian_route_by_distance + _setup_pedestrian_route:1117 + multi_agent.yaml: rifiutare
-     rotta <target×0.5 (specchia il pattern veicolo min_route_ratio), param pedestrian_route_min_ratio:0.5.
-     7. Ped-speed — _pedestrian_reward:2000: banda comfort 0.8–1.8→1.2–2.6 m/s.
+    1. Entropy — train_mappo.yaml:27: entropy_coeff_schedule endpoint 250000→2500000.
+	- Risposta alla tua domanda sul dinamismo: sì, è hardcoded e fragile (cambi budget → devi ricordare di aggiornare l'endpoint). Due
+		opzioni:
+		- (a) Scope minimo — lascia hardcoded ora, documenta la convenzione "endpoint = 0.83 × total_timesteps". Cambio futuro è un
+			find/replace.
+		- (b) Schema-clean — aggiungi entropy_coeff_schedule_fraction: [[0.0, 0.03], [0.83, 0.005]] in YAML + preprocessor in
+			train_carla_mappo.py che lo espande in entropy_coeff_schedule assoluto dopo aver letto total_timesteps. Richiede ~10 righe e una modifica al config schema.
+		- Raccomandazione: (b). È più difendibile in tesi ("schedule scala col budget") e costo basso. Trasforma Entropy in candidato +
+			piccolo infra-fix. Se preferisci scope chirurgico, (a).
+	2. P1 — curriculum_batch_manager.py:565 + get_episode_level:799: rimuovere l'esclusione di easy; floor min_probabilities easy≥0.10 /
+		medium≥0.20 in fase hard (rehearsal).
+	3. P2 — curriculum_batch_manager.py _balanced_policy_success_details:422: mean(SR)→min(SR); unlock gated sulla policy più debole.
+	4. P3 — curriculum_batch.yaml unlock_criteria.hard: force_unlock_global_share_cap 0.55→0.70.
+	- Risposta alla tua domanda sul budget residuo: 
+		obiezione legittima. A 0.70 restano solo 30% del budget totale per hard. Con hard_min_share: 0.35 configurato come dynamic floor post-unlock (non share cumulativo), hard riceve 30% × 0.35 = ~10.5% del budget totale di pratica hard. Possibilmente troppo poco se la policy è ancora debole. 
+		Trade-off:
+        - 0.55 (attuale): unlock prematuro, vehicle a 46% SR sul corner → forgetting di easy/medium (osservato)
+		- 0.70 (proposto): più consolidamento, ma hard sotto-praticato se la policy non raggiunge competence
+		- 0.60–0.65 (compromesso): scelta più conservativa, mai testata
+		- Logica del piano: il cap è una rete di sicurezza, non il path nominale. Con P1 (rehearsal floors) + P2 (min-SR gate) attivi,
+		  l'unlock per competence dovrebbe arrivare PRIMA del cap, rendendo 0.70 raramente attivato. Solo se il fallback scatta il valore conta. Quindi 0.70 è ragionevole se P1+P2 fanno il loro lavoro; rischioso se la competence non si sviluppa mai.
+		- Suggerimento: mantieni 0.70 per il primo run di Block 4 e instrumenta il log per registrare se il force-unlock è effettivamente
+		  scattato. Se è scattato, valutare 0.60. Se non è scattato (competence-unlock arriva prima), 0.70 era irrilevante.
+	5. R-norm v2 — carla_multi_agent_env.py _vehicle_reward: abbandonato design v1 (divisione per route_wp_count ha causato collasso
+	   magnitudine). Design corretto: length_factor = TARGET_ROUTE_WP / route_wp_count (TARGET_ROUTE_WP=30, midpoint
+	   easy(15)/medium(35)/hard(60)) applicato a TUTTI i per-step shaping (positivi e negativi); terminale -500 invariato. Condizionale a
+	   Block 4: skip se P1+P2+P3+Ped-route appiattiscono il gradiente collision easy→hard; procedi se persiste.
+	6. Ped-route — route_planner.py plan_pedestrian_route_by_distance + _setup_pedestrian_route:1117 + multi_agent.yaml: rifiutare rotta
+	   <target×0.5 (specchia il pattern veicolo min_route_ratio), param pedestrian_route_min_ratio: 0.5. (Già implementato nello stack.)
+	7. Ped-speed — _pedestrian_reward:2000: banda comfort 0.8–1.8→1.2–2.6 m/s.
 
      Overlap file: P1+P2 (curriculum_batch_manager.py); R-norm/Ped-route/Ped-speed (carla_multi_agent_env.py) → ordinati, mai paralleli.
       
-	 -> Ordine: Entropy→P1→P2→P3→R-norm→Ped-route→Ped-speed.
+	 -> Ordine: Entropy→(P1→P2→P3)→R-norm→(Ped-route→Ped-speed).
 
      Gate (per candidato, vs baseline 20260519_001217; fallito → revert solo quello)
 
@@ -1476,14 +1496,16 @@
   - Ped-route — diagnostico: la distribuzione route_source cambia subito, ma il segnale di SR non è il suo bersaglio. Da imbarcare in
   una qualsiasi run come strumentazione.
 
-  Raccomandazione (4 run totali, ~3.9M timesteps cumulativi ≈ 1.3× una baseline):
-  (SCALARE TUTTE LE REWARD COINVOLTE) 1. EVO/r-norm — 500K easy-locked. Gate: SR easy ≥−2pp vs 20260518_195947 (plateau ~79%), vf_explained_var≥0.8.
-  2. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile.
-  3. EVO/ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
-  4. P1+P2+P3+Ped-route stackati — 3M --difficulty path. Mergi i 4 branch in un branch EVO/curriculum-stack, una sola long run. Il
+  Raccomandazione (3 run totali):
+  1. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile.
+  2. P1+P2+P3+Ped-route stackati — 3M --difficulty path. Mergi i 4 branch in un branch EVO/curriculum-stack, una sola long run. Il
   confounding tra P1/P2/P3 è inevitabile (testarli individualmente costerebbe 9M); però condividono lo stesso bersaglio (forgetting +
   premature unlock) e hanno logging diagnostico distinguibile (unlock-event reason, min_probabilities, balanced_sr vs nuovo min_sr
   registrato).
+  3. R-norm v2 (Block 3: skip se P1+P2+P3+Ped-route appiattiscono il gradiente collision easy→hard; procedi se persiste.)
+  4. EVO/ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
+
+  -> Ordine: Entropy→(P1→P2→P3)→R-norm→(Ped-route→Ped-speed).
 
   Non merge su tutti e 7 in una sola long run: avresti un solo numero finale e zero capacità di attribuzione tra reward-side
   (R-norm/Ped-speed/Entropy) e curriculum-side (P1/P2/P3). Se la run regredisce, è epistemologicamente peggio di adesso.
