@@ -256,6 +256,7 @@ class CARLARoutePlanner:
         target_distance_m: float,
         carla_map=None,
         spacing: float = 2.5,
+        min_route_ratio: float = 0.5,
     ):
         """Chain sidewalk waypoints until cumulative distance >= target.
 
@@ -264,9 +265,11 @@ class CARLARoutePlanner:
             target_distance_m: desired route length in meters.
             carla_map: carla.Map (uses self._map if None).
             spacing: step size in meters for wp.next().
+            min_route_ratio: lower route-length bound relative to target;
+                routes shorter than target * min_route_ratio are rejected.
 
         Returns:
-            list[carla.Waypoint] or None if no sidewalk found.
+            list[carla.Waypoint] or None if no sidewalk found or route too short.
         """
         cmap = carla_map or self._map
         start_wp = _get_sidewalk_waypoint(cmap, origin_loc)
@@ -294,6 +297,11 @@ class CARLARoutePlanner:
                 break
 
         if not wps:
+            return None
+
+        # Ped-route: reject chains shorter than target * min_route_ratio (mirrors
+        # the vehicle planner's lower bound — prevents short sidewalk chains).
+        if target_distance_m > 0 and cumulative < target_distance_m * float(min_route_ratio):
             return None
 
         return wps
