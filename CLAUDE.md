@@ -145,6 +145,14 @@ Launch full `difficulty=path` curriculum long run (no `--lock-curriculum-level`)
 the updated `curriculum_batch.yaml`. **Prerequisite**: diagnose the 16.4% `legacy_fallback` vehicle
 routes seen in `20260518_195947`.
 
+**Candidate queue (ordered, aligned with `docs/plans/PROPOSED_PLAN.md`)**:
+`Entropy (passed) → Ped-route → Ped-speed → P1 → P2 → P3 → R-norm v2`.
+Rationale: Entropy verdict closed; pedestrian-side fixes next (Ped-route then Ped-speed);
+curriculum-side stack (P1→P2→P3) follows; R-norm v2 is last and **gated on Block 4 evidence**
+(skip if P1+P2+P3+Ped-route flatten the easy→hard collision gradient).
+File-overlap ordering enforced: P1/P2 share `curriculum_batch_manager.py`; R-norm / Ped-route /
+Ped-speed share `carla_multi_agent_env.py` — run sequentially, never in parallel.
+
 ## Candidate Registry
 
 | Sigla | Status | Run ID | Description |
