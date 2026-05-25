@@ -1497,12 +1497,12 @@
 
   Raccomandazione (3 run totali):
   (DONE) 1. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile. (PASS)
-  (TODO) 2. EVO/ped-route+ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
-  3. P1+P2+P3 stackati — 3M --difficulty path. Mergi i 4 branch in un branch EVO/curriculum-stack, una sola long run. Il
-  confounding tra P1/P2/P3 è inevitabile (testarli individualmente costerebbe 9M); però condividono lo stesso bersaglio (forgetting +
+  (DOING) 2. EVO/ped-route+ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
+  (RUN TODO) 3. EVO/curriculum-stack (P1+P2+P3) [Già allineato con le evo entropy e pedoni] — 3M --difficulty path. Una sola long run. 
+  Il confounding tra P1/P2/P3 è inevitabile (testarli individualmente costerebbe 9M); però condividono lo stesso bersaglio (forgetting +
   premature unlock) e hanno logging diagnostico distinguibile (unlock-event reason, min_probabilities, balanced_sr vs nuovo min_sr
   registrato).
-  4. R-norm v2 (Block 3: skip se P1+P2+P3+Ped-route appiattiscono il gradiente collision easy→hard; procedi se persiste.)
+  (OPZIONALE) 4. R-norm v2 (Block 3: skip se P1+P2+P3+Ped-route appiattiscono il gradiente collision easy→hard; procedi se persiste.)
 
   -> Ordine: Entropy→(Ped-route→Ped-speed)→(P1→P2→P3)→R-norm.
 

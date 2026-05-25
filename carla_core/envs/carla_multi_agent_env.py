@@ -1924,7 +1924,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 horizon_s=4.0,
             )
             hazard_risk = max(veh_ttc, veh_occ, ped_ttc, ped_occ)
-            safe_to_push = hazard_risk < 0.75
+            safe_to_push = hazard_risk < 0.85  # V1: 0.75→0.85, keep urgency/min_speed active under higher hazard
 
             if speed_kmh < 2.5:
                 reward -= 0.15  # idle penalty
