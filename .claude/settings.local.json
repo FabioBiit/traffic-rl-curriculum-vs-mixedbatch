@@ -9,7 +9,8 @@
       "PowerShell(Get-Item *)",
       "mcp__code-review-graph__query_graph_tool",
       "WebSearch",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(rtk ls *)"
     ]
   },
   "enableAllProjectMcpServers": true,

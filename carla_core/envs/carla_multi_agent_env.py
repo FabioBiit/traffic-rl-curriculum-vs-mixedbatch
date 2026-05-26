@@ -71,6 +71,7 @@ except ImportError:
     raise ImportError("pip install carla==0.9.16")
 
 from carla_core.envs.route_planner import CARLARoutePlanner
+from carla_core.envs.episode_classification import classify_termination_reason
 
 logger = logging.getLogger(__name__)
 
@@ -525,49 +526,40 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 path_eff = 0.0
 
             # --- Determine termination reason ---
-            if term or trunc:
-                if ad.collision_flag:
-                    termination_reason = "collision"
-                elif ad.agent_type == "vehicle" and ad.current_wp_idx >= len(ad.route_waypoints):
-                    termination_reason = "route_complete"
-                elif ad.agent_type == "pedestrian" and ad.current_wp_idx >= len(ad.route_waypoints):
-                    termination_reason = "route_complete"
-                elif ad.agent_type == "vehicle":
-                    is_offroad = False
-                    if self.cfg["episode"].get("terminate_on_offroad", True):
-                        el = ad.actor.get_location()
-                        wp_check = self._map.get_waypoint(el, project_to_road=True)
-                        is_offroad = (
-                            wp_check is None
-                            or el.distance(wp_check.transform.location) > 5.0
-                        )
-                    if is_offroad:
-                        termination_reason = "offroad"
-                    elif trunc:
-                        # Stuck: timeout + (low route_completion OR loop_penalty)
-                        rc = self._route_completion(ad)
-                        if rc < 0.3 or ad.loop_penalty_active:
-                            termination_reason = "stuck"
-                        else:
-                            termination_reason = "timeout"
-                    else:
-                        termination_reason = "timeout"
-                elif trunc:
-                    rc = self._route_completion(ad)
-                    if rc < 0.3 or ad.loop_penalty_active:
-                        termination_reason = "stuck"
-                    else:
-                        termination_reason = "timeout"
-                else:
-                    termination_reason = "timeout"
-            else:
-                termination_reason = "alive"
+            # Precompute is_offroad for the classifier (vehicle-only, gated by cfg).
+            is_offroad = False
+            if (
+                ad.agent_type == "vehicle"
+                and (term or trunc)
+                and ad.current_wp_idx < len(ad.route_waypoints)
+                and not ad.collision_flag
+                and self.cfg["episode"].get("terminate_on_offroad", True)
+            ):
+                el = ad.actor.get_location()
+                wp_check = self._map.get_waypoint(el, project_to_road=True)
+                is_offroad = (
+                    wp_check is None
+                    or el.distance(wp_check.transform.location) > 5.0
+                )
+            route_target = float(ad.route_target_distance_m or 0.0)
+            termination_reason = classify_termination_reason(
+                agent_type=ad.agent_type,
+                term=term,
+                trunc=trunc,
+                collision_flag=ad.collision_flag,
+                current_wp_idx=ad.current_wp_idx,
+                num_waypoints=len(ad.route_waypoints),
+                is_offroad=is_offroad,
+                route_completion=self._route_completion(ad),
+                loop_penalty_active=ad.loop_penalty_active,
+                route_target_m=route_target,
+                route_optimal_length_m=ad.route_optimal_length,
+            )
 
             # Bug fix: path_efficiency is not meaningful for stuck agents
             if termination_reason == "stuck":
                 path_eff = 0.0
 
-            route_target = float(ad.route_target_distance_m or 0.0)
             route_length_ratio = (
                 ad.route_optimal_length / route_target
                 if route_target > 0.0 else 0.0
@@ -1111,8 +1103,12 @@ class CarlaMultiAgentEnv(ParallelEnv):
         ad.route_source = "legacy_chain"
         if ped_dist is not None and self._route_planner is not None:
             origin = ad.actor.get_location()
+            ped_route_min_ratio = float(
+                self.cfg["episode"].get("pedestrian_route_min_ratio", 0.5)
+            )
             wps = self._route_planner.plan_pedestrian_route_by_distance(
                 origin, ped_dist, self._map,
+                min_route_ratio=ped_route_min_ratio,
             )
             if wps is not None and len(wps) >= 2:
                 ad.route_waypoints = wps
@@ -1920,7 +1916,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 horizon_s=4.0,
             )
             hazard_risk = max(veh_ttc, veh_occ, ped_ttc, ped_occ)
-            safe_to_push = hazard_risk < 0.75
+            safe_to_push = hazard_risk < 0.85  # V1: 0.75→0.85, keep urgency/min_speed active under higher hazard
 
             if speed_kmh < 2.5:
                 reward -= 0.15  # idle penalty
@@ -1997,8 +1993,8 @@ class CarlaMultiAgentEnv(ParallelEnv):
         # ---- 5. Speed target (walking pace) ----
         if speed < 0.15:
             reward -= 0.15  # idle
-        elif 0.8 <= speed <= 1.8:
-            reward += 0.3  # comfortable walking pace
+        elif 1.2 <= speed <= 2.6:
+            reward += 0.3  # Ped-speed: pace band sized so 100m routes fit max_steps (was 0.8-1.8)
         elif speed > 3.0:
             reward -= (speed - 3.0) * 0.7  # running too fast
 

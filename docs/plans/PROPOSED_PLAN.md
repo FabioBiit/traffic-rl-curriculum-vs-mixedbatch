@@ -1296,7 +1296,7 @@
 
 #########################################################PLAN###################################################################
 
-### NEW PLAN 19-05-2026
+### NEW PLAN 19-05-2026 (AGGIORNATO CON V1 + P1-P2-P3)
 
 ### Piano chirurgico gate-driven — veicolo + curriculum + pedoni
 
@@ -1307,22 +1307,43 @@
      rotta (collision 6/18/25% su easy/medium/hard). Obiettivo: SR massimale veicoli+pedoni, minima degradazione multi-livello; solo
      evo/fix mirate, niente modifiche obs/architettura.
 
-     Candidati (1 per branch; pipeline sequenziale dal trunk, l'ordine risolve gli overlap di file)
+    Candidati (1 per branch; pipeline sequenziale dal trunk, l'ordine risolve gli overlap di file)
 
-     1. R-norm — carla_multi_agent_env.py _vehicle_reward:1877,1890: normalizzare bonus waypoint (×100) e termine distanza (×4) per
-     len(route_waypoints) → valore-rotta ~costante a ogni livello.
-     2. P1 — curriculum_batch_manager.py:565 + get_episode_level:799: rimuovere l'esclusione di easy; floor min_probabilities
-     easy≥0.10/medium≥0.20 in fase hard (rehearsal).
-     3. P2 — curriculum_batch_manager.py _balanced_policy_success_details:422: mean(SR)→min(SR); unlock gated sulla policy più debole.
-   ? 4. P3 — curriculum_batch.yaml unlock_criteria.hard: force_unlock_global_share_cap 0.55→0.70. (Portandolo a 0.70 non si lascia troppo poco budget per hard?)
-     5. Entropy — train_mappo.yaml:27: entropy_coeff_schedule endpoint 250000→2500000.
-     6. Ped-route — route_planner.py plan_pedestrian_route_by_distance + _setup_pedestrian_route:1117 + multi_agent.yaml: rifiutare
-     rotta <target×0.5 (specchia il pattern veicolo min_route_ratio), param pedestrian_route_min_ratio:0.5.
-     7. Ped-speed — _pedestrian_reward:2000: banda comfort 0.8–1.8→1.2–2.6 m/s.
+    1. Entropy — train_mappo.yaml:27: entropy_coeff_schedule endpoint 250000→2500000.
+	- Risposta alla tua domanda sul dinamismo: sì, è hardcoded e fragile (cambi budget → devi ricordare di aggiornare l'endpoint). Due
+		opzioni:
+		- (a) Scope minimo — lascia hardcoded ora, documenta la convenzione "endpoint = 0.83 × total_timesteps". Cambio futuro è un
+			find/replace.
+		- (b) Schema-clean — aggiungi entropy_coeff_schedule_fraction: [[0.0, 0.03], [0.83, 0.005]] in YAML + preprocessor in
+			train_carla_mappo.py che lo espande in entropy_coeff_schedule assoluto dopo aver letto total_timesteps. Richiede ~10 righe e una modifica al config schema.
+		- Raccomandazione (IMPLEMENTED): (b). È più difendibile in tesi ("schedule scala col budget") e costo basso. Trasforma Entropy in candidato +
+			piccolo infra-fix. Se preferisci scope chirurgico, (a).
+	2. Ped-route — route_planner.py plan_pedestrian_route_by_distance + _setup_pedestrian_route:1117 + multi_agent.yaml: rifiutare rotta
+	   <target×0.5 (specchia il pattern veicolo min_route_ratio), param pedestrian_route_min_ratio: 0.5. (Già implementato nello stack.)
+	3. Ped-speed — _pedestrian_reward:2000: banda comfort 0.8–1.8→1.2–2.6 m/s.
 
+	4. P1 — curriculum_batch_manager.py:565 + get_episode_level:799: rimuovere l'esclusione di easy; floor min_probabilities easy≥0.10 /
+		medium≥0.20 in fase hard (rehearsal).
+	5. P2 — curriculum_batch_manager.py _balanced_policy_success_details:422: mean(SR)→min(SR); unlock gated sulla policy più debole.
+	6. P3 — curriculum_batch.yaml unlock_criteria.hard: force_unlock_global_share_cap 0.55→0.70.
+	- Risposta alla tua domanda sul budget residuo: 
+		obiezione legittima. A 0.70 restano solo 30% del budget totale per hard. Con hard_min_share: 0.35 configurato come dynamic floor post-unlock (non share cumulativo), hard riceve 30% × 0.35 = ~10.5% del budget totale di pratica hard. Possibilmente troppo poco se la policy è ancora debole. 
+		Trade-off:
+        - 0.55 (attuale): unlock prematuro, vehicle a 46% SR sul corner → forgetting di easy/medium (osservato)
+		- 0.70 (proposto): più consolidamento, ma hard sotto-praticato se la policy non raggiunge competence
+		- 0.60–0.65 (compromesso): scelta più conservativa, mai testata
+		- Logica del piano: il cap è una rete di sicurezza, non il path nominale. Con P1 (rehearsal floors) + P2 (min-SR gate) attivi,
+		  l'unlock per competence dovrebbe arrivare PRIMA del cap, rendendo 0.70 raramente attivato. Solo se il fallback scatta il valore conta. Quindi 0.70 è ragionevole se P1+P2 fanno il loro lavoro; rischioso se la competence non si sviluppa mai.
+		- Suggerimento: mantieni 0.70 per il primo run di Block 4 e instrumenta il log per registrare se il force-unlock è effettivamente
+		  scattato. Se è scattato, valutare 0.60. Se non è scattato (competence-unlock arriva prima), 0.70 era irrilevante.
+	7. R-norm v2 — carla_multi_agent_env.py _vehicle_reward: abbandonato design v1 (divisione per route_wp_count ha causato collasso
+	   magnitudine). Design corretto: length_factor = TARGET_ROUTE_WP / route_wp_count (TARGET_ROUTE_WP=30, midpoint
+	   easy(15)/medium(35)/hard(60)) applicato a TUTTI i per-step shaping (positivi e negativi); terminale -500 invariato. Condizionale a
+	   Block 4: skip se P1+P2+P3+Ped-route appiattiscono il gradiente collision easy→hard; procedi se persiste.
+	
      Overlap file: P1+P2 (curriculum_batch_manager.py); R-norm/Ped-route/Ped-speed (carla_multi_agent_env.py) → ordinati, mai paralleli.
       
-	 -> Ordine: Entropy→P1→P2→P3→R-norm→Ped-route→Ped-speed.
+	-> Ordine: Entropy→(Ped-route→Ped-speed)→(P1→P2→P3)→R-norm.
 
      Gate (per candidato, vs baseline 20260519_001217; fallito → revert solo quello)
 
@@ -1338,7 +1359,7 @@
      metriche ricalcolate da episodes.jsonl (+results.json per la final-eval).
 	 
 	 
-### AFTER GATE EVO PLAN
+### AFTER GATE EVO PLAN (PROPOSAL)
 
   2. Non usare la run carla_mappo_20260519_001217 come verdetto finale
       - È meccanicamente healthy.
@@ -1450,7 +1471,1273 @@
   - nuova run breve sanity, poi restart full curriculum 47D pulito.
 
 
-#########################################################Q&A####################################################################
+##############################################################Q&A#########################################################################
+
+### Q&A 20-05-2026
+
+> Vanno testate 1 ad 1 con run esplorative da 300K o posso aggiungerle tutte in blocco e lanciare la long run?                          
+
+● Nessuna delle due opzioni è ottimale per tutti i 7. Si dividono in due insiemi con orizzonti di osservabilità diversi, e la scelta
+  dipende da quello:
+
+  Osservabili in short-horizon (300K easy-locked) — il meccanismo agisce per-step dal primo episodio:
+  - R-norm — cambia la scala del reward veicolo. Da testare individualmente perché ridefinisce il plateau (sotto la nuova
+  normalizzazione il reward totale di rotta scende da ~`N×100` a ~100; il critico deve ribilanciarsi). 300K easy-only è il minimo; 500K
+  è più sicuro per vedere il plateau sotto la nuova scala.
+  - Ped-speed — cambia il reward pedone per-step. 300K easy-locked vede se i pedoni convergono verso la nuova banda 1.2–2.6 m/s.
+  Sufficiente.
+  - Entropy — il riscalamento dell'endpoint agisce sull'esplorazione globale ma il decadimento iniziale è osservabile a 300K (entropia
+  media, KL, vf_explained_var). 300K sufficiente per confermare il meccanismo; effetto su SR no.
+
+  NON osservabili in short-horizon (richiedono long run) — il meccanismo si attiva solo dopo l'unlock di hard, che nella tua run
+  precedente è arrivato a 1.66M timesteps:
+  - P1 — il floor di rehearsal si attiva post-unlock di hard + dopo la probation. A 300K non si tocca.
+  - P2 — min(SR) cambia la metrica di unlock, ma in 300K non c'è alcun unlock candidato.
+  - P3 — la cap a 0.70 farebbe scattare il force-unlock a 2.1M (su 3M). A 300K non si vede nulla.
+
+  Raccomandazione (3 run totali):
+  (DONE) 1. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile. (PASS)
+  (DONE) 2. EVO/ped-route+ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
+  (DONE) 3. EVO/curriculum-stack (P1+P2+P3) [Già allineato con le evo entropy e pedoni] — 3M --difficulty path. Una sola long run. 
+  Il confounding tra P1/P2/P3 è inevitabile (testarli individualmente costerebbe 9M); però condividono lo stesso bersaglio (forgetting +
+  premature unlock) e hanno logging diagnostico distinguibile (unlock-event reason, min_probabilities, balanced_sr vs nuovo min_sr
+  registrato).
+  (OPZIONALE) 4. R-norm v2 (Block 3: skip se P1+P2+P3+Ped-route appiattiscono il gradiente collision easy→hard; procedi se persiste.)
+
+  -> Ordine: Entropy→(Ped-route→Ped-speed)→(P1→P2→P3)→R-norm.
+
+  Non merge su tutti e 7 in una sola long run: avresti un solo numero finale e zero capacità di attribuzione tra reward-side
+  (R-norm/Ped-speed/Entropy) e curriculum-side (P1/P2/P3). Se la run regredisce, è epistemologicamente peggio di adesso.
+
+############################################################VALUTAZIONE###################################################################
+
+### VALUTAZIONE Q&A 20-05-2026 punto 2.
+
+> E per quanto riguarda i veicoli? Abbiamo delle patch da poter implementare?   
+
+● Diagnosi empirica
+
+  Lo stuck è la stessa failure mode che si attiva più spesso, non una nuova.
+
+  ┌──────────────────────────────────────────────────┬──────────┬───────────┬─────────────────────────────────────────────────┐
+  │                     evidenza                     │ baseline │ candidato │                  implicazione                   │
+  ├──────────────────────────────────────────────────┼──────────┼───────────┼─────────────────────────────────────────────────┤
+  │ stuck_cause top: low_route_completion+loop+no_wp │    58.1% │     64.4% │ distribuzione invariata; ↑ frequenza            │
+  ├──────────────────────────────────────────────────┼──────────┼───────────┼─────────────────────────────────────────────────┤
+  │ stuck eps: no_wp_steps mean                      │      745 │       808 │ restano fermi più a lungo prima di terminare    │
+  ├──────────────────────────────────────────────────┼──────────┼───────────┼─────────────────────────────────────────────────┤
+  │ stuck eps: route_completion mean                 │    0.258 │     0.252 │ stessa posizione di arresto                     │
+  ├──────────────────────────────────────────────────┼──────────┼───────────┼─────────────────────────────────────────────────┤
+  │ stuck eps: speed_kmh mean                        │     0.30 │      0.33 │ proprio fermi                                   │
+  ├──────────────────────────────────────────────────┼──────────┼───────────┼─────────────────────────────────────────────────┤
+  │ complete eps: speed_kmh mean                     │     24.4 │      21.3 │ anche quando arrivano, vanno più piano (−12.7%) │
+  ├──────────────────────────────────────────────────┼──────────┼───────────┼─────────────────────────────────────────────────┤
+  │ complete eps: step_count mean                    │      552 │       640 │ episodi completati durano +88 step (+15.9%)     │
+  ├──────────────────────────────────────────────────┼──────────┼───────────┼─────────────────────────────────────────────────┤
+  │ ped in eps con veh stuck: route_complete         │      n/a │     75.9% │ pedoni passano, non sono bloccati dai veicoli   │
+  └──────────────────────────────────────────────────┴──────────┴───────────┴─────────────────────────────────────────────────┘
+
+  Meccanismo (verificato leggendo carla_multi_agent_env.py:1911–1946): il gate decisionale del reward veicolo è
+  hazard_risk = max(veh_ttc, veh_occ, ped_ttc, ped_occ)         # L1926
+  safe_to_push = hazard_risk < 0.75                             # L1927
+  # urgency e min_speed penalty applicati SOLO se safe_to_push  # L1932, L1938
+  no_wp_steps > 100 penalty applicato sempre, cap 1.0           # L1945
+  Pedoni più rapidi → ped_ttc/ped_occ saturano più spesso → hazard_risk ≥ 0.75 più spesso → safe_to_push=False più spesso → urgency e
+  min_speed off → il veicolo trova un ottimo locale fermo (zero progresso, solo no_wp_steps accumula a 0.004/step cap 1.0, troppo
+  lento). L'allungamento di no_wp_steps da 745 a 808 sugli episodi stuck è la firma di questo cap.
+
+  Patch concrete (vehicle-side, narrow diff)
+
+  Tutte sotto rispettano i vincoli <constraints> (no obs/architettura, solo reward shaping).
+
+  Patch V1 — alza safe_to_push threshold
+
+  Campo: Source category
+  Valore: reward shaping (gate tuning)
+  ────────────────────────────────────────
+  Campo: Assumption
+  Valore: la soglia 0.75 è tarata per peds lenti; pedoni a 2.28 m/s saturano ped_ttc/ped_occ, rendendo safe_to_push indebitamente
+    conservativo
+  ────────────────────────────────────────
+  Campo: Diff
+  Valore: carla_multi_agent_env.py:1927: safe_to_push = hazard_risk < 0.75 → < 0.85
+  ────────────────────────────────────────
+  Campo: Expected effect
+  Valore: stuck ↓, speed ↑, collision potenzialmente ↑
+  ────────────────────────────────────────
+  Campo: Gate
+  Valore: standard: stuck+timeout ≥ −2.0 pp; collision ≤ +1.0 pp; offroad ≤ +1.0 pp; SR neutro consentito
+  ────────────────────────────────────────
+  Campo: Costo
+  Valore: 1 run easy-locked 300K
+  ────────────────────────────────────────
+  Campo: Reversibilità
+  Valore: totale, una riga
+  ────────────────────────────────────────
+  Campo: Rischio
+  Valore: erode il miglioramento collision −1.71 pp osservato; è il knob più vicino al rischio di sicurezza
+
+  Patch V2 — accelera la penalty no_wp_steps (cap-raise)
+
+  Campo: Source category
+  Valore: reward shaping (anti-stuck)
+  ────────────────────────────────────────
+  Campo: Assumption
+  Valore: il cap a 1.0 con rate 0.004 satura in 250 step ed è troppo lento rispetto a no_wp_steps p50=955 sugli stuck; il segnale
+    anti-stuck non agisce in tempo
+  ────────────────────────────────────────
+  Campo: Diff
+  Valore: carla_multi_agent_env.py:1945–1946: alzare il cap a 2.0 e/o ridurre la soglia da 100 → 50. Esempio minimale: cap 1.0 → 2.0,
+    lasciando rate e threshold invariati
+  ────────────────────────────────────────
+  Campo: Expected effect
+  Valore: pressione anti-stuck doppia → stuck ↓ anche dentro hazard pedonale; rischio: collisioni indotte da forzature
+  ────────────────────────────────────────
+  Campo: Gate
+  Valore: standard
+  ────────────────────────────────────────
+  Campo: Costo
+  Valore: 1 run easy-locked 300K
+  ────────────────────────────────────────
+  Campo: Reversibilità
+  Valore: totale, due parametri
+  ────────────────────────────────────────
+  Campo: Rischio
+  Valore: agisce sempre, non solo durante hazard → può spingere il veicolo a muoversi in situazioni davvero non-sicure
+
+  Patch V3 — abbassa il bersaglio Ped-speed (cross-policy, già proposta come A)
+
+  ┌─────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │      Campo      │                                                    Valore                                                    │
+  ├─────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Source category │ retuning candidato corrente, non patch veicolo                                                               │
+  ├─────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Assumption      │ la causa del ripple è il delta +0.29 m/s sui pedoni; rimuovere la causa è più pulito che mitigarne l'effetto │
+  ├─────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Diff            │ retuning del reward Ped-speed nello stesso file, per portare la media nella metà bassa di [1.5, 2.2]         │
+  ├─────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Expected effect │ speed pedone 2.28 → ~1.9 m/s (rientra nel gate2); stuck veicolo ↓ verso baseline; SR pedone neutro           │
+  ├─────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Gate            │ gate originale Ped-route+Ped-speed (entrambi i criteri)                                                      │
+  ├─────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Costo           │ 1 run easy-locked 300K                                                                                       │
+  ├─────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Reversibilità   │ totale                                                                                                       │
+  ├─────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Rischio         │ invalida parzialmente lo studio Ped-speed (lo sposta a un altro punto operativo)                             │
+  └─────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Patch V4 — accept-and-proceed
+
+  Campo: Source category
+  Valore: decisione di non patch
+  ────────────────────────────────────────
+  Campo: Argomento pro
+  Valore: vehicle SR −0.55 pp è entro noise; collision −1.71 pp e offroad −1.79 pp sono miglioramenti reali; il comportamento è coerente
+
+    (più cautela)
+  ────────────────────────────────────────
+  Campo: Argomento contro
+  Valore: stuck +4.70 pp entra nel run 3M dello step 3 come baseline aumentato, e il goal <current_goal> è ridurre lo stuck veicolo — è
+    esattamente la metrica che peggiora
+  ────────────────────────────────────────
+  Campo: Costo
+  Valore: 0 run extra
+
+  Considerazione di scope
+
+  Le patch V1/V2 sono nuove candidate non in coda rispetto a PROPOSED_PLAN.md (Entropy → Ped-route → Ped-speed → P1 → P2 → P3 → R-norm
+  v2). Inserirne una significa allungare la spina dorsale prima del run 3M; CLAUDE.md sconsiglia ottimizzazioni esuberanti, quindi se il
+   quadro pedoni va già rilavorato (V3, gate2 FAIL), conviene non sovrapporre un retune veicolo e un retune pedoni nello stesso run
+  easy-locked: serve attribuibilità.
+
+  Raccomandazione
+
+  V3 prima, poi decidere su V1/V2 in base al residuo. Razionale:
+  - V3 chiude il gate2 fallito (motivazione documentale)
+  - V3 dovrebbe attenuare in modo importante il ripple veicolo (è il driver causale): se dopo V3 lo stuck veicolo torna sotto ~25%,
+  V1/V2 diventano inutili
+  - Se invece dopo V3 lo stuck resta inflated, allora attribuiamo il residuo a Ped-route (non Ped-speed) e V1/V2 hanno una
+  giustificazione empirica forte
+  - Costo totale al peggio: 2 run 300K (V3, poi V1) prima dello step 3
+
+
+### VALUTAZIONE Q&A 25-05-2026 V3. (REVERT+V1)
+
+● Run 20260525_125127 (V3) — Valutazione
+
+  Config & integrità (run_config.json + episodes.jsonl)
+  - 300K, seed 999, easy-locked, entropy schedule [[0,0.03],[249000,0.005]] — identica a 091300/133747.
+  - 450 ep × 6 agent = 2700 record, 0 duplicati, level=easy su 100% record, no NaN/inf. ✅
+
+  Metriche cumulative (split per policy)
+
+  ┌───────────────────────────┬────────────────────┬─────────────────┬─────────────────────┐
+  │          Metrica          │    V3 (125127)     │ Bundle (091300) │ EvoEntropy (133747) │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh SR                    │ 62.00% (837/1350)  │ 59.93%          │ 60.48%              │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh stuck                 │ 22.22%             │ 27.18%          │ 22.47%              │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh timeout               │ 3.41%              │ 2.96%           │ 6.03%               │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh stuck+timeout         │ 25.63%             │ 30.14%          │ 28.50%              │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh collision             │ 6.59%              │ 4.93%           │ 8.45%               │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh offroad               │ 5.78%              │ 4.00%           │ 5.73%               │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh route_compl           │ 0.7628             │ —               │ —                   │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh path_eff              │ 0.6992             │ —               │ —                   │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh speed (km/h)          │ 11.88              │ 13.76           │ 16.03               │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh no_wp_steps           │ 210.3              │ 264.3           │ 215.8               │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Ped SR                    │ 85.41% (1153/1350) │ 85.71%          │ 85.67%              │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Ped stuck                 │ 11.48%             │ —               │ —                   │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Ped speed (m/s)           │ 2.641 ⚠           │ 2.281           │ 1.990               │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Ped route_compl           │ 0.8895             │ —               │ —                   │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Ped sidewalk_fallback     │ 20.74%             │ 20.69%          │ 7.24%               │
+  ├───────────────────────────┼────────────────────┼─────────────────┼─────────────────────┤
+  │ Veh route legacy_fallback │ 16.74%             │ 16.67%          │ 16.14%              │
+  └───────────────────────────┴────────────────────┴─────────────────┴─────────────────────┘
+
+  Gate verdict (vs EvoEntropy 133747)
+
+  ┌──────────────────────────────────┬───────────┬──────────────────────────┬──────────┐
+  │               Gate               │ Threshold │        V3 valore         │ Verdetto │
+  ├──────────────────────────────────┼───────────┼──────────────────────────┼──────────┤
+  │ gate1 ped SR ≥ −2 pp             │ 83.67%    │ 85.41% (Δ −0.26 pp)      │ PASS     │
+  ├──────────────────────────────────┼───────────┼──────────────────────────┼──────────┤
+  │ gate2 ped speed ∈ [1.5, 2.2] m/s │ window    │ 2.641 m/s (+0.441 sopra) │ ❌ FAIL  │
+  ├──────────────────────────────────┼───────────┼──────────────────────────┼──────────┤
+  │ β veh stuck ≤ ~24%               │ 24%       │ 22.22% (vs EvoE 22.47%)  │ ✅ PASS  │
+  └──────────────────────────────────┴───────────┴──────────────────────────┴──────────┘
+
+  Per il protocollo in CLAUDE.md: V3 FAIL gate2 → revert, retune band. Strict reading.
+
+  Traiettoria SR (Q1→Q4, ordine episodi)
+
+  ┌────────────┬───────────────────────┬───────────────────────┬────────────────────────┐
+  │    Run     │    Veh SR (Q1→Q4)     │ Ped speed m/s (Q1→Q4) │ Veh speed km/h (Q1→Q4) │
+  ├────────────┼───────────────────────┼───────────────────────┼────────────────────────┤
+  │ V3         │ 15.1→70.1→83.4→79.3 ↓ │ 1.77→2.94→2.90→2.96   │ 2.5→12.7→16.0→16.3     │
+  ├────────────┼───────────────────────┼───────────────────────┼────────────────────────┤
+  │ Bundle     │ 11.8→67.9→78.6→81.3 ↑ │ 1.88→2.65→2.29→2.30   │ 3.9→14.9→17.2→19.1     │
+  ├────────────┼───────────────────────┼───────────────────────┼────────────────────────┤
+  │ EvoEntropy │ 5.7→67.2→85.5→83.4 ↓  │ 1.61→2.14→2.14→2.07   │ 2.2→16.3→21.6→24.0     │
+  └────────────┴───────────────────────┴───────────────────────┴────────────────────────┘
+
+  Risposta alla tua osservazione TensorBoard
+
+  Confermata empiricamente: V3 ha Q3→Q4 = 83.4%→79.3% (−4.1 pp), mentre Bundle continua a salire (+2.7 pp). EvoEntropy ha anch'esso un
+  calo (-2.1 pp) ma più contenuto. Causa probabile (concorrono 2 effetti):
+
+  1. Band tightening ha effetto inverso: ped speed in V3 esce dalla banda [1.5, 2.2] già a Q2 (2.94 m/s) e ci resta. Il bonus +0.3 è
+  asimmetrico (solo dentro), non c'è penalità fuori → quando la banda è più stretta, è semplicemente meno spesso raggiungibile, e la
+  progress reward del pedone domina → peds più veloci e più imprevedibili.
+  2. Vehicle policy si stabilizza in equilibrio difensivo: veh speed plateau a 16.3 km/h vs Bundle 19.1 e EvoEntropy 24.0. Con peds a
+  2.94 m/s che saturano hazard_risk, il veicolo rinuncia a spingere e perde progress reward. Q4 coincide con il collasso entropy a 249K
+  (~83% del run): meno esplorazione → la policy "ricama" sull'equilibrio cauto, e Δ SR Q3→Q4 sbanda.
+
+  Bundle invece beneficia di banda più larga [1.2, 2.6]: peds convergono dentro la banda (2.30 m/s a Q4), hazard più stabile, veicoli
+  continuano ad accelerare e a guadagnare SR.
+
+  Diagnosi & opzioni
+
+  Punto chiave: V3 ha aggiustato β (veh stuck 22.22% ≈ EvoEntropy) ma ha sfondato gate2 (peggio del Bundle). Il band tightening è la
+  causa del plateau veh in Q4 e dello sfondamento ped speed. Il meccanismo "ped speed ↑ → hazard saturation → veh stuck ↑" del Bundle
+  non si è verificato in V3 — qui peds vanno ancora più veloci ma veh stuck cala. Suggerisce che la ripple di stuck del Bundle non era
+  guidata dalla velocità media ma dalla distribuzione/varianza del comportamento ped — non confermabile da queste aggregazioni
+  cumulative.
+
+  Per il protocollo strict: revert V3 (gate2 FAIL). Poi le alternative reali sono:
+
+  Opzione: A. Revert V3 → V1 sul Bundle band
+  Mossa: torna a [1.2, 2.6], applica safe_to_push 0.75→0.85
+  Rischio/Aspettativa: percorso originale; mira a ridurre veh stuck del Bundle (27.18%) senza toccare ped speed
+  ────────────────────────────────────────
+  Opzione: B. Retune banda asimmetrica
+  Mossa: aggiungi penalità (−0.2) per speed > upper_bound invece di solo bonus dentro
+  Rischio/Aspettativa: meccanismo nuovo (anchor simmetrico); modifica reward shape, gate più rigoroso
+  ────────────────────────────────────────
+  Opzione: C. Retune banda largo+alzato
+  Mossa: es. [1.5, 2.4] (mediano fra V3 e Bundle)
+  Rischio/Aspettativa: mezzo-passo; ped speed atteso ~2.4-2.6, ancora probabile gate2 FAIL
+  ────────────────────────────────────────
+  Opzione: D. Tieni V3 nonostante gate2
+  Mossa: viola protocollo; veh ha recuperato
+  Rischio/Aspettativa: rompe la pipeline gate-driven; sconsigliato
+
+  Per il "perché TensorBoard mostra plateau/decline" la spiegazione è il combo entropy-collapse + ped over-band, ed è coerente con la
+  traiettoria empirica.
+
+  Decisione necessaria da parte tua: A, B, C o D? Per CLAUDE.md branching protocol stretto, la risposta automatica sarebbe A (revert V3,
+   applica V1). Aspetto la tua scelta prima di toccare file.
+
+### VALUTAZIONE Q&A 25-05-2026 V1. (PASS)
+
+● Run 20260525_162428 (V1) — Valutazione
+
+  Config & integrità: 300K, easy-locked, seed 999, entropy schedule [[0,0.03],[249000,0.005]]. Integrità perfetta: 444 ep × 6 = 2664
+  record, 0 duplicati, level=easy su 100%, no NaN/inf. ✅
+  
+  Metriche cumulative (split per policy)
+
+  ┌───────────────────────┬────────────────────┬─────────────────────┬─────────────────────────┬─────────┬────────────────────────┐
+  │        Metric         │    V1 (162428)     │ EvoEntropy (133747) │      Δ V1 vs EvoE       │  Gate   │        Verdetto        │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Veh SR                │ 62.76% (835 compl) │ 60.48% (802)        │ +2.28 pp                │ ≥ +2 pp │ ✅ PASS                │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Veh stuck             │ 22.97%             │ 22.47%              │ +0.50 pp                │ —       │ ≈                      │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Veh timeout           │ 2.55%              │ 6.03%               │ −3.48 pp                │ —       │ 🟢 forte miglioramento │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Veh stuck+timeout     │ 25.53%             │ 28.50%              │ −2.97 pp                │ ≤ −2 pp │ ✅ PASS                │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Veh collision         │ 7.43%              │ 8.45%               │ −1.02 pp                │ ≤ +1 pp │ ✅ PASS (migliora)     │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Veh offroad           │ 4.28%              │ 5.73%               │ −1.45 pp                │ ≤ +1 pp │ ✅ PASS (migliora)     │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Veh speed             │ 18.30 km/h         │ 16.03               │ +2.27 km/h              │ —       │ 🟢 bonus               │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Veh route_compl       │ 0.7595             │ —                   │ —                       │ —       │ —                      │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Ped SR (sanity)       │ 85.89% (1144)      │ 85.67% (1136)       │ +0.22 pp                │ ≥ −2 pp │ ✅ PASS                │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Ped speed (m/s)       │ 2.136              │ 1.990               │ +0.146                  │ —       │ 🟢 dentro [1.5, 2.2]   │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Ped sidewalk_fallback │ 19.67%             │ 7.24%               │ (atteso post Ped-route) │ —       │ —                      │
+  ├───────────────────────┼────────────────────┼─────────────────────┼─────────────────────────┼─────────┼────────────────────────┤
+  │ Veh legacy_fallback   │ 16.37%             │ 16.14%              │ stabile                 │ —       │ —                      │
+  └───────────────────────┴────────────────────┴─────────────────────┴─────────────────────────┴─────────┴────────────────────────┘
+
+  Gate verdict: TUTTI PASS (5/5). Inoltre due bonus rispetto ai gate: collision e offroad migliorano (non solo ≤ +1), e ped speed
+  rientra in [1.5, 2.2] senza dover toccare il pedone.
+
+  Trajectory Q1→Q4 — plateau risolto
+
+  ┌────────────┬─────────────────────┬───────────┬─────────────────────┐
+  │    Run     │    Veh SR Q1→Q4     │  Δ Q3→Q4  │ Veh speed Q4 (km/h) │
+  ├────────────┼─────────────────────┼───────────┼─────────────────────┤
+  │ V1         │ 19.5→73.3→76.6→81.7 │ +5.1 pp ↑ │ 26.38               │
+  ├────────────┼─────────────────────┼───────────┼─────────────────────┤
+  │ V3         │ 15.1→70.1→83.4→79.3 │ −4.1 pp ↓ │ 16.31               │
+  ├────────────┼─────────────────────┼───────────┼─────────────────────┤
+  │ Bundle     │ 11.8→67.9→78.6→81.3 │ +2.7 pp ↑ │ 19.06               │
+  ├────────────┼─────────────────────┼───────────┼─────────────────────┤
+  │ EvoEntropy │ 5.7→67.2→85.5→83.4  │ −2.1 pp ↓ │ 24.01               │
+  └────────────┴─────────────────────┴───────────┴─────────────────────┘
+
+  Plateau eliminato: V1 è l'unica run con Q3→Q4 in forte crescita (+5.1 pp), tutte le altre o decadono o crescono meno. Il meccanismo ha
+  funzionato esattamente come ipotizzato: alzando safe_to_push da 0.75 a 0.85, l'urgency reward e target_min_speed=8.0 restano attivi
+  anche con peds a 2.2 m/s → il veicolo continua a fare progresso → SR cresce fino alla fine. Il veh speed Q4 26.38 km/h è il migliore
+  di tutte le 4 run — niente equilibrio difensivo.
+
+  Anche il pedone trae beneficio collaterale: ped speed Q4 = 2.190 m/s (dentro gate2), con band [1.2, 2.6] ripristinata.
+
+  Decisione per il protocollo
+
+  V1 PASSA tutti i gate + bonus su Q4 trajectory, ped speed, vehicle speed. Per il branching protocol (CLAUDE.md):
+
+  V1 PASS gate → merge into EVO/curriculum-stack, launch step 5 (3M long run --difficulty path with P1+P2+P3).
+
+  Sequenza proposta (in attesa della tua approvazione):
+
+  1. Commit V1 su EVO/new-main (commit narrow: +1/−1 su carla_multi_agent_env.py:1927)
+  2. Merge EVO/new-main → EVO/curriculum-stack (P1+P2+P3 sono già su curriculum-stack? verifico prima del merge)
+  3. Aggiornamento doc: V1 row → promoted (trunk) con run_id 20260525_162428 e tutte le metriche A/B
+  4. Tu lanci il 3M --difficulty path --timesteps 3000000 --seed 999 su EVO/curriculum-stack
+
+  Caveat per step 5: con schedule fraction-based, entropy collapse a 83% di 3M = 2.49M; Q4 = 750K step in regime low-exploration. V1 ha
+  mostrato Q4 robusto a 300K (+5.1 pp), ma a 3M la durata in regime collapsed è ~3× più lunga: attenzione al risk di plateau differito
+  (questione strutturale, non specifica di V1).
+
+### MERGE V1 
+
+● Tutto confermato. Punto (a) completato.
+
+  Riepilogo operazioni
+
+  Step: 1
+  Azione: Commit V1 code
+  Risultato: 2bbcdbe EvoVehicleSafePushTolerance (+1/−1 su carla_multi_agent_env.py:1927)
+  ────────────────────────────────────────
+  Step: 2
+  Azione: Commit docs (CLAUDE.md+AGENTS.md)
+  Risultato: 4c749ae UpdateDoc (+104/−28: V1 row→promoted, Next Step→step 5, candidate queue, open items)
+  ────────────────────────────────────────
+  Step: 3
+  Azione: Stash PROPOSED_PLAN.md user-edits
+  Risultato: preservate (non mie, +306 lines)
+  ────────────────────────────────────────
+  Step: 4
+  Azione: Checkout EVO/curriculum-stack (HEAD 7790c7d P3)
+  Risultato: switch clean
+  ────────────────────────────────────────
+  Step: 5
+  Azione: Merge EVO/new-main (--no-ff)
+  Risultato: acc152b Merge branch 'EVO/new-main' into EVO/curriculum-stack — clean, no conflicts (nessun file overlap: new-main toccava
+    carla_multi_agent_env.py+docs, curriculum-stack toccava curriculum_batch_manager.py+curriculum_batch.yaml)
+  ────────────────────────────────────────
+  Step: 6
+  Azione: Checkout EVO/new-main + stash pop
+  Risultato: tornato a new-main; user-edits PROPOSED_PLAN.md ripristinate
+
+  Stato branch finale
+
+  ┌──────────────────────┬───────────────────┬─────────────────────────────────────────────┐
+  │        Branch        │        Tip        │                  Contiene                   │
+  ├──────────────────────┼───────────────────┼─────────────────────────────────────────────┤
+  │ EVO/new-main         │ 4c749ae UpdateDoc │ V1 + V3-revert + Bundle + EvoEntropy + docs │
+  ├──────────────────────┼───────────────────┼─────────────────────────────────────────────┤
+  │ EVO/curriculum-stack │ acc152b (merge)   │ tutto sopra + P1+P2+P3 ✅ pronto per step 5 │
+  ├──────────────────────┼───────────────────┼─────────────────────────────────────────────┤
+  │ main                 │ 4807836           │ invariato                                   │
+  └──────────────────────┴───────────────────┴─────────────────────────────────────────────┘
+
+  Working tree (EVO/new-main)
+
+  M docs/plans/PROPOSED_PLAN.md   ← tue modifiche, preservate uncommitted
+  Tutto il resto clean. Nessun push effettuato (per Git Safety Protocol; pusha tu quando vuoi).
+
+  Step 5 — comando da lanciare (quando vuoi)
+
+  git checkout EVO/curriculum-stack
+  python -m carla_core.training.train_carla_mappo \
+      --mode curriculum --difficulty path \
+      --timesteps 3000000 --seed 999
+
+  Reminders per quando il run finisce e mi chiederai di valutarlo (già documentati in CLAUDE.md/AGENTS.md):
+  - Watch legacy_fallback ~16.7% on 100m hard routes (potrebbe peggiorare)
+  - Watch collision/offroad creep sotto V1 safe_to_push=0.85 con hard routes
+  - Watch ped speed convergenza su 100m (cusp a 2.0 m/s)
+  - Entropy collapse a step 2.49M → Q4 ~510K step low-exploration (3× rispetto a 300K)
+  - Contingency knobs pronti: V2 (no_wp_steps cap), V4 (entropy schedule), V5 (ped band asimmetrica)
+
+
+### RUN 20260525_205912 3M — Valutazione completa
+
+──Setup: 3M timesteps · EVO/curriculum-stack · V1 + P1+P2+P3 · difficulty=path · seed 999 · entropy transition @ 2.49M · primo run a
+  esercitare la metrica di unlock (no curriculum_lock).
+  
+  Episode integrity
+
+  ┌─────────────────┬───────────────┐
+  │      Check      │    Valore     │
+  ├─────────────────┼───────────────┤
+  │ Episodi totali  │ 3318          │
+  ├─────────────────┼───────────────┤
+  │ Record dedupati │ 19908         │
+  ├─────────────────┼───────────────┤
+  │ Attesi (6/ep)   │ 19908 — OK ✅ │
+  ├─────────────────┼───────────────┤
+  │ NaN/inf         │ nessuno       │
+  └─────────────────┴───────────────┘
+
+  Metriche cumulate
+
+  ┌─────────────┬───────┬────────┬─────────┬───────┬───────┬──────┬───────┬──────┬───────┬───────┬───────┐
+  │    Slice    │   n   │ SR_raw │ SR_corr │ short │ coll  │ off  │ stuck │  to  │  s+t  │  rc   │  pe   │
+  ├─────────────┼───────┼────────┼─────────┼───────┼───────┼──────┼───────┼──────┼───────┼───────┼───────┤
+  │ combined    │ 19908 │  58.64 │   47.70 │ 10.95 │  6.85 │ 3.31 │ 25.92 │ 5.27 │ 31.20 │ 0.837 │ 0.635 │
+  ├─────────────┼───────┼────────┼─────────┼───────┼───────┼──────┼───────┼──────┼───────┼───────┼───────┤
+  │ vehicles    │  9954 │  55.16 │   55.16 │  0.00 │ 13.45 │ 6.61 │ 21.46 │ 3.32 │ 24.77 │ 0.805 │ 0.729 │
+  ├─────────────┼───────┼────────┼─────────┼───────┼───────┼──────┼───────┼──────┼───────┼───────┼───────┤
+  │ pedestrians │  9954 │  62.13 │   40.24 │ 21.89 │  0.25 │ 0.00 │ 30.39 │ 7.23 │ 37.62 │ 0.869 │ 0.540 │
+  └─────────────┴───────┴────────┴─────────┴───────┴───────┴──────┴───────┴──────┴───────┴───────┴───────┘
+
+  ▎ SR_corr applica il fix Block-5.1 (demote → route_short se optimal/target < 0.5). Vehicles: nessuna inflazione. Pedestrians: −21.89
+  ▎ pp rispetto al raw (2179 episodi falsi-completi su sidewalk_fallback).
+
+  Per-level (curriculum unlock attivo)
+
+  Vehicles (SR raw = SR corr — no false-completes):
+
+  ┌────────┬──────┬───────┬───────┬───────┬───────┬──────┬───────┬──────────────┐
+  │ level  │  n   │  SR   │ coll  │  off  │ stuck │  to  │  s+t  │ speed (impl) │
+  ├────────┼──────┼───────┼───────┼───────┼───────┼──────┼───────┼──────────────┤
+  │ easy   │ 3294 │ 67.76 │  7.53 │  4.22 │ 19.06 │ 1.43 │ 20.49 │            — │
+  ├────────┼──────┼───────┼───────┼───────┼───────┼──────┼───────┼──────────────┤
+  │ medium │ 4641 │ 55.79 │ 13.98 │  6.40 │ 20.62 │ 3.21 │ 23.83 │            — │
+  ├────────┼──────┼───────┼───────┼───────┼───────┼──────┼───────┼──────────────┤
+  │ hard   │ 2019 │ 33.18 │ 21.89 │ 11.00 │ 27.29 │ 6.64 │ 33.93 │            — │
+  └────────┴──────┴───────┴───────┴───────┴───────┴──────┴───────┴──────────────┘
+
+  Pedestrians:
+
+  ┌────────┬──────┬────────┬─────────┬───────┬───────┐
+  │ level  │  n   │ SR_raw │ SR_corr │ short │  s+t  │
+  ├────────┼──────┼────────┼─────────┼───────┼───────┤
+  │ easy   │ 3294 │  82.42 │   65.30 │ 17.12 │ 17.52 │
+  ├────────┼──────┼────────┼─────────┼───────┼───────┤
+  │ medium │ 4641 │  57.23 │   33.72 │ 23.51 │ 42.40 │
+  ├────────┼──────┼────────┼─────────┼───────┼───────┤
+  │ hard   │ 2019 │  40.27 │   14.31 │ 25.95 │ 59.44 │
+  └────────┴──────┴────────┴─────────┴───────┴───────┘
+
+  Speed / geometria
+
+  ┌─────────────────────┬────────────┬──────────────────────┐
+  │                     │  vehicles  │     pedestrians      │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ speed               │ 19.83 km/h │ 6.38 km/h (1.77 m/s) │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ no_wp_steps         │      232.2 │                276.5 │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ actual_distance     │    50.46 m │              41.39 m │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ optimal_length      │    58.80 m │             105.13 m │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ under_target        │     52.69% │               91.62% │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ too_short (planner) │      7.29% │               48.32% │
+  └─────────────────────┴────────────┴──────────────────────┘
+
+  ▎ Pedestrian speed = 1.77 m/s, dentro la comfort band [1.5, 2.2]. Bonus su asse ped speed.
+
+  Quarter trajectory (NB: distribuzione task non costante)
+
+  Vehicles:
+
+  ┌─────┬───────┬───────┬───────┬───────┐
+  │  Q  │  SR   │ coll  │  off  │  s+t  │
+  ├─────┼───────┼───────┼───────┼───────┤
+  │ Q1  │ 67.91 │  7.03 │  3.94 │ 21.12 │
+  ├─────┼───────┼───────┼───────┼───────┤
+  │ Q2  │ 66.39 │ 10.33 │  4.14 │ 19.14 │
+  ├─────┼───────┼───────┼───────┼───────┤
+  │ Q3  │ 49.56 │ 16.55 │  7.47 │ 26.43 │
+  ├─────┼───────┼───────┼───────┼───────┤
+  │ Q4  │ 36.79 │ 19.90 │ 10.90 │ 32.41 │
+  └─────┴───────┴───────┴───────┴───────┘
+
+  Pedestrians (corrette):
+
+  ┌─────┬─────────┬───────┬───────┐
+  │  Q  │ SR_corr │ short │  s+t  │
+  ├─────┼─────────┼───────┼───────┤
+  │ Q1  │   70.52 │ 18.39 │ 11.04 │
+  ├─────┼─────────┼───────┼───────┤
+  │ Q2  │   40.73 │ 24.09 │ 35.02 │
+  ├─────┼─────────┼───────┼───────┤
+  │ Q3  │   32.93 │ 22.01 │ 44.70 │
+  ├─────┼─────────┼───────┼───────┤
+  │ Q4  │   16.73 │ 23.08 │ 59.75 │
+  └─────┴─────────┴───────┴───────┘
+
+  ▎ Q1→Q4 declinante ma è task-distribution shift, non degrado policy: prima episodio hard arriva all'indice 2415 / 3318 = 72.8% della
+  ▎ run → Q4 è quasi tutto hard.
+
+  Route source distribution
+
+  ┌─────────────────────────────────────┬──────────┬─────────────┐
+  │                                     │ vehicles │ pedestrians │
+  ├─────────────────────────────────────┼──────────┼─────────────┤
+  │ GRP / sidewalk_distance             │   90.07% │      64.06% │
+  ├─────────────────────────────────────┼──────────┼─────────────┤
+  │ legacy_fallback / sidewalk_fallback │    9.93% │      35.94% │
+  └─────────────────────────────────────┴──────────┴─────────────┘
+
+  Confronto storico (riferimento, attenzione al confounding di distribuzione):
+  - Vehicles legacy_fallback: O1+O2 16.4% → V1 (300K easy) ~16% → 3M path: 9.93% (migliora).
+  - Pedestrians sidewalk_fallback: Bundle 20.69% (easy) → 3M path: 35.94% (peggiora, target più lunghi).
+
+  Distribuzione livelli (esercizio unlock)
+
+  ┌────────┬─────────┬────────┬───────────────┬────────┐
+  │ level  │ episodi │   %    │ target budget │   Δ    │
+  ├────────┼─────────┼────────┼───────────────┼────────┤
+  │ easy   │    1098 │ 33.09% │           30% │  +3.09 │
+  ├────────┼─────────┼────────┼───────────────┼────────┤
+  │ medium │    1547 │ 46.62% │           35% │ +11.62 │
+  ├────────┼─────────┼────────┼───────────────┼────────┤
+  │ hard   │     673 │ 20.28% │           35% │ −14.72 │
+  └────────┴─────────┴────────┴───────────────┴────────┘
+
+  ┌───────────────────────┬─────────────────┬─────────────┐
+  │        evento         │ indice episodio │ % della run │
+  ├───────────────────────┼─────────────────┼─────────────┤
+  │ Primo medium unlocked │             870 │       26.2% │
+  ├───────────────────────┼─────────────────┼─────────────┤
+  │ Primo hard unlocked   │            2415 │       72.8% │
+  └───────────────────────┴─────────────────┴─────────────┘
+
+  ▎ Unlock metric attiva ma hard è stata sbloccata troppo tardi per raggiungere il budget di 35%. Le ipotesi: balanced windowed SR su
+  ▎ ped ha tenuto chiuso il gate (ped SR medium corretta era 33.72%), oppure P2 min_policy_sr è soglia troppo alta per le ped reali.
+
+  Termination breakdown — vehicles (no demotion)
+
+  ┌────────────────┬──────┬───────┐
+  │     reason     │  n   │   %   │
+  ├────────────────┼──────┼───────┤
+  │ route_complete │ 5491 │ 55.16 │
+  ├────────────────┼──────┼───────┤
+  │ stuck          │ 2136 │ 21.46 │
+  ├────────────────┼──────┼───────┤
+  │ collision      │ 1339 │ 13.45 │
+  ├────────────────┼──────┼───────┤
+  │ offroad        │  658 │  6.61 │
+  ├────────────────┼──────┼───────┤
+  │ timeout        │  330 │  3.32 │
+  └────────────────┴──────┴───────┘
+
+  Termination breakdown — pedestrians (raw vs Block-5.1 corretta)
+
+  ┌─────────────────────┬───────────────┬───────────────┬───────┐
+  │       reason        │      raw      │     corr      │   Δ   │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ route_complete      │ 6184 (62.13%) │ 4005 (40.24%) │ −2179 │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ route_short (nuovo) │             0 │ 2179 (21.89%) │ +2179 │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ stuck               │ 3025 (30.39%) │          3025 │     0 │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ timeout             │   720 (7.23%) │           720 │     0 │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ collision           │    25 (0.25%) │            25 │     0 │
+  └─────────────────────┴───────────────┴───────────────┴───────┘
+
+  Audit short-route: 2179 pedoni falsi-completi → 93.5% provenienti da sidewalk_fallback (2038/2179). Distribuiti su easy 564 / medium
+  1091 / hard 524.
+
+  Verdetto gate
+
+  Gate vehicle-focused (<gate_policy>): NON applicabile come confronto con V1 — task distribution è cambiata (path 30/60/100m vs V1
+  easy-locked 30m). Questa run è il nuovo baseline per EVO/curriculum-stack.
+
+  Confronto disponibile su slice easy (consistente con V1):
+  - V1 easy-locked: SR 62.76%, stuck+to 25.53%, coll 7.43%, off 4.28%, speed 18.30
+  - 3M path/easy: SR 67.76%, stuck+to 20.49%, coll 7.53%, off 4.22%, speed n/a sull'aggregator easy
+
+  Su easy la combinazione V1 + P1+P2+P3 a 3M migliora SR (+5pp), s+t (−5pp), preserva collision (+0.1pp): coerente con effetto
+  cumulativo del training esteso, nessuna regressione.
+
+  Conclusioni operative
+
+  1. Run pulita (integrity 6/6, no NaN/inf, no crash).
+  2. Vehicle binding constraint = hard (SR 33%, coll 22%, off 11%). Q4 declinante è artefatto della distribuzione tardiva di hard.
+  3. Pedestrian SR corretta 40.24% (non 62.13%) — il fix Block-5.1 d'oggi sarà critico per i prossimi run.
+  4. Sidewalk_fallback raddoppia su target 60/100m (35.94% vs 20.69% easy) — il geometric fix del planner ora ha evidence per essere
+  prioritizzato (Layer 2 deferred ieri).
+  5. Unlock hard ritardato (72.8%) → solo 20% delle episodi sono hard (vs budget 35%). P2 min_policy_sr da rivedere se vogliamo più
+  esposizione hard nel prossimo 3M.
+  6. Ped speed 1.77 m/s ∈ [1.5, 2.2] — V1 + Ped-band funziona anche a 3M.
+  
+
+##########################################################################################################################################
+
+### Q&A 26-05-2026
+
+> Mi spieghi a cosa serve il file episode_classification?                                                                               
+
+● carla_core/envs/episode_classification.py — Scopo
+
+  Cosa fa
+
+  Contiene una sola funzione pura, classify_termination_reason(...), che decide come etichettare la fine di un episodio per ciascun
+  agente. L'etichetta finisce nel campo termination_reason di ogni record in episodes.jsonl ed è la base di tutte le metriche downstream
+   (SR, collision rate, stuck/timeout, curriculum unlock).
+
+  Perché esiste come modulo separato
+
+  Prima del Block-5.1 fix di ieri, la stessa logica era inline dentro CarlaMultiAgentEnv.step() (~L527-564). Tre problemi:
+
+  1. Non testabile senza CARLA: per verificare la classificazione serviva accendere il simulatore.
+  2. Bug del route_complete falso: episodi pedone con route_optimal_length_m=0 o ratio < 0.5 venivano etichettati route_complete perché
+  la logica chiedeva solo "ho raggiunto l'ultimo waypoint?", senza controllare se il percorso pianificato avesse una lunghezza minima
+  sensata.
+  3. Inline + dipendenze CARLA mescolate → impossibile unit-testare il decision tree.
+
+  L'estrazione lo rende:
+  - Pure function: solo tipi primitivi in input, nessun side-effect, nessun import CARLA.
+  - Testabile in CI senza simulatore (i 22 test in test_episode_classification.py girano in 0.002s).
+  - Riusabile: lo userai anche nell'aggregatore offline evaluate_run_static.py (vedi corrected_reason() lì, che applica la stessa logica
+   retroattivamente).
+
+  La logica (priorità in ordine)
+
+  1. Né term né trunc           -> "alive"
+  2. collision_flag             -> "collision"
+  3. Raggiunto fine route       -> "route_complete"  o  "route_short" se optimal/target < 0.5
+  4. Vehicle offroad            -> "offroad"
+  5. Truncated + low progress   -> "stuck"  (o se loop_penalty_active)
+  6. Altrimenti truncated       -> "timeout"
+  7. Fallback                   -> "timeout"
+
+  Le 7 reason canoniche sono in TERMINATION_REASONS:
+  ("alive", "collision", "route_complete", "route_short", "offroad", "stuck", "timeout")
+
+  Il valore aggiunto: route_short
+
+  È la novità del fix di ieri. Quando un agente arriva all'ultimo waypoint ma la route pianificata aveva optimal_length / target < 0.5,
+  l'episodio viene declassato:
+
+  - Prima: route_complete → contato come successo → SR pedoni gonfiata
+  - Dopo: route_short → non entra in count("route_complete") → SR onesta
+
+  Nel 3M 20260525_205912: 21.89% dei pedoni sarebbero stati falsi successi con la logica vecchia (vedi SHORT-ROUTE AUDIT nell'eval di
+  prima — 2179 episodi, 93.5% provenienti da sidewalk_fallback).
+
+  Dove viene chiamata
+
+  Una sola call site nell'env, dentro step():
+
+  # carla_core/envs/carla_multi_agent_env.py:528-557
+  is_offroad = ...  # precalcolato (richiede CARLA: ad.actor.get_location(), self._map)
+  termination_reason = classify_termination_reason(
+      agent_type=ad.agent_type,
+      term=term, trunc=trunc,
+      collision_flag=ad.collision_flag,
+      current_wp_idx=ad.current_wp_idx,
+      num_waypoints=len(ad.route_waypoints),
+      is_offroad=is_offroad,
+      route_completion=self._route_completion(ad),
+      loop_penalty_active=ad.loop_penalty_active,
+      route_target_m=float(ad.route_target_distance_m or 0.0),
+      route_optimal_length_m=ad.route_optimal_length,
+  )
+
+  Tutto il calcolo CARLA-dipendente (is_offroad da get_waypoint, route_completion dalla planner) rimane nell'env; la decisione sta nel
+  modulo puro.
+
+  Downstream impact
+
+  I tre aggregatori SR del codice non sono toccati — fanno Counter(...).get("route_complete", 0) e quindi route_short cade
+  automaticamente fuori dal conteggio:
+
+  - carla_core/training/train_carla_mappo.py:359
+  - carla_core/training/centralized_critic.py:885
+  - carla_core/training/mappo_runtime.py:199
+
+  Il visualizer (visualize_mappo_agent.py:274-275) passa l'etichetta inalterata.
+
+  In sintesi
+
+  ┌────────────────────────┬─────────────────────────────────────────────────────────────────┐
+  │        Aspetto         │                             Valore                              │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Tipo file              │ Pure module, no CARLA deps                                      │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Funzione esposta       │ classify_termination_reason(...) + TERMINATION_REASONS          │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Fix introdotto         │ Demote route_complete → route_short se optimal/target < 0.5     │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Test coverage          │ 22 unit test in test_episode_classification.py (PASS in 0.002s) │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Effetto sulle metriche │ SR pedoni non più gonfiata da route fallback degeneri           │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Run impattate          │ Solo run future (Python non hot-reloada moduli)                 │
+  └────────────────────────┴─────────────────────────────────────────────────────────────────┘
+
+
+##########################################################################################################################################
+
+### Q&A 1) 25-05-2026 (Connessa a VALUTAZIONE Q&A 20-05-2026)
+
+> Concordo con l'ordine proposto (prima V3 poi in caso V1/V2 se necessarie), ma prima di procedere mostrami la patch 3 da applicare e   
+  poi ti dico come procedere per favore.                                                                                                
+  
+● Prima leggo i tuoi vincoli di pianificazione e la sezione del reward pedone, così la patch è conforme.
+
+  Searched for 1 pattern, read 1 file, recalled 1 memory (ctrl+o to expand)
+
+● Patch V3 — Ped-speed retune (proposta, NON applicata)
+
+  File: carla_core/envs/carla_multi_agent_env.py:2001–2007
+  Funzione: _pedestrian_reward (sezione 5)
+
+  Diff proposto (1 riga modificata):
+
+  # Prima
+  elif 1.2 <= speed <= 2.6:
+      reward += 0.3  # Ped-speed: pace band sized so 100m routes fit max_steps (was 0.8-1.8)
+
+  # Dopo
+  elif 1.5 <= speed <= 2.2:
+      reward += 0.3  # Ped-speed: pace band tightened to gate window after candidate overshoot at 2.28 m/s
+
+  Razionale empirico
+
+  ┌─────────────────────────┬───────────────────────────────────────────────────────────┐
+  │        evidenza         │                          valore                           │
+  ├─────────────────────────┼───────────────────────────────────────────────────────────┤
+  │ baseline ped speed avg  │ 1.99 m/s (entropy)                                        │
+  ├─────────────────────────┼───────────────────────────────────────────────────────────┤
+  │ candidato ped speed avg │ 2.28 m/s (sopra 2.2 di 0.08)                              │
+  ├─────────────────────────┼───────────────────────────────────────────────────────────┤
+  │ banda corrente          │ [1.2, 2.6] — permissiva, l'edge superiore non costa nulla │
+  ├─────────────────────────┼───────────────────────────────────────────────────────────┤
+  │ banda proposta          │ [1.5, 2.2] — coincide col gate; oltre, nessun reward      │
+  └─────────────────────────┴───────────────────────────────────────────────────────────┘
+
+  Effetto atteso: policy converge dentro [1.5, 2.2] (centro ~1.85 m/s). Rimossa la causa del ripple veicolo, lo stuck dovrebbe rientrare
+   verso baseline.
+
+  Caveat curriculum: la banda stretta basta su easy (30 m, ~20–30 s di cammino). Sul long run con hard 100 m (step 3) servono ≥2.0 m/s
+  per completare in 1000 step; la banda [1.5, 2.2] include 2.0, ma il margine si riduce. Verificare sul run V3 easy-locked che la
+  convergenza non scenda sotto ~1.8 m/s; se sì, allargare a [1.5, 2.4] prima dello step 3.
+
+  Gate run V3 (immutato rispetto allo step 2):
+  - ped SR ≥ −2.0 pp vs entropy baseline
+  - ped speed media in [1.5, 2.2] m/s
+
+  Side-check sul veicolo (non gate, ma metrica di interesse): stuck rate atteso da 27.18% verso ~22–23% (baseline entropy: 22.47%).
+
+  Reversibilità: totale (una riga).
+
+  
+### Q&A 2) 25-05-2026 (Connessa a VALUTAZIONE Q&A 20-05-2026)
+
+  > Ok, quindi ricapitolando, procediamo con Implementazione V3, test run 300k, valutazione (in caso bad => implementazione V1+V2) ed in  
+  fine (se tutto va bene e le run sono pass) start long run 3M con curriculum-stack (P1-P2-P3), corretto?                               
+  
+● Sì, corretto, con tre precisazioni operative:
+
+  Recap del piano
+
+  Fase: 1
+  Azione: Applico patch V3 (1 riga, carla_multi_agent_env.py:2004, banda [1.5, 2.2]) + compile check + git diff check
+  Esecutore: Claude
+  ────────────────────────────────────────
+  Fase: 2
+  Azione: Launch run 300K easy-locked, seed 999
+  Esecutore: Utente (per memoria: Claude non lancia run CARLA)
+  ────────────────────────────────────────
+  Fase: 3
+  Azione: Valutazione gates V3 sulle metriche da episodes.jsonl
+  Esecutore: Claude
+  ────────────────────────────────────────
+  Fase: 4a
+  Azione: Se PASS gates e veh stuck rientra ~22–23% → step 3
+  Esecutore: —
+  ────────────────────────────────────────
+  Fase: 4b
+  Azione: Se PASS gates ma veh stuck resta inflated → patch V1 e/o V2
+  Esecutore: Claude propone, utente lancia, Claude valuta
+  ────────────────────────────────────────
+  Fase: 4c
+  Azione: Se FAIL gate2 (banda troppo stretta o troppo larga) → ritaratura banda
+  Esecutore: —
+  ────────────────────────────────────────
+  Fase: 5
+  Azione: Long run 3M --difficulty path su EVO/curriculum-stack (già contiene P1+P2+P3)
+  Esecutore: Utente
+
+  Tre precisazioni
+
+  1. V1+V2 non in bundle. L'hai messi sullo stesso ramo come fallback, ma applicarli insieme confonderebbe l'attribuzione (uno tocca il
+  gate di sicurezza safe_to_push, l'altro il segnale anti-stuck no_wp_steps penalty). Proposta: in 4b applicare prima V1 da solo
+  (rischio sicurezza minore, una riga, reversibile), poi V2 solo se V1 non basta. Costo al peggio: +1 run 300K extra. Se il budget runs
+  è stretto e accetti il confounding, V1+V2 insieme è fattibile — confermami quale preferisci.
+
+  2. Branch strategy. V3 = nuovo commit su un branch dedicato, non amend di 185a9d2. Proposta: branch EVO/ped-speed-retune da
+  EVO/new-main (post-merge ped-route+ped-speed), così la storia resta tracciabile e il ramo EVO/curriculum-stack non viene toccato
+  finché V3 non passa. In caso di PASS, merge in EVO/new-main e rebase di EVO/curriculum-stack su di esso prima dello step 5.
+
+  3. Step 5 — prerequisito non opzionale. Il run 3M va su EVO/curriculum-stack solo dopo che V3 (eventualmente V1) è promosso a trunk.
+  Altrimenti il curriculum-stack erediterebbe il ripple veicolo del bundle attuale e il confounding P1/P2/P3 vs ripple-ped-bundle
+  sarebbe inestricabile (questo era il punto del mio messaggio precedente sull'attendere il merge prima del long run).
+
+
+### Q&A 3) 25-05-2026 (Connessa a VALUTAZIONE Q&A 20-05-2026 punto 2.)
+
+> Confermo V1 e V2 sequenziali. No, nessun branch dedicato, le mod vanno fatte dentro EVO/new-main, se pass rimangono, se fail si       
+  applica V1 o V2 etc, come indicato sopra. Poi merge su EVO/curriculm-stack (se vi sono miglioramenti, altrimenti si valuta best       
+  config) e poi long run 3M (su EVO/curriculum-stack, avente le nuove mod + P1-P2-P3), ti torna tutto?                                  
+  
+● Mi torna tutto. Sequenza esecutiva consolidata su EVO/new-main (un commit per patch, niente branch separati):
+
+  EVO/new-main:
+    ├─ apply V3  →  300K  →  eval
+    │              ├─ PASS gate2 & veh stuck ↓     → V3 in trunk → step 5
+    │              ├─ PASS gate2 ma veh stuck high → keep V3, apply V1
+    │              └─ FAIL gate2                   → revert V3, valuta retune banda
+    │
+    ├─ apply V1  →  300K  →  eval                  (solo se V3 insufficient)
+    │              ├─ PASS gates                   → V1 in trunk → step 5
+    │              └─ FAIL                         → revert V1, apply V2
+    │
+    └─ apply V2  →  300K  →  eval                  (solo se V1 reverted/insufficient)
+                   ├─ PASS gates                   → V2 in trunk → step 5
+                   └─ FAIL                         → revert V2, decisione best-config
+
+  Protocollo coerente con <gate_policy> di CLAUDE.md ("if a candidate fails the gate, revert only that candidate and keep the accepted
+  trunk intact"). Una sola patch attiva alla volta come delta valutabile; cumulative se PASS.
+
+  Step 5: una volta consolidato il best config su EVO/new-main, merge in EVO/curriculum-stack (che contiene già P1+P2+P3) → long run 3M
+  --difficulty path. Se nessuna delle 3 (V3/V1/V2) migliora il quadro, valutiamo se procedere con la baseline EVO/new-main corrente o
+  restare sulla pre-merge (decisione tua basata su best config osservato).
+
+  Una sola domanda residua di interpretazione gate per V3: quale dei due criteri qualifica come PASS per restare nel trunk?
+  - (α) PASS = solo gate2 ped speed in [1.5, 2.2] + gate1 ped SR ≥ −2pp (originali). Lo stuck veicolo è side-check informativo, non
+  vincolante → V1 si attiva solo se utente lo richiede esplicitamente.
+  - (β) PASS = gate1 + gate2 + side-check veh stuck ≤ ~24% (ovvero recupero parziale dal baseline 22.47% con tolleranza +1.5 pp). V1 si
+  attiva automaticamente se il side-check fallisce.
+
+  La (β) è più rigorosa rispetto al <current_goal> (vehicle stuck è la metrica bersaglio del thesis). La (α) è più aderente al gate
+  originario dichiarato.
+
+  Confermi (α) o (β)? Poi applico V3.
+  > La valutiamo con entrambe (α) o (β). Adesso applica V3 per favore
+  
+  
+### Q&A 4) 25-05-2026 (Connessa a VALUTAZIONE Q&A 20-05-2026 V3)
+
+> Quali modifiche possiamo apportare per evitare il plateau della SR dei veicoli? Revertare V3 e applicare V1 procede in questa         
+  direzione? Con questa run abbiamo dei chiari vantaggi sui veicoli, cosa possiamo fare per mantenere un trend di crescrita sulla SR?   
+  
+● Vantaggio V3 sui veicoli — controllo critico
+
+  Prima di rispondere all'azione, riallineo i numeri perché "chiari vantaggi" merita un sanity check:
+
+  ┌──────────────┬──────────┬────────────┬────────┬──────────────────────────────┐
+  │  Metric Veh  │ V3 (cum) │ EvoEntropy │ Bundle │         Δ V3 vs EvoE         │
+  ├──────────────┼──────────┼────────────┼────────┼──────────────────────────────┤
+  │ Stuck rate   │ 22.22%   │ 22.47%     │ 27.18% │ −0.25 pp (≈ noise)           │
+  ├──────────────┼──────────┼────────────┼────────┼──────────────────────────────┤
+  │ SR cum       │ 62.00%   │ 60.48%     │ 59.93% │ +1.52 pp (sotto gate +2pp)   │
+  ├──────────────┼──────────┼────────────┼────────┼──────────────────────────────┤
+  │ Speed (km/h) │ 11.88    │ 16.03      │ 13.76  │ −4.15 km/h (peggior delle 3) │
+  ├──────────────┼──────────┼────────────┼────────┼──────────────────────────────┤
+  │ SR Q4        │ 79.3%    │ 83.4%      │ 81.3%  │ −4.1 pp (peggior delle 3)    │
+  ├──────────────┼──────────┼────────────┼────────┼──────────────────────────────┤
+  │ Speed Q4     │ 16.3     │ 24.0       │ 19.1   │ −7.7 km/h                    │
+  └──────────────┴──────────┴────────────┴────────┴──────────────────────────────┘
+
+  V3 non ha vantaggi netti sui veicoli rispetto a EvoEntropy: stuck è pari (entro rumore), SR cumulata sotto gate, speed e SR Q4 sono i
+  peggiori dei tre. Il guadagno apparente vs Bundle (27.18→22.22 stuck) è in realtà "ritorno a EvoEntropy" — non un'invenzione di V3.
+
+  Cause del plateau Q3→Q4
+
+  Tre meccanismi concorrono, in ordine di leva attuabile:
+
+  1. Vehicle defensive equilibrium (causa primaria): peds a 2.94 m/s saturano hazard_risk (L1926) → safe_to_push=hazard_risk<0.75
+  (L1927) → gate spegne urgency reward e min_speed penalty (L1932/L1939). Il veicolo NON viene punito per fermarsi e NON viene premiato
+  per spingere. Local optimum cauto.
+  2. Entropy collapse late: schedule fraction-based a 83% del run (249K/300K). Q4 = 75-100% include il post-collapse. Meno esplorazione
+  → policy "ricama" sull'equilibrio difensivo invece di tentarne uscite.
+  3. no_wp_steps penalty troppo debole (L1945-46): cap 1.0, rate 0.004. Per no_wp_steps=720 (V3 stuck mean) il penalty è già saturato a
+  1.0 da step 350. Una volta dentro il loop il segnale è piatto.
+
+  Revert V3 + V1 affronta il plateau?
+
+  Sì, direttamente, e per il meccanismo giusto. V1 alza safe_to_push 0.75 → 0.85 (L1927). Conseguenza:
+
+  - Il gate del paragrafo (2) sopra si chiude a hazard_risk ≥ 0.85 invece di ≥ 0.75 → urgency e min_speed restano attivi anche con peds
+  veloci → il veicolo continua a essere pressato a fare progresso.
+  - Non disabilita la safety: a hazard_risk=0.9 (ttc<1s o occ>0.9) il gate scatta comunque.
+  - Effetto atteso: rompe l'equilibrio difensivo che V3 ha amplificato. Q4 dovrebbe smettere di calare.
+
+  Opzioni per mantenere la SR in crescita
+
+  Ordinate per leva diretta sul plateau, isolabilità single-knob, e compatibilità con il protocollo:
+
+  #: V1
+  Mossa: safe_to_push 0.75 → 0.85
+  File:Line: carla_multi_agent_env.py:1927
+  Meccanismo: urgency/min_speed attivi fino a hazard 0.85
+  Ricaduta: rompe defensive equilibrium; rischio +collision
+  ────────────────────────────────────────
+  #: V2
+  Mossa: no_wp_steps penalty cap 1.0 → 2.0 (+ raise rate 0.004→0.006)
+  File:Line: carla_multi_agent_env.py:1946
+  Meccanismo: gradient anti-stuck non si satura
+  Ricaduta: spinge fuori dai loop; rischio +offroad
+  ────────────────────────────────────────
+  #: V4 (nuova)
+  Mossa: Entropy schedule transition 249K → 270K (90%)
+  File:Line: train_carla_mappo.py schedule
+  Meccanismo: più esplorazione Q4
+  Ricaduta: argina collapse-driven decline; non risolve da solo
+  ────────────────────────────────────────
+  #: V5 (nuova)
+  Mossa: Asymmetric ped band: aggiungi -0.2 if speed > 2.5
+  File:Line: carla_multi_agent_env.py:2004-2010 _pedestrian_reward
+  Meccanismo: anchor simmetrico, peds non possono overshootare gratuitamente
+  Ricaduta: risolve gate2 senza revert; nuovo segnale → richiede single-run isolato
+
+  Raccomandazione concreta
+
+  Il percorso canonico revert V3 → V1 è la cosa giusta da fare ora per tre ragioni:
+
+  1. Il "vantaggio" V3 è illusorio (numeri sopra).
+  2. V1 attacca il meccanismo primario del plateau (gate safe_to_push).
+  3. Mantiene attribuzione single-knob.
+
+  Sequenza proposta:
+  1. Revert V3 (band → [1.2, 2.6])
+  2. Apply V1 (safe_to_push 0.85)
+  3. 300K easy-locked seed 999 → valuto vs EvoEntropy:
+    - Gate primario (vehicle): SR +2 pp, stuck+timeout −2 pp, collision ≤ +1
+    - Gate ped (sanity): SR ≥ −2 pp, speed ∈ [1.5, 2.5] (margine allargato per hard routes 100m, vedi caveat in CLAUDE.md)
+  4. V1 PASS → step 5 (3M long run)
+  5. V1 FAIL su collision → revert V1, prova V2 (no_wp_steps cap)
+  6. V1+V2 entrambi FAIL → considera V5 (asymmetric ped band) per attacco indiretto al plateau via ped speed
+
+  Nota strategica per step 5 (3M): l'entropy collapse a 83% di 3M = step 2.49M. Q4 di 3M = 2.25M-3M, quindi 240K step in regime
+  low-exploration. Su questo orizzonte il plateau di V3 (se mantenuto) si amplificherebbe drammaticamente. Ulteriore motivo per non
+  promuovere V3.
+
+  Decisione attesa da te: confermi revert V3 + V1? Oppure preferisci esplorare V4 (entropy schedule) prima per testare se il problema è
+  davvero collapse-driven invece che hazard-gating? Aspetto prima di toccare file.
+  
+  ● Stato finale (EVO/new-main, uncommitted)
+  
+  File: carla_core/envs/carla_multi_agent_env.py
+  Δ: +1/−1t(L1927)
+  Stato: V3 reverted (L2004 = [1.2, 2.6]), V1 applied (L1927 = < 0.85)
+  ────────────────────────────────────────
+  File: CLAUDE.md
+  Δ: +35 ca
+  Stato: Next Step, V3 row→REJECTED, V1 row→in flight, candidate queue, open items
+  ────────────────────────────────────────
+  File: AGENTS.md
+  Δ: +35 ca
+  Stato: Sincronizzato (same logical changes)
+  ────────────────────────────────────────
+  File: docs/plans/PROPOSED_PLAN.md
+  Δ: (non toccato)
+  Stato: Tue modifiche pendenti preservate
+
+  Verifiche di integrità:
+  - ✅ python -m compileall carla_core/envs/carla_multi_agent_env.py → OK
+  - ✅ git diff --check → no whitespace issues
+  - ✅ safe_to_push referenze isolate: 3 occorrenze, tutte in _vehicle_reward (L1927 define, L1932/L1938 consumers); nessun altro
+  consumer del threshold 0.75 nel modulo
+  - ✅ V3 line ripristinata al commit baseline 185a9d2 (band [1.2, 2.6]), commento originale
+
+  Diff codice (vs HEAD):
+  -            safe_to_push = hazard_risk < 0.75
+  +            safe_to_push = hazard_risk < 0.85  # V1: 0.75→0.85, keep urgency/min_speed active under higher hazard
+
+  Pronto per il run V1 quando lo lanci: 300K easy-locked, seed 999. Al termine valuterò contro EvoEntropy 20260520_133747 con gate
+  vehicle (SR +2 pp, stuck+timeout −2 pp, collision ≤ +1, offroad ≤ +1) + sanity ped SR ≥ −2 pp. Se FAIL su collision/offroad: revert V1
+   + V2 (no_wp_steps cap 1.0→2.0).
+
+
+### Q&A 5) 25-05-2026 (Connessa a VALUTAZIONE Q&A 20-05-2026 V1)
+
+> Cosa ci aspettiamo per considerare pass la run da 3M?                                                                                 
+
+● Cosa serve per dichiarare PASS la run da 3M (step 5)
+
+  Premessa: perché il gate cambia rispetto alle 300K
+
+  ┌──────────────────────┬──────────────────────────────────────┬─────────────────────────────────────────────────────────────┐
+  │       Aspetto        │           300K easy-locked           │                     3M curriculum path                      │
+  ├──────────────────────┼──────────────────────────────────────┼─────────────────────────────────────────────────────────────┤
+  │ Task distribution    │ fissa (easy 30m)                     │ dinamica (30/60/100m, budget 0.30/0.35/0.35)                │
+  ├──────────────────────┼──────────────────────────────────────┼─────────────────────────────────────────────────────────────┤
+  │ Baseline diretto     │ sì (run paired stessa distribuzione) │ no (mai girato 3M con unlock attivo)                        │
+  ├──────────────────────┼──────────────────────────────────────┼─────────────────────────────────────────────────────────────┤
+  │ Cosa valida          │ single-knob (1 ipotesi)              │ intero stack (trunk + V1 + P1+P2+P3 + curriculum mechanism) │
+  ├──────────────────────┼──────────────────────────────────────┼─────────────────────────────────────────────────────────────┤
+  │ Confronto cumulativo │ lecito                               │ fuorviante (mescola livelli diversi)                        │
+  └──────────────────────┴──────────────────────────────────────┴─────────────────────────────────────────────────────────────┘
+
+  Quindi il gate va decomposto in: mechanism gates (curriculum funziona) + policy gates per-livello (veh/ped non collassano) + stability
+  gates (no instabilità late-window).
+
+  A) Hard gates — must pass, altrimenti NOT PROMOTED
+
+  #: 1
+  Gate: Episode integrity
+  Soglia: 6/6 records, no NaN/inf
+  Razionale: standard
+  ────────────────────────────────────────
+  #: 2
+  Gate: Curriculum mechanism
+  Soglia: tutti e 3 i livelli raggiunti (level_reached={easy,medium,hard} osservato in episodes.jsonl)
+  Razionale: P1+P2+P3 funzionanti, no collapse a easy-only
+  ────────────────────────────────────────
+  #: 3
+  Gate: Budget share effettivo
+  Soglia: scostamento ≤ ±5 pp da 0.30/0.35/0.35
+  Razionale: unlock metric non bloccato in force-unlock loop
+  ────────────────────────────────────────
+  #: 4
+  Gate: Easy veh SR (Q4)
+  Soglia: ≥ 75%
+  Razionale: V1 baseline 81.7% Q4 a 300K — non perdere quanto guadagnato
+  ────────────────────────────────────────
+  #: 5
+  Gate: Ped SR aggregate
+  Soglia: ≥ 70%
+  Razionale: V1 easy 85.9%, drop atteso su hard ma soglia conservativa
+  ────────────────────────────────────────
+  #: 6
+  Gate: Late-window stability
+  Soglia: Q4 veh SR ≥ Q3 − 5 pp
+  Razionale: regime entropy-collapsed dura 510K step (3× il Q4 a 300K); V1 era ascendente, ma è il rischio principale del passaggio a 3M
+
+  B) Soft gates — falliscono → contingency, non auto-reject
+
+  ┌─────────────────────────────┬─────────────────┬────────────────────────────────────────────────────────────────────┐
+  │            Gate             │     Soglia      │                              Triggera                              │
+  ├─────────────────────────────┼─────────────────┼────────────────────────────────────────────────────────────────────┤
+  │ Medium veh SR               │ < 50%           │ curriculum non genera generalization → V4 (entropy 83→90%)         │
+  ├─────────────────────────────┼─────────────────┼────────────────────────────────────────────────────────────────────┤
+  │ Hard veh SR                 │ < 30%           │ V1 non generalizza su 100m → V2 (no_wp_steps cap 1.0→2.0)          │
+  ├─────────────────────────────┼─────────────────┼────────────────────────────────────────────────────────────────────┤
+  │ Hard veh collision          │ > 15%           │ safe_to_push=0.85 troppo permissivo su hard → considera retract V1 │
+  ├─────────────────────────────┼─────────────────┼────────────────────────────────────────────────────────────────────┤
+  │ Hard veh offroad            │ > 10%           │ come sopra                                                         │
+  ├─────────────────────────────┼─────────────────┼────────────────────────────────────────────────────────────────────┤
+  │ Hard veh stuck+timeout      │ > 40%           │ defensive equilibrium ritorna su hard → V2                         │
+  ├─────────────────────────────┼─────────────────┼────────────────────────────────────────────────────────────────────┤
+  │ Ped speed hard ∉ [1.5, 2.2] │ drift > 0.3 m/s │ band asimmetrico amplificato → V5 (penalità asimmetrica)           │
+  ├─────────────────────────────┼─────────────────┼────────────────────────────────────────────────────────────────────┤
+  │ Ped SR hard                 │ < 60%           │ peds non completano 100m in max_steps (al cusp a 2.0 m/s × 50s)    │
+  └─────────────────────────────┴─────────────────┴────────────────────────────────────────────────────────────────────┘
+
+  C) Range attesi per scoping (non gate, riferimenti)
+
+  ┌───────────────────┬────────────┬────────┬────────┬──────────────────┐
+  │      Metric       │    Easy    │ Medium │  Hard  │ Aggregate atteso │
+  ├───────────────────┼────────────┼────────┼────────┼──────────────────┤
+  │ Veh SR            │ 78–85%     │ 55–70% │ 35–55% │ 55–65%           │
+  ├───────────────────┼────────────┼────────┼────────┼──────────────────┤
+  │ Ped SR            │ 85–90%     │ 75–85% │ 60–75% │ 75–80%           │
+  ├───────────────────┼────────────┼────────┼────────┼──────────────────┤
+  │ Veh stuck+timeout │ 15–25%     │ 25–35% │ 30–45% │ 25–35%           │
+  ├───────────────────┼────────────┼────────┼────────┼──────────────────┤
+  │ Veh collision     │ 5–10%      │ 8–12%  │ 10–15% │ 8–12%            │
+  ├───────────────────┼────────────┼────────┼────────┼──────────────────┤
+  │ Veh speed         │ 18–26 km/h │ 15–22  │ 12–18  │ 15–20            │
+  └───────────────────┴────────────┴────────┴────────┴──────────────────┘
+
+  Sono intervalli di sanità basati sulle 300K easy + scaling difficulty; vanno trattati come orientation, non come gate.
+
+  D) Watch items — diagnostici, no gate
+
+  - route_source=legacy_fallback per livello (era ~16.7% easy; rischio amplificato su 100m geometricamente più tese)
+  - route_source=sidewalk_fallback per livello (era ~20% post Ped-route)
+  - Unlock transitions: timing in step e trigger (windowed SR ≥ safe_to_push floor vs hard force-unlock cap) — se sempre force-unlock,
+  P2 non funziona davvero
+  - vf_explained_var per livello (era 0.983 V1 easy — atteso degrado su hard)
+  - Entropy trajectory monotonic decrease, no salti
+
+  E) Decision matrix finale
+
+  Esito: 6/6 hard + ≤ 2 soft FAIL
+  Azione: PROMOTE → procedi a Block 4 / R-norm v2
+  ────────────────────────────────────────
+  Esito: 6/6 hard + 3+ soft FAIL
+  Azione: RETAIN provisional, applica contingency sul soft gate dominante prima di promuovere
+  ────────────────────────────────────────
+  Esito: Qualsiasi hard FAIL
+  Azione: NOT PROMOTED → diagnosi + revert candidato singolo che ha rotto (V1 se collision/offroad creep su hard, P1/P2/P3 se mechanism
+    gate, V1 se Q4 instabile)
+
+  Note critiche
+
+  1. Asimmetria del rischio V1 su hard: V1 è stato validato solo su easy 30m. Su hard 100m, safe_to_push=0.85 espone il policy a
+  urgency-active in scenari ad alta densità — è il punto più fragile dello stack. I gate B-collision/offroad/stuck su hard sono lì per
+  questo.
+  2. Q4 stability è il vero stress test: 510K step in regime collapsed-entropy è una condizione mai vista. V1 ascendente a 300K non
+  garantisce nulla a 3M. Gate A6 è il più informativo.
+  3. Nessun gate cumulativo veh SR: la cumulative SR mescola 3 distribuzioni — confronti cumulativi vs V1 (62.76% su easy) sono non
+  interpretabili. Solo per-livello + Q1→Q4 hanno significato.
+
+  Se vuoi, posso preparare lo script di valutazione che produce direttamente questa griglia da episodes.jsonl quando la run finisce.
+
+
+##########################################################################################################################################
+
+### Q&A 20-05-2026
+
+> Non so se lasciare la difficoltà dei path livelli as-is o riportarla a 15-30-60 metri, con la forbice dinamica, in cui può         
+  prendere solo valori maggiori o uguali al lower bound o vicini, ma mai superiori all'upper bound, cosa mi consigli?                
+
+● Sul merito: as-is vs 15/30/60 con forbice dinamica
+
+  Tre opzioni reali, non due:
+
+  Opzione: A. As-is 30/60/100
+  Pro: nessuna variabile cambia in corsa; pulizia scientifica
+  Contro: easy=30m è già duro per veh policy 47D (stuck 84% nei primi 60 ep); rischio di non sbloccare medium e bruciare budget
+  ────────────────────────────────────────
+  Opzione: B. Punto fisso 15/30/60
+  Pro: riduce sparse-reward bottleneck su easy; salti geometrici 2×/2× (più clean del 2×/1.67× attuale)
+  Contro: introduce un'altra variabile rispetto al baseline 47D 20260518_195947; non testa generalizzazione intra-stage
+  ────────────────────────────────────────
+  Opzione: C. Forbice [L,U] con bias al lower bound
+  Pro: diversità intra-stage → migliore transfer Town05; bridge naturale tra livelli; allineata a best practice curriculum-RL
+  Contro: aggiunge un knob; rende la windowed-SR "soglia di unlock" un target mobile; più difficile attribuire risultati al singolo
+    asse
+
+  Cosa ti consiglio
+
+  Non cambiare in corsa il run 20260520_133747. Stoppare/riavviare ora costa ore di compute e rende non comparabile la run;
+  lasciala arrivare almeno a ~150k env-step e guarda:
+  - vehicle SR windowed su easy (cresce?)
+  - curriculum_level corrente (resta su easy o sblocca?)
+  - vf_explained_var (il critic regge?)
+
+  Per la PROSSIMA iterazione, ordine di priorità:
+
+  1. Prima: passa a 15/30/60 punto fisso (Opzione B). Singolo cambio rispetto al baseline 47D, salti geometrici puliti, easy=15m è
+  dentro il range in cui sai che la policy 47D riesce a chiudere (pilota easy-locked plateau 79%). Mantieni windowed-SR come gate.
+  2. Solo dopo che B ha verificato che il meccanismo di unlock funziona end-to-end, introduci la forbice (Opzione C) come
+  final-comparison config per il confronto curriculum-vs-mixed-batch. È lì che la diversità intra-stage paga davvero (transfer
+  Town05).
+
+  Sulla forbice specifica che proponi ("≥ lower o vicini, mai > upper"): tecnicamente è una distribuzione troncata con moda al lower
+  bound (es. esponenziale troncata, o Beta sbilanciata a sinistra). Concretamente:
+  - easy: clip(Exp(λ=1/5) + 15, 15, 30) → moda 15m, coda fino a 30m
+  - medium: clip(Exp(λ=1/8) + 30, 30, 60) → moda 30m, coda fino a 60m
+  - hard: clip(Exp(λ=1/15) + 60, 60, 100) → moda 60m, coda fino a 100m
+
+  Così ogni livello sovrappone il floor con il ceiling del precedente, smussando le transizioni. Ma di nuovo: questo è il passo 2,
+  non da introdurre ora.
+
+  Sintesi operativa:
+  - Adesso: lascia il run, niente cambi.
+  - Prossimo run: 15/30/60 punto fisso, allinea CLAUDE.md ↔ levels.yaml.
+  - Run finale di tesi: forbice troncata sul setup vincente.
+
+
+### Q&A 20-05-2026 (P2)
+
+> Ricordami come avviene la promoption tra livelli adesso, usiamo la media minima tra le due SR veicoli e pedoni?                       
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Risposta breve: no, non è il minimo — è la media aritmetica tra vehicle_policy e pedestrian_policy (entrambe in policy_ids).
+
+  Logica attuale di unlock (curriculum_batch_manager.py:391-475):
+
+  1. Metrica usata: balanced_sr = mean(window_success_rate(vehicle), window_success_rate(pedestrian)) — riga 422, semplice sum/len.
+  2. Gate hard per-policy DISATTIVATO: require_policy_success: false in curriculum_batch.yaml:11. Quindi il check per-policy
+  (_policy_gate_details, righe 358-389) che richiederebbe window_success_rate >= threshold su ciascuna policy non viene applicato. Resta
+   solo la media.
+  3. Condizioni per unlock "competence_unlocked" (riga 470-475):
+    - tracker.level_timesteps >= min_budget_share * total_budget_timesteps (es. medium serve ≥20% budget)
+    - tracker.window_full (window di 50 episodi piena sul livello aggregato)
+    - balanced_sr >= success_rate_threshold
+  4. Fallback "pressure_cap_unlocked" (riga 461-465): se si supera force_unlock_global_share_cap, si sblocca a forza ignorando la SR.
+
+  Implicazione per il tuo caso: con pedoni a ~95% SR e veicoli a ~50%, la media è ~72% — sopra molte threshold tipiche (0.5-0.6), quindi
+   il veicolo da solo non bloccherebbe la promozione. Se vuoi che il veicolo (policy debole) sia il vincolo, le opzioni minime invasive
+  sono:
+
+  - Mettere require_policy_success: true → riattiva il gate hard per-policy (de facto un min(SR_v, SR_p) >= threshold + collision
+  check).
+  - Cambiare l'aggregazione in _balanced_policy_success_details da mean a min (one-liner alla riga 422).
+  - Pesare la media (es. 0.7*veicolo + 0.3*pedone) — più invasivo.
+
+  Vuoi che proceda con una di queste? (Solo proposta, non eseguo finché non confermi.)
+
+
+##########################################################################################################################################
+
 
 ### Q&A 18-05-2026
 

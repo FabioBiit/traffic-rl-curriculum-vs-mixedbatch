@@ -682,6 +682,14 @@ def main():
     eval_section = eval_cfg.get("evaluation", {})
 
     total_ts = args.timesteps or sched.get("total_timesteps", 50_000)
+
+    # Expand entropy_coeff_schedule_fraction (relative to total_ts) to absolute schedule.
+    sched_frac = opt.pop("entropy_coeff_schedule_fraction", None)
+    if sched_frac is not None:
+        opt["entropy_coeff_schedule"] = [
+            [int(float(frac) * total_ts), float(value)] for frac, value in sched_frac
+        ]
+
     resume_from = None
     if args.resume_from:
         resume_from = _resolve_project_path(args.resume_from, project_root=base.parent)
