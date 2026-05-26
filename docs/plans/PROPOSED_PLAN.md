@@ -1498,7 +1498,7 @@
   Raccomandazione (3 run totali):
   (DONE) 1. EVO/entropy — 300K easy-locked. Gate diagnostico: entropia decresce monotona, KL stabile. (PASS)
   (DONE) 2. EVO/ped-route+ped-speed — 300K easy-locked. Gate: pedone speed media verso 1.5–2.2 m/s, SR ped ≥−2pp.
-  (RUN TODO) 3. EVO/curriculum-stack (P1+P2+P3) [Già allineato con le evo entropy e pedoni] — 3M --difficulty path. Una sola long run. 
+  (DONE) 3. EVO/curriculum-stack (P1+P2+P3) [Già allineato con le evo entropy e pedoni] — 3M --difficulty path. Una sola long run. 
   Il confounding tra P1/P2/P3 è inevitabile (testarli individualmente costerebbe 9M); però condividono lo stesso bersaglio (forgetting +
   premature unlock) e hanno logging diagnostico distinguibile (unlock-event reason, min_probabilities, balanced_sr vs nuovo min_sr
   registrato).
@@ -1920,6 +1920,321 @@
   - Watch ped speed convergenza su 100m (cusp a 2.0 m/s)
   - Entropy collapse a step 2.49M → Q4 ~510K step low-exploration (3× rispetto a 300K)
   - Contingency knobs pronti: V2 (no_wp_steps cap), V4 (entropy schedule), V5 (ped band asimmetrica)
+
+
+### RUN 20260525_205912 3M — Valutazione completa
+
+──Setup: 3M timesteps · EVO/curriculum-stack · V1 + P1+P2+P3 · difficulty=path · seed 999 · entropy transition @ 2.49M · primo run a
+  esercitare la metrica di unlock (no curriculum_lock).
+  
+  Episode integrity
+
+  ┌─────────────────┬───────────────┐
+  │      Check      │    Valore     │
+  ├─────────────────┼───────────────┤
+  │ Episodi totali  │ 3318          │
+  ├─────────────────┼───────────────┤
+  │ Record dedupati │ 19908         │
+  ├─────────────────┼───────────────┤
+  │ Attesi (6/ep)   │ 19908 — OK ✅ │
+  ├─────────────────┼───────────────┤
+  │ NaN/inf         │ nessuno       │
+  └─────────────────┴───────────────┘
+
+  Metriche cumulate
+
+  ┌─────────────┬───────┬────────┬─────────┬───────┬───────┬──────┬───────┬──────┬───────┬───────┬───────┐
+  │    Slice    │   n   │ SR_raw │ SR_corr │ short │ coll  │ off  │ stuck │  to  │  s+t  │  rc   │  pe   │
+  ├─────────────┼───────┼────────┼─────────┼───────┼───────┼──────┼───────┼──────┼───────┼───────┼───────┤
+  │ combined    │ 19908 │  58.64 │   47.70 │ 10.95 │  6.85 │ 3.31 │ 25.92 │ 5.27 │ 31.20 │ 0.837 │ 0.635 │
+  ├─────────────┼───────┼────────┼─────────┼───────┼───────┼──────┼───────┼──────┼───────┼───────┼───────┤
+  │ vehicles    │  9954 │  55.16 │   55.16 │  0.00 │ 13.45 │ 6.61 │ 21.46 │ 3.32 │ 24.77 │ 0.805 │ 0.729 │
+  ├─────────────┼───────┼────────┼─────────┼───────┼───────┼──────┼───────┼──────┼───────┼───────┼───────┤
+  │ pedestrians │  9954 │  62.13 │   40.24 │ 21.89 │  0.25 │ 0.00 │ 30.39 │ 7.23 │ 37.62 │ 0.869 │ 0.540 │
+  └─────────────┴───────┴────────┴─────────┴───────┴───────┴──────┴───────┴──────┴───────┴───────┴───────┘
+
+  ▎ SR_corr applica il fix Block-5.1 (demote → route_short se optimal/target < 0.5). Vehicles: nessuna inflazione. Pedestrians: −21.89
+  ▎ pp rispetto al raw (2179 episodi falsi-completi su sidewalk_fallback).
+
+  Per-level (curriculum unlock attivo)
+
+  Vehicles (SR raw = SR corr — no false-completes):
+
+  ┌────────┬──────┬───────┬───────┬───────┬───────┬──────┬───────┬──────────────┐
+  │ level  │  n   │  SR   │ coll  │  off  │ stuck │  to  │  s+t  │ speed (impl) │
+  ├────────┼──────┼───────┼───────┼───────┼───────┼──────┼───────┼──────────────┤
+  │ easy   │ 3294 │ 67.76 │  7.53 │  4.22 │ 19.06 │ 1.43 │ 20.49 │            — │
+  ├────────┼──────┼───────┼───────┼───────┼───────┼──────┼───────┼──────────────┤
+  │ medium │ 4641 │ 55.79 │ 13.98 │  6.40 │ 20.62 │ 3.21 │ 23.83 │            — │
+  ├────────┼──────┼───────┼───────┼───────┼───────┼──────┼───────┼──────────────┤
+  │ hard   │ 2019 │ 33.18 │ 21.89 │ 11.00 │ 27.29 │ 6.64 │ 33.93 │            — │
+  └────────┴──────┴───────┴───────┴───────┴───────┴──────┴───────┴──────────────┘
+
+  Pedestrians:
+
+  ┌────────┬──────┬────────┬─────────┬───────┬───────┐
+  │ level  │  n   │ SR_raw │ SR_corr │ short │  s+t  │
+  ├────────┼──────┼────────┼─────────┼───────┼───────┤
+  │ easy   │ 3294 │  82.42 │   65.30 │ 17.12 │ 17.52 │
+  ├────────┼──────┼────────┼─────────┼───────┼───────┤
+  │ medium │ 4641 │  57.23 │   33.72 │ 23.51 │ 42.40 │
+  ├────────┼──────┼────────┼─────────┼───────┼───────┤
+  │ hard   │ 2019 │  40.27 │   14.31 │ 25.95 │ 59.44 │
+  └────────┴──────┴────────┴─────────┴───────┴───────┘
+
+  Speed / geometria
+
+  ┌─────────────────────┬────────────┬──────────────────────┐
+  │                     │  vehicles  │     pedestrians      │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ speed               │ 19.83 km/h │ 6.38 km/h (1.77 m/s) │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ no_wp_steps         │      232.2 │                276.5 │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ actual_distance     │    50.46 m │              41.39 m │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ optimal_length      │    58.80 m │             105.13 m │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ under_target        │     52.69% │               91.62% │
+  ├─────────────────────┼────────────┼──────────────────────┤
+  │ too_short (planner) │      7.29% │               48.32% │
+  └─────────────────────┴────────────┴──────────────────────┘
+
+  ▎ Pedestrian speed = 1.77 m/s, dentro la comfort band [1.5, 2.2]. Bonus su asse ped speed.
+
+  Quarter trajectory (NB: distribuzione task non costante)
+
+  Vehicles:
+
+  ┌─────┬───────┬───────┬───────┬───────┐
+  │  Q  │  SR   │ coll  │  off  │  s+t  │
+  ├─────┼───────┼───────┼───────┼───────┤
+  │ Q1  │ 67.91 │  7.03 │  3.94 │ 21.12 │
+  ├─────┼───────┼───────┼───────┼───────┤
+  │ Q2  │ 66.39 │ 10.33 │  4.14 │ 19.14 │
+  ├─────┼───────┼───────┼───────┼───────┤
+  │ Q3  │ 49.56 │ 16.55 │  7.47 │ 26.43 │
+  ├─────┼───────┼───────┼───────┼───────┤
+  │ Q4  │ 36.79 │ 19.90 │ 10.90 │ 32.41 │
+  └─────┴───────┴───────┴───────┴───────┘
+
+  Pedestrians (corrette):
+
+  ┌─────┬─────────┬───────┬───────┐
+  │  Q  │ SR_corr │ short │  s+t  │
+  ├─────┼─────────┼───────┼───────┤
+  │ Q1  │   70.52 │ 18.39 │ 11.04 │
+  ├─────┼─────────┼───────┼───────┤
+  │ Q2  │   40.73 │ 24.09 │ 35.02 │
+  ├─────┼─────────┼───────┼───────┤
+  │ Q3  │   32.93 │ 22.01 │ 44.70 │
+  ├─────┼─────────┼───────┼───────┤
+  │ Q4  │   16.73 │ 23.08 │ 59.75 │
+  └─────┴─────────┴───────┴───────┘
+
+  ▎ Q1→Q4 declinante ma è task-distribution shift, non degrado policy: prima episodio hard arriva all'indice 2415 / 3318 = 72.8% della
+  ▎ run → Q4 è quasi tutto hard.
+
+  Route source distribution
+
+  ┌─────────────────────────────────────┬──────────┬─────────────┐
+  │                                     │ vehicles │ pedestrians │
+  ├─────────────────────────────────────┼──────────┼─────────────┤
+  │ GRP / sidewalk_distance             │   90.07% │      64.06% │
+  ├─────────────────────────────────────┼──────────┼─────────────┤
+  │ legacy_fallback / sidewalk_fallback │    9.93% │      35.94% │
+  └─────────────────────────────────────┴──────────┴─────────────┘
+
+  Confronto storico (riferimento, attenzione al confounding di distribuzione):
+  - Vehicles legacy_fallback: O1+O2 16.4% → V1 (300K easy) ~16% → 3M path: 9.93% (migliora).
+  - Pedestrians sidewalk_fallback: Bundle 20.69% (easy) → 3M path: 35.94% (peggiora, target più lunghi).
+
+  Distribuzione livelli (esercizio unlock)
+
+  ┌────────┬─────────┬────────┬───────────────┬────────┐
+  │ level  │ episodi │   %    │ target budget │   Δ    │
+  ├────────┼─────────┼────────┼───────────────┼────────┤
+  │ easy   │    1098 │ 33.09% │           30% │  +3.09 │
+  ├────────┼─────────┼────────┼───────────────┼────────┤
+  │ medium │    1547 │ 46.62% │           35% │ +11.62 │
+  ├────────┼─────────┼────────┼───────────────┼────────┤
+  │ hard   │     673 │ 20.28% │           35% │ −14.72 │
+  └────────┴─────────┴────────┴───────────────┴────────┘
+
+  ┌───────────────────────┬─────────────────┬─────────────┐
+  │        evento         │ indice episodio │ % della run │
+  ├───────────────────────┼─────────────────┼─────────────┤
+  │ Primo medium unlocked │             870 │       26.2% │
+  ├───────────────────────┼─────────────────┼─────────────┤
+  │ Primo hard unlocked   │            2415 │       72.8% │
+  └───────────────────────┴─────────────────┴─────────────┘
+
+  ▎ Unlock metric attiva ma hard è stata sbloccata troppo tardi per raggiungere il budget di 35%. Le ipotesi: balanced windowed SR su
+  ▎ ped ha tenuto chiuso il gate (ped SR medium corretta era 33.72%), oppure P2 min_policy_sr è soglia troppo alta per le ped reali.
+
+  Termination breakdown — vehicles (no demotion)
+
+  ┌────────────────┬──────┬───────┐
+  │     reason     │  n   │   %   │
+  ├────────────────┼──────┼───────┤
+  │ route_complete │ 5491 │ 55.16 │
+  ├────────────────┼──────┼───────┤
+  │ stuck          │ 2136 │ 21.46 │
+  ├────────────────┼──────┼───────┤
+  │ collision      │ 1339 │ 13.45 │
+  ├────────────────┼──────┼───────┤
+  │ offroad        │  658 │  6.61 │
+  ├────────────────┼──────┼───────┤
+  │ timeout        │  330 │  3.32 │
+  └────────────────┴──────┴───────┘
+
+  Termination breakdown — pedestrians (raw vs Block-5.1 corretta)
+
+  ┌─────────────────────┬───────────────┬───────────────┬───────┐
+  │       reason        │      raw      │     corr      │   Δ   │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ route_complete      │ 6184 (62.13%) │ 4005 (40.24%) │ −2179 │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ route_short (nuovo) │             0 │ 2179 (21.89%) │ +2179 │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ stuck               │ 3025 (30.39%) │          3025 │     0 │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ timeout             │   720 (7.23%) │           720 │     0 │
+  ├─────────────────────┼───────────────┼───────────────┼───────┤
+  │ collision           │    25 (0.25%) │            25 │     0 │
+  └─────────────────────┴───────────────┴───────────────┴───────┘
+
+  Audit short-route: 2179 pedoni falsi-completi → 93.5% provenienti da sidewalk_fallback (2038/2179). Distribuiti su easy 564 / medium
+  1091 / hard 524.
+
+  Verdetto gate
+
+  Gate vehicle-focused (<gate_policy>): NON applicabile come confronto con V1 — task distribution è cambiata (path 30/60/100m vs V1
+  easy-locked 30m). Questa run è il nuovo baseline per EVO/curriculum-stack.
+
+  Confronto disponibile su slice easy (consistente con V1):
+  - V1 easy-locked: SR 62.76%, stuck+to 25.53%, coll 7.43%, off 4.28%, speed 18.30
+  - 3M path/easy: SR 67.76%, stuck+to 20.49%, coll 7.53%, off 4.22%, speed n/a sull'aggregator easy
+
+  Su easy la combinazione V1 + P1+P2+P3 a 3M migliora SR (+5pp), s+t (−5pp), preserva collision (+0.1pp): coerente con effetto
+  cumulativo del training esteso, nessuna regressione.
+
+  Conclusioni operative
+
+  1. Run pulita (integrity 6/6, no NaN/inf, no crash).
+  2. Vehicle binding constraint = hard (SR 33%, coll 22%, off 11%). Q4 declinante è artefatto della distribuzione tardiva di hard.
+  3. Pedestrian SR corretta 40.24% (non 62.13%) — il fix Block-5.1 d'oggi sarà critico per i prossimi run.
+  4. Sidewalk_fallback raddoppia su target 60/100m (35.94% vs 20.69% easy) — il geometric fix del planner ora ha evidence per essere
+  prioritizzato (Layer 2 deferred ieri).
+  5. Unlock hard ritardato (72.8%) → solo 20% delle episodi sono hard (vs budget 35%). P2 min_policy_sr da rivedere se vogliamo più
+  esposizione hard nel prossimo 3M.
+  6. Ped speed 1.77 m/s ∈ [1.5, 2.2] — V1 + Ped-band funziona anche a 3M.
+  
+
+##########################################################################################################################################
+
+### Q&A 26-05-2026
+
+> Mi spieghi a cosa serve il file episode_classification?                                                                               
+
+● carla_core/envs/episode_classification.py — Scopo
+
+  Cosa fa
+
+  Contiene una sola funzione pura, classify_termination_reason(...), che decide come etichettare la fine di un episodio per ciascun
+  agente. L'etichetta finisce nel campo termination_reason di ogni record in episodes.jsonl ed è la base di tutte le metriche downstream
+   (SR, collision rate, stuck/timeout, curriculum unlock).
+
+  Perché esiste come modulo separato
+
+  Prima del Block-5.1 fix di ieri, la stessa logica era inline dentro CarlaMultiAgentEnv.step() (~L527-564). Tre problemi:
+
+  1. Non testabile senza CARLA: per verificare la classificazione serviva accendere il simulatore.
+  2. Bug del route_complete falso: episodi pedone con route_optimal_length_m=0 o ratio < 0.5 venivano etichettati route_complete perché
+  la logica chiedeva solo "ho raggiunto l'ultimo waypoint?", senza controllare se il percorso pianificato avesse una lunghezza minima
+  sensata.
+  3. Inline + dipendenze CARLA mescolate → impossibile unit-testare il decision tree.
+
+  L'estrazione lo rende:
+  - Pure function: solo tipi primitivi in input, nessun side-effect, nessun import CARLA.
+  - Testabile in CI senza simulatore (i 22 test in test_episode_classification.py girano in 0.002s).
+  - Riusabile: lo userai anche nell'aggregatore offline evaluate_run_static.py (vedi corrected_reason() lì, che applica la stessa logica
+   retroattivamente).
+
+  La logica (priorità in ordine)
+
+  1. Né term né trunc           -> "alive"
+  2. collision_flag             -> "collision"
+  3. Raggiunto fine route       -> "route_complete"  o  "route_short" se optimal/target < 0.5
+  4. Vehicle offroad            -> "offroad"
+  5. Truncated + low progress   -> "stuck"  (o se loop_penalty_active)
+  6. Altrimenti truncated       -> "timeout"
+  7. Fallback                   -> "timeout"
+
+  Le 7 reason canoniche sono in TERMINATION_REASONS:
+  ("alive", "collision", "route_complete", "route_short", "offroad", "stuck", "timeout")
+
+  Il valore aggiunto: route_short
+
+  È la novità del fix di ieri. Quando un agente arriva all'ultimo waypoint ma la route pianificata aveva optimal_length / target < 0.5,
+  l'episodio viene declassato:
+
+  - Prima: route_complete → contato come successo → SR pedoni gonfiata
+  - Dopo: route_short → non entra in count("route_complete") → SR onesta
+
+  Nel 3M 20260525_205912: 21.89% dei pedoni sarebbero stati falsi successi con la logica vecchia (vedi SHORT-ROUTE AUDIT nell'eval di
+  prima — 2179 episodi, 93.5% provenienti da sidewalk_fallback).
+
+  Dove viene chiamata
+
+  Una sola call site nell'env, dentro step():
+
+  # carla_core/envs/carla_multi_agent_env.py:528-557
+  is_offroad = ...  # precalcolato (richiede CARLA: ad.actor.get_location(), self._map)
+  termination_reason = classify_termination_reason(
+      agent_type=ad.agent_type,
+      term=term, trunc=trunc,
+      collision_flag=ad.collision_flag,
+      current_wp_idx=ad.current_wp_idx,
+      num_waypoints=len(ad.route_waypoints),
+      is_offroad=is_offroad,
+      route_completion=self._route_completion(ad),
+      loop_penalty_active=ad.loop_penalty_active,
+      route_target_m=float(ad.route_target_distance_m or 0.0),
+      route_optimal_length_m=ad.route_optimal_length,
+  )
+
+  Tutto il calcolo CARLA-dipendente (is_offroad da get_waypoint, route_completion dalla planner) rimane nell'env; la decisione sta nel
+  modulo puro.
+
+  Downstream impact
+
+  I tre aggregatori SR del codice non sono toccati — fanno Counter(...).get("route_complete", 0) e quindi route_short cade
+  automaticamente fuori dal conteggio:
+
+  - carla_core/training/train_carla_mappo.py:359
+  - carla_core/training/centralized_critic.py:885
+  - carla_core/training/mappo_runtime.py:199
+
+  Il visualizer (visualize_mappo_agent.py:274-275) passa l'etichetta inalterata.
+
+  In sintesi
+
+  ┌────────────────────────┬─────────────────────────────────────────────────────────────────┐
+  │        Aspetto         │                             Valore                              │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Tipo file              │ Pure module, no CARLA deps                                      │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Funzione esposta       │ classify_termination_reason(...) + TERMINATION_REASONS          │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Fix introdotto         │ Demote route_complete → route_short se optimal/target < 0.5     │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Test coverage          │ 22 unit test in test_episode_classification.py (PASS in 0.002s) │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Effetto sulle metriche │ SR pedoni non più gonfiata da route fallback degeneri           │
+  ├────────────────────────┼─────────────────────────────────────────────────────────────────┤
+  │ Run impattate          │ Solo run future (Python non hot-reloada moduli)                 │
+  └────────────────────────┴─────────────────────────────────────────────────────────────────┘
 
 
 ##########################################################################################################################################
