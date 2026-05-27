@@ -790,6 +790,9 @@ def _looks_like_ray_startup_failure(failure):
         "auto_init_ray",
         "ray.init()",
         "ray.init(",
+        "unable to register worker with raylet",
+        "failed to register worker",
+        "rayletclient",
     )
     return any(token in haystack for token in ray_tokens)
 
@@ -1350,8 +1353,9 @@ def _run_evaluation_scenarios(
                                         "    [WARN] retrying after Ray startup failure; "
                                         "preserving CARLA server"
                                     )
+                                    time.sleep(8.0)
                                 gc.collect()
-                                time.sleep(2.0)
+                                time.sleep(5.0)
 
                     if not episode_result or not episode_result["ok"]:
                         failure = last_failure or {"reason": "unknown episode worker failure"}

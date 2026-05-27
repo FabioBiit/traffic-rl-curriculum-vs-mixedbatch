@@ -35,6 +35,7 @@ runtime:
   heartbeat_timeout_seconds: 180    # Launcher aborts stale eval if heartbeat stops updating.
   status_poll_interval_seconds: 5   # Launcher poll cadence for progress/heartbeat monitoring.
   subprocess_timeout_seconds: 600   # 10 min hard cap per episode subprocess. 1000 steps @ 20 FPS = 50s sim + overhead.
+  max_retries_per_episode: 2        # Total attempts = 1 + retries. Bumped from default 1 to absorb Ray raylet-register flake on Windows.
   # Disabled: reload_world, causes stalls on Windows (CARLA 0.9.16). Env reset() handles cleanup.
   reload_world_between_episodes: false  # Reload CARLA world before each eval episode for clean state.
 
