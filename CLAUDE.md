@@ -40,7 +40,7 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 ---
 
 <metadata>
-Last updated: 2026-05-26
+Last updated: 2026-05-27
 Purpose: Repository-level operating instructions for Claude Code.
 Language rule: Write all future additions and updates to this file in English.
 </metadata>
@@ -145,23 +145,63 @@ are comparatively stronger and must always be reported separately.
 
 ## Next Step
 
-**Branch state (verified 2026-05-26)**: `EVO/new-main` and `EVO/curriculum-stack` point
-to the same commit (`d84fa3a`). All P1+P2+P3 commits
+**Branch state (verified 2026-05-27)**: `EVO/new-main` HEAD at commit `d0731ca`
+("Fix evaluation bugs in CARLA MAPPO training"). All P1+P2+P3 commits
 (`9c20f97 EvoP1CurriculumRehearsalFloors`, `749c8dc EvoP2UnlockGateMinPolicySR`,
-`7790c7d EvoP3RaiseHardForceUnlockCap`) and V1 (`2bbcdbe EvoVehicleSafePushTolerance`)
-are present on `EVO/new-main`. No outstanding merge.
+`7790c7d EvoP3RaiseHardForceUnlockCap`), V1 (`2bbcdbe EvoVehicleSafePushTolerance`),
+and the EvalBugfix commit (`d0731ca`) are present on `EVO/new-main`. **Uncommitted**:
+Patch B (`evaluate_carla_mappo.py:891`, per-episode RLlib seed) — see Eval Pipeline
+section below.
 
-**Step 5 launched and completed**: run `20260525_205912` (3M, `--difficulty path
---timesteps 3000000 --seed 999`, curriculum_lock disabled). This is the first run that:
+**Step 5 training completed**: run `20260525_205912` (3M, `--difficulty path
+--timesteps 3000000 --seed 999`, curriculum_lock disabled). First run that:
 - Exercises the curriculum unlock metric (no `curriculum_lock`, `difficulty=path`,
   distances `30/60/100m`, budget `0.30/0.35/0.35`, balanced windowed-SR unlock).
 - Tests V1 + P1+P2+P3 stack at full horizon and on hard routes.
 
-**Immediate next action**: consolidate evaluation of `20260525_205912` (training
-`episodes.jsonl` + the run's deterministic `final_eval_job.json`). Report cumulative
-agent-level metrics (vehicles / pedestrians separately), per-level breakdown
-(easy/medium/hard), Q1→Q4 trajectory, and termination-reason mix incl. the
-`route_short` demotion already applied by `episode_classification.py`.
+**Step 5 deterministic eval was INVALIDATED** (2026-05-27): first eval attempt on
+`20260525_205912` ran with `deterministic_policy=true` and a per-episode env-seed
+collapse (Bug #1 below). The Codex audit and per-scenario inspection showed an
+implausible flat 33.33% success rate (1-of-3 agents completing the route every
+episode). Run was Ctrl+C'd at 82/400 episodes (`evaluation_status.json`:
+`exit_code=130`, `current_episode_idx=83`). Eval `episodes.jsonl` was not produced
+(Bug #3 prevented logger initialization in subprocess). Eval relaunch with all 5
+fixes is the next action.
+
+**Immediate next action**: user backs up partial deterministic artifacts
+(`results.json` → `results_deterministic_partial.json`, `evaluation_status.json` →
+`evaluation_status_deterministic_partial.json`), then relaunches stochastic eval
+on `20260525_205912` via `final_eval_job.json` (4 scenarios × 100 episodes = 400).
+Claude consolidates afterward: 3-column comparison (Training cumulative 3M /
+Deterministic-partial 82 ep / Stochastic-full 400 ep), per-level breakdown
+(easy/medium/hard/test=Town05), Q1→Q4 trajectory, termination-reason mix, slot-level
+breakdown (vehicle_0/1/2, pedestrian_0/1/2).
+
+## Eval Pipeline Bug Fixes (applied 2026-05-27, commit `d0731ca` + uncommitted Patch B)
+
+**Scope**: eval tooling only. The 3M training of `20260525_205912` is unaffected
+(training writes its own `episodes.jsonl` via the policy-side hook, independent of
+the eval subprocess). The fixes restore eval validity; they do not change training
+outcomes. Per `<constraints>`: do not infer policy improvement from eval-tooling
+changes.
+
+| # | Bug | File / Line | Symptom | Fix |
+|---|-----|-------------|---------|-----|
+| 1 | Per-episode env seed collapse | `evaluate_carla_mappo.py:248` | Every eval episode received `traffic.seed = seed_base` (constant 999) → identical NPC layout, identical pedestrian routes, identical traffic-light state across all 100 ep per scenario. | `traffic["seed"] = int(seed_base) + int(reset_count)` (one new traffic configuration per episode). |
+| 2a | `deterministic_policy=true` in job | `final_eval_job.json:143` | Forced `explore=false` in RLlib → action = `mean(obs)` only. With unchanging obs (Bug #1) the 3 agents produced identical actions every episode. | Set to `false`. |
+| 2b | `deterministic_policy=true` default in YAML | `eval.yaml:7` | Same as 2a for any future eval that re-generates the job from defaults. | Set to `false` with explanatory comment. |
+| 2c | `deterministic_policy` default in code fallback | `mappo_runtime.py:340` | `"explore": not eval_section.get("deterministic_policy", True)` would default to `False` if key missing. | `eval_section.get("deterministic_policy", False)` → defaults to stochastic exploration. |
+| 3a | Eval `episodes.jsonl` not written | `evaluate_carla_mappo.py:881-883` (`_run_episode_job`) | The per-episode subprocess never set `MAPPO_EPISODE_LOG` → policy hook silently skipped JSONL writes. Only summary `results.json` was produced; no slot-level (`vehicle_i` / `pedestrian_i`) records. | Set `os.environ["MAPPO_EPISODE_LOG"]` before policy build in `_run_episode_job`. |
+| 3b | Eval JSONL accumulation across reruns | `evaluate_carla_mappo.py` parent function | If a prior eval left `out_dir/eval/episodes.jsonl`, new run appended on top → duplicated/mixed records. | `Path(out_dir/"eval"/"episodes.jsonl").unlink(missing_ok=True)` before eval loop. |
+| 4 | RLlib torch-seed correlation across episodes (Patch B, uncommitted) | `evaluate_carla_mappo.py:891` | `exp_seed=int(payload["seed_base"])` was constant 999 across every episode subprocess. RLlib `.debugging(seed=999)` (`mappo_runtime.py:292`) propagates to `torch.manual_seed` and `np.random.seed` in the fresh subprocess → Gaussian action-noise stream restarts identically per episode. Even with Bug #1 fixed (varying obs), the 100 noise samples per scenario were highly correlated rather than IID. | `exp_seed=int(payload["seed_base"]) + int(payload["episode_idx"])` — uses `episode_idx` already in the payload (line 969 of `_run_episode_eval_subprocess`). |
+
+**Open item**: cross-scenario seed collision (residual). `reset_count` passed to
+`_build_scenario_env_cfg` is per-scenario `episode_idx` (0..99), so `easy ep 0`,
+`medium ep 0`, `hard ep 0`, `test ep 0` all get `traffic.seed = 999 + 0 = 999`.
+Effect is bounded because each scenario uses a different `route_distance_m` (30 /
+60 / 100 m / Town05) so scenes diverge after 1–2 steps. Not blocking; flagged for
+completeness. A global episode counter 0..399 would resolve it cleanly but requires
+changing `_build_scenario_env_cfg` signature — deferred.
 
 **Caveat for step 5**: with fraction-based entropy schedule, transition fires at 83% of 3M =
 step 2.49M; Q4 amounts to ~510K step in low-exploration regime (~3× the 300K Q4 duration).
@@ -188,11 +228,13 @@ If step 5 shows any of these regressions, contingency knobs ready:
   `[1.2,2.6]→2.28 m/s`, `[1.5,2.2]→2.64 m/s`. V1 with band `[1.2, 2.6]` converged at 2.14 m/s
   (best), but the asymmetry remains a latent risk.
 
-**Candidate queue (updated 2026-05-26)**:
+**Candidate queue (updated 2026-05-27)**:
 `EvoEntropy (PASS, 20260520_133747) → Ped-route+Ped-speed bundle (PARTIAL, 20260525_091300)
 → V3 retune (REJECTED gate2 FAIL, 20260525_125127, reverted) → V1 (PROMOTED, 20260525_162428)
-→ Step 5 long run 3M COMPLETED (20260525_205912; eval consolidation pending)
-→ [V2/V4/V5 contingent on step 5 evidence] → R-norm v2 (gated on Block 4 evidence)`.
+→ Step 5 training 3M COMPLETED (20260525_205912)
+→ EvalBugfix (commit d0731ca + Patch B uncommitted; eval-tooling only, no training change)
+→ Step 5 stochastic eval RELAUNCH PENDING → [V2/V4/V5 contingent on step 5 evidence]
+→ R-norm v2 (gated on Block 4 evidence)`.
 File-overlap ordering enforced: V1/V2 share `carla_multi_agent_env.py` (apply sequentially,
 never in parallel); P1/P2 share `curriculum_batch_manager.py`.
 
@@ -223,6 +265,8 @@ never in parallel); P1/P2 share `curriculum_batch_manager.py`.
 | Ped-route + Ped-speed (bundle) | evaluated / gate partial / retained pending V3 | 20260525_091300 | Step 2 of EVO roadmap. Bundle of two commits on `EVO/new-main`: `21a6724` EvoPedRouteRejectShortChains (`route_planner.py`: `min_route_ratio=0.5` rejects short pedestrian chains; per commit message, effect is relabel `sidewalk_distance → sidewalk_fallback`, no deep geometric fix) + `185a9d2` EvoPedSpeedWidenComfortBand (`carla_multi_agent_env.py:2004` `_pedestrian_reward` section 5: comfort band `[0.8, 1.8] → [1.2, 2.6]` m/s). 300K easy-locked, seed 999. **Gate1** (ped SR ≥ −2 pp vs EvoEntropy): **PASS** (+0.04 pp, 85.67% → 85.71%). **Gate2** (ped speed ∈ [1.5, 2.2] m/s): **FAIL** (2.281 m/s, +0.081 m/s over upper bound; baseline 1.990 m/s; Δ +0.291 m/s, +14.6%). Ripple on vehicles (file shared): stuck +4.70 pp (22.47 → 27.18), speed −2.27 km/h (16.03 → 13.76), no_wp_steps +48.5 (215.8 → 264.3); collision −1.71 pp & offroad −1.79 pp interpreted as consequence of vehicle inactivity, not policy improvement. Mechanism (verified at L1911–1946): faster peds saturate `ped_ttc/ped_occ` → `hazard_risk ≥ 0.75` → `safe_to_push=False` → urgency/`target_min_speed` penalty gates off, vehicle finds zero-speed local optimum; `no_wp_steps>100` penalty (cap 1.0, rate 0.004) too slow to break loop (stuck eps `no_wp_steps` mean 745 → 808). Ped `sidewalk_fallback` 7.24% → 20.69% (relabel-only per commit). Bundle retained pending V3 retune. |
 | V3 (Ped-speed retune) | rejected / reverted | 20260525_125127 | Narrow diff (`carla_multi_agent_env.py:2004` `_pedestrian_reward` section 5): comfort band `[1.2, 2.6] → [1.5, 2.2]` m/s. 300K easy-locked, seed 999. Episode integrity 6/6 (450 ep × 6 = 2700 records, no NaN/inf). Cumulative: veh SR 62.00% (837 compl), ped SR 85.41% (1153 compl), veh stuck 22.22%, veh speed 11.88 km/h, ped speed **2.641 m/s**. **Gate1** (ped SR ≥ −2 pp vs EvoEntropy 85.67%): **PASS** (Δ −0.26 pp). **Gate2** (ped speed ∈ [1.5, 2.2] m/s): **FAIL** (+0.441 over upper bound; worse than Bundle 2.281). **β** side-check (veh stuck ≤ ~24%): PASS (22.22% ≈ EvoEntropy 22.47%). Trajectory Q1→Q4 reveals plateau: veh SR 15.1→70.1→83.4→**79.3** (−4.1 pp decline, worst of 3 runs); veh speed Q4 16.3 km/h vs EvoE 24.0, Bundle 19.1; ped speed Q1→Q4 1.77→2.94→2.90→**2.96** (band exit by Q2). Diagnosis: narrowing band amplifies pedestrian overshoot — comfort bonus is asymmetric (only positive inside band) and dominated by progress rewards. Fast unpredictable peds saturate `hazard_risk`, gating off vehicle urgency/min_speed → defensive equilibrium → Q4 SR decline. **Reverted per protocol**; band restored to `[1.2, 2.6]`. Motivates V1 (raise `safe_to_push` threshold to keep urgency active under higher hazard). |
 | V1 (safe_to_push tolerance) | promoted (trunk) | 20260525_162428 | Narrow diff (`carla_multi_agent_env.py:1927` `_vehicle_reward`): `safe_to_push = hazard_risk < 0.75 → < 0.85`. 300K easy-locked, seed 999. Episode integrity 6/6 (444 ep × 6 = 2664 records, no NaN/inf). Cumulative metrics vs EvoEntropy `20260520_133747`: **Gate PASS 5/5**: veh SR 62.76% (+2.28 pp ≥ +2 pp), veh stuck+timeout 25.53% (−2.97 pp ≤ −2 pp), veh collision 7.43% (−1.02 pp, _improved_), veh offroad 4.28% (−1.45 pp, _improved_), ped SR 85.89% (+0.22 pp). Bonus: veh speed 18.30 km/h (+2.27), ped speed 2.136 m/s (back inside `[1.5, 2.2]` window). Trajectory Q1→Q4 vehicle SR `19.5→73.3→76.6→81.7` (+5.1 pp Q3→Q4, **strongest ascending of 4 runs**); Q4 veh speed 26.38 km/h (highest across V3/Bundle/EvoE/V1). Mechanism confirmed: raising threshold from 0.75 to 0.85 keeps urgency reward and `target_min_speed=8.0` penalty active under hazard ∈ [0.75, 0.85), preventing defensive equilibrium. Safety floor preserved at hazard ≥ 0.85. Merged into the unified `EVO/new-main` ≡ `EVO/curriculum-stack` (P1+P2+P3 + V1 verified on both branches at commit `d84fa3a`); step 5 launched as run `20260525_205912` (3M, `--difficulty path`). |
+| Step 5 training (3M, `--difficulty path`) | completed (training only) | 20260525_205912 | First full unlock-path 3M run on the unified `EVO/new-main` (V1 + P1+P2+P3 stack, curriculum_lock disabled, `easy=30 / medium=60 / hard=100` m, budget `0.30/0.35/0.35`). Seed 999, entropy schedule transition at step 2.49M (83% of 3M). Training data complete on disk; first deterministic eval attempt INVALIDATED by eval-pipeline bugs (see EvalBugfix below). **Eval consolidation pending** (stochastic relaunch after fixes). Training-side metrics not yet recomputed from disk for this entry. |
+| EvalBugfix (eval tooling, 2026-05-27) | applied / not a policy change | — | Commit `d0731ca` ("Fix evaluation bugs in CARLA MAPPO training") + uncommitted Patch B in `evaluate_carla_mappo.py:891`. Four eval-pipeline bugs: (1) per-episode env seed collapse to `seed_base` (`evaluate_carla_mappo.py:248` → `seed_base + reset_count`); (2) `deterministic_policy=true` forcing action collapse in continuous Gaussian policy (`eval.yaml:7`, `final_eval_job.json:143`, `mappo_runtime.py:340` default fallback → all set to `false`); (3) eval `episodes.jsonl` not written (`MAPPO_EPISODE_LOG` not propagated to subprocess; clean-restart of stale JSONL); (4) RLlib torch-seed correlation across episodes — `exp_seed = seed_base` constant → identical Gaussian noise stream restarts via `mappo_runtime.py:292 .debugging(seed=...)`, fixed to `seed_base + episode_idx`. Effect on first deterministic eval attempt of `20260525_205912`: implausible flat 33.33% success rate (1-of-3 agents completing every episode), interrupted at 82/400. No training-side change. Per `<constraints>` rule, no policy claim derivable from this entry. |
 
 See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation logic and pseudocode.
 </experimental_state>

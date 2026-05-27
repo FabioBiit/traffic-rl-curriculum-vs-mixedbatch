@@ -882,13 +882,19 @@ def _run_episode_job(payload):
     eval_log_path.parent.mkdir(parents=True, exist_ok=True)
     os.environ["MAPPO_EPISODE_LOG"] = str(eval_log_path)
 
+    # Per-episode RLlib seed: each subprocess builds RLlib from scratch and
+    # `.debugging(seed=...)` propagates to torch/np RNGs. With a fixed seed_base
+    # the Gaussian action-noise stream would be identical across episodes
+    # (same torch.manual_seed → same sample sequence), correlating 100 eval
+    # trials per scenario. Mixing episode_idx breaks that correlation so the
+    # 400 episodes are closer to IID samples of the policy distribution.
     eval_config = _build_mappo_config(
         env_cfg=payload["env_cfg"],
         train_cfg=payload["train_cfg"],
         eval_cfg=payload["eval_cfg"],
         n_gpus=int(payload["n_gpus"]),
         n_workers=0,
-        exp_seed=int(payload["seed_base"]),
+        exp_seed=int(payload["seed_base"]) + int(payload["episode_idx"]),
         enable_periodic_evaluation=False,
     )
 

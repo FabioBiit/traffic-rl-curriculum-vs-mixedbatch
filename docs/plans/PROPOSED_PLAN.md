@@ -1470,7 +1470,7 @@
   - mini-check su JSONL post-run: pedoni route_length_ratio < 0.5 deve scendere a 0 per sidewalk_distance;
   - nuova run breve sanity, poi restart full curriculum 47D pulito.
 
-### EVAL BUG FIX 26-05-2026 (TESTING)
+### EVAL BUG FIX 27-05-2026 (TESTING)
 
 > Fai un recap delle fix che abbiamo applicato e perché per favore.                                                                     
 
@@ -1591,6 +1591,137 @@
   accumulo di stato residuo. Non confermato come bug, da osservare.
   - Bug latente futuro: tutti i nuovi run di training rigenerano final_eval_job.json da eval.yaml. Adesso che eval.yaml:7 è false e il
   fallback è False, i nuovi job saranno safe. Ma se domani qualcuno tocca eval.yaml, attenzione a non rimettere true.
+
+
+### REPORT ANALISI 27-05-2026 AND BUG FIX (TESTING)
+
+● Verifica del report Codex su stato corrente
+
+  Tutti i punti del report sono verificati sul disco/codice. Aggiungo una precisazione sul─red─flag─exp_seed─e─segnalo─un─punto─────────
+  correlato che Codex non vede.
+
+  Stato verificato (confermo report Codex)
+
+  ┌─────────────────────────────────┬──────────────────────────────────────────────────────────────────────┐
+  │              Check              │                               Evidenza                               │
+  ├─────────────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ final_eval_job.json:143         │ deterministic_policy: false ✅                                       │
+  ├─────────────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ eval/ subdir in run dir         │ MISSING ✅ (conferma eval interrotta era pre-fix logging)            │
+  ├─────────────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ evaluation_status.json          │ completed=false, exit_code=130, 82/400, current_phase=interrupted ✅ │
+  ├─────────────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ evaluate_carla_mappo.py:248     │ traffic["seed"] = seed_base + reset_count ✅                         │
+  ├─────────────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+  │ evaluate_carla_mappo.py:881-883 │ MAPPO_EPISODE_LOG setter presente nel child ✅                       │
+  └─────────────────────────────────┴──────────────────────────────────────────────────────────────────────┘
+
+  La caratterizzazione di Codex "i fix sono nel codice ma la run su disco è ancora pre-fix" è corretta. L'eval interrotta a 82 ep è il
+  vecchio comportamento (traffic.seed=999 fisso, no eval/jsonl, deterministic=true probabilmente — anche se questo singolo eval aveva
+  già false dal job).
+
+  Precisazioni rispetto al report
+
+  Sul Bug #1: concordo con la precisazione di Codex — "100 campioni indipendenti" è troppo forte; sono 100 campioni deterministici
+  distinti e riproducibili. Anche con env seed diverso per episodio, c'è ancora torch_seed fisso (vedi sotto). La distinzione conta in
+  tesi.
+
+  Sul Bug #2: i numeri pedoni 0.35 vs 2.09 m/s che ho citato nel precedente recap erano ipotesi forte, non misure post-fix. Codex
+  giustamente li tratta come "da validare dopo nuova eval".
+
+  Cambio di protocollo: punto critico di Codex. Stochastic eval vs deterministic eval sono protocolli diversi. Se il confronto col
+  training cumulativo dev'essere pulito, il training era già stochastic (entropy_coeff>0, explore=True per natura del loop PPO). Quindi
+  stochastic eval → confronto più consistente. Ma per confronti cross-candidate futuri (V2/V4/V5 vs V1) servirà fissare il protocollo:
+  tutti stochastic.
+
+  Red flag exp_seed: confermato e quantificato
+
+  Verifica del codice:
+  - evaluate_carla_mappo.py:891: exp_seed=int(payload["seed_base"]) → 999 fisso in ogni subprocess.
+  - mappo_runtime.py:292: .debugging(seed=exp_seed) → RLlib propaga il seed a torch.manual_seed, np.random.seed, RNG workers.
+  - Ogni subprocess è fresco → torch RNG state riparte da 999 → la Gaussian noise stream è identica per i primi N step di ogni episodio.
+
+  Quanto è grave?
+
+  Argomento mitigante:
+  - Action = mean(obs) + std·noise
+  - mean(obs) dipende dall'osservazione corrente, che è diversa per episodio (grazie al fix bug #1).
+  - Quindi le azioni non collassano al 100% identiche.
+  - La firma 33.33% esatta NON dovrebbe ripresentarsi.
+
+  Argomento aggravante:
+  - Il noise stream è perfettamente correlato tra episodi.
+  - Se la policy ha pochi gradi di libertà sull'azione (es. accelerazione pinned ~1.0), il noise replicato amplifica artefatti.
+  - Statisticamente, 400 trial non sono 400 IID: la varianza inter-episodio sottostima.
+
+  Punto correlato che Codex non segnala
+
+  Il fix di bug #1 ha una collisione cross-scenario che Codex non menziona:
+
+  easy   ep 0 → traffic.seed = 999 + 0 = 999
+  medium ep 0 → traffic.seed = 999 + 0 = 999   ← stessa scena iniziale
+  hard   ep 0 → traffic.seed = 999 + 0 = 999   ← idem
+  test   ep 0 → traffic.seed = 999 + 0 = 999   ← idem
+
+  Il reset_count passato a _build_scenario_env_cfg è l'episode_idx per-scenario (0..99), non globale (0..399). Quindi gli spawn point
+  del primo episodio di ogni scenario sono identici. Il route differisce perché route_distance_m cambia (30/60/100), ma il punto di
+  partenza no.
+
+  Effetto limitato — l'unico shared è il primo spawn vehicle/ped, poi le traiettorie divergono. Ma se vogliamo statistica pulita, anche
+  questa collisione è evitabile.
+
+  Opzioni operative
+
+  Opzione: A. Rilancio così com'è
+  Cosa fa: Niente
+  Tempo: 0 min
+  Pro: Veloce
+  Contro: Noise stream RLlib correlato; collisione cross-scenario; non IID
+  ────────────────────────────────────────
+  Opzione: B. Fix exp_seed da seed_base solo
+  Cosa fa: exp_seed = seed_base + episode_idx (per-scenario)
+  Tempo: 2 min
+  Pro: Risolve noise stream entro scenario
+  Contro: Resta collisione cross-scenario sul torch seed
+  ────────────────────────────────────────
+  Opzione: C. Fix exp_seed + globale
+  Cosa fa: Passo un global_episode_idx 0..399, uso quello sia per traffic.seed sia per exp_seed
+  Tempo: 5 min
+  Pro: IID-cleanest
+  Contro: Tocca 2 punti, ridefinizione signature
+
+  Mia raccomandazione
+
+  Opzione B è il compromesso migliore:
+  - Risolve il rischio principale (noise replicato 400 volte).
+  - Mantiene la collisione cross-scenario sul seed env, che è un rischio molto minore perché route_distance_m differisce e l'episodio
+  diverge dopo 1-2 step.
+  - Diff banale (1 riga in evaluate_carla_mappo.py:891).
+  - episode_idx è già nel payload (linea 969).
+
+  Diff proposto:
+  # evaluate_carla_mappo.py:891
+  - exp_seed=int(payload["seed_base"]),
+  + exp_seed=int(payload["seed_base"]) + int(payload["episode_idx"]),
+
+  In più aggiornerei il commento sopra il blocco per spiegare il perché.
+
+  Se preferisci Opzione C la implemento, ma richiede tracciare un global_episode_idx (0..399) anche per traffic.seed per coerenza, e
+  quindi tocco anche _build_scenario_env_cfg.
+
+  Conclusione complessiva sul report
+
+  Il report Codex è corretto e prudente:
+  1. ✅ Diagnosi giusta sui 3 bug.
+  2. ✅ Precisione metodologica giusta su "campioni deterministici riproducibili" vs IID.
+  3. ✅ Red flag exp_seed è reale e va affrontato.
+  4. ✅ Cautela giusta su non usare i 82 ep parziali.
+
+  L'unica integrazione che farei è la collisione cross-scenario del seed env, che però è secondaria rispetto al noise RLlib.
+
+  Aspetto la tua decisione su A/B/C prima di toccare codice.
+  
+  (APPLICATA LA PATCH B)
 
 
 ##############################################################Q&A#########################################################################
