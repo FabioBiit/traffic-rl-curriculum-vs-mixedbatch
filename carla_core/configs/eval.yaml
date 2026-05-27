@@ -4,8 +4,8 @@
 
 evaluation:
   enabled: true                 # Enable evaluation stage.
-  deterministic_policy: true    # Use deterministic actions (no exploration noise).
-  episodes_per_map: 100          # Number of episodes evaluated per scenario. 25 -> 100K; 75 -> 300K; 100 -> 400K; 150 -> 600K;
+  deterministic_policy: false   # Use Exploration to don't break the policy.
+  episodes_per_map: 100         # Number of episodes evaluated per scenario. 25 -> 100K; 75 -> 300K; 100 -> 400K; 150 -> 600K;
   parallel_envs: 1              # Fixed to 1: true parallel evaluation requires multiple CARLA instances.
 
 scenarios:

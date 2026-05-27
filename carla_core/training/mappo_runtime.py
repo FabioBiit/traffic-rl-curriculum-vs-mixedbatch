@@ -337,7 +337,7 @@ def _build_mappo_config(
             evaluation_duration=eval_section.get("episodes_per_map", 5),
             evaluation_duration_unit="episodes",
             evaluation_num_workers=0,
-            evaluation_config={"explore": not eval_section.get("deterministic_policy", True)},
+            evaluation_config={"explore": not eval_section.get("deterministic_policy", False)},
         )
         .framework("torch")
     )
