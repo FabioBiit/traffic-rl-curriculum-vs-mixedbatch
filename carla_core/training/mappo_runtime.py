@@ -196,7 +196,13 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
         all_reasons = [d["termination_reason"] for d in outcomes.values()]
         n_total = len(all_reasons)
         if n_total > 0:
-            success_rate = all_reasons.count("route_complete") / n_total
+            # Count route_short as success for the unlock metric: route_short marks
+            # degenerate-fallback routes (ratio < 0.5) in episodes.jsonl but the agent
+            # did reach end-of-route, so it is a true "completion" for curriculum
+            # progression. Reporting in episodes.jsonl stays split.
+            success_rate = (
+                all_reasons.count("route_complete") + all_reasons.count("route_short")
+            ) / n_total
             self._success_window.append(success_rate)
             episode.custom_metrics["success_rate"] = success_rate
             episode.custom_metrics["collision_rate"] = all_reasons.count("collision") / n_total

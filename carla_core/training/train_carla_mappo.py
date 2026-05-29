@@ -356,7 +356,9 @@ def _read_episode_log_delta(log_path, start_offset):
             policy_stats = stats["by_policy"].get(policy_id)
             if policy_stats is not None:
                 policy_stats["total"] += 1
-            if termination_reason == "route_complete":
+            # route_short counts as success for the cumulative tracker: same rationale
+            # as mappo_runtime.py — agent reached end-of-route, fallback was short.
+            if termination_reason in ("route_complete", "route_short"):
                 stats["success"] += 1
                 if policy_stats is not None:
                     policy_stats["success"] += 1

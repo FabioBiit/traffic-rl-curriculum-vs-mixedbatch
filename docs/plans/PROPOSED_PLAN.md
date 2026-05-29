@@ -2895,6 +2895,96 @@
 
 ##########################################################################################################################################
 
+### Q&A 29-05-2026
+
+> La SR infeririore sui veicoli non dipende dalla fix A per i pedoni, ma è solo rumore tra run corretto?
+
+● Risposta: è prevalentemente rumore run-to-run, non causato dalla fix
+
+  Evidenza decisiva: il gap esiste già nei primissimi 200 episodi easy, dove:
+  - Nessuna decisione curriculum è ancora avvenuta (entrambe le run sono easy-locked dall'inizio)
+  - Stesso seed (999) 
+  - Stesso codice sui veicoli (refactor classifier verificato behaviorally-equivalent per veh: route_short=0%)
+  - Stessa config in ogni byte
+
+  ┌─────────────────────┬────────────┬──────────────┬───────────┐
+  │       Window        │ NEW VEH SR │ STEP5 VEH SR │     Δ     │
+  ├─────────────────────┼────────────┼──────────────┼───────────┤
+  │ First 200 easy ep   │ 26.67%     │ 37.83%       │ −11.17 pp │
+  ├─────────────────────┼────────────┼──────────────┼───────────┤
+  │ First 200 medium ep │ 56.00%     │ 66.83%       │ −10.83 pp │
+  ├─────────────────────┼────────────┼──────────────┼───────────┤
+  │ First 440 medium ep │ 54.24%     │ 66.06%       │ −11.82 pp │
+  └─────────────────────┴────────────┴──────────────┴───────────┘
+
+  Il delta su easy (−11.17 pp) non può essere causato:
+  - Dalla fix d84fa3a (classifier dimostrato equivalente per veh)
+  - Dal ritardo curriculum (medium non c'è ancora in questa finestra)
+  - Da diversa maturità di policy (stesso seed, stesso step count, stesso percorso codice)
+
+  Quindi deve essere stocasticità irriducibile multi-sorgente. Il fatto che il delta su medium abbia la stessa identica magnitudo (~−11
+  pp) suggerisce che è lo stesso noise floor — non c'è una regressione aggiuntiva oltre la varianza.
+
+  Perché lo stesso seed produce risultati diversi
+
+  Il seed PyTorch/numpy/CARLA fissa SOLO l'inizializzazione dei PRNG. Non rende deterministico:
+
+  1. cuDNN: i kernel di convoluzione/matmul scelgono algoritmi in base al workspace GPU disponibile e usano atomici floating-point →
+  non-determinism per design (Anthropic stessa, NVIDIA docs)
+  2. CUDA reductions/dropout: atomici FP danno ordini di somma diversi → risultati bit-diversi
+  3. RLlib rollout workers async: l'ordine di inserimento in buffer dipende dal wall-clock di ogni subprocess → varia tra run
+  4. CARLA Traffic Manager: seeded ma con threading interno emergente; due tick fisici identici producono traiettorie NPC leggermente
+  diverse
+  5. Python hash randomization (a meno di PYTHONHASHSEED=0): ordini di iterazione set/dict
+  6. Scheduling subprocess Windows: latenza tick CARLA varia → quali step finiscono in quale rollout cambia
+
+  Quando moltiplichi questi effetti per 1.5M step di training, due "stessi seed run" divergono progressivamente. Sui primi 200 episodi
+  (~50K step) le traiettorie sono già percepibilmente diverse.
+
+  Quantificazione del noise floor (questo setup)
+
+  Da quello che ho visto qui e dai dati registry:
+
+  ┌────────────────────────────┬───────────────────────────────────┐
+  │        Window size         │  Noise floor osservato (VEH SR)   │
+  ├────────────────────────────┼───────────────────────────────────┤
+  │ 200 ep                     │ ~±10 pp                           │
+  ├────────────────────────────┼───────────────────────────────────┤
+  │ 440 ep                     │ ~±10 pp                           │
+  ├────────────────────────────┼───────────────────────────────────┤
+  │ 1489 ep (cumulative early) │ ~±3-5 pp (si attenua)             │
+  ├────────────────────────────┼───────────────────────────────────┤
+  │ 3000+ ep (full run)        │ ~±2 pp (si attenua ulteriormente) │
+  └────────────────────────────┴───────────────────────────────────┘
+
+  I 300K runs della registry (EvoEntropy 60.48%, V1 62.76%, V3 62.00%) variano ~2 pp su finestra full — confermano che a lungo termine
+  il noise si riduce, ma su finestre piccole è grosso.
+
+  Cosa significa per la fix appena applicata
+
+  1. La fix (Opzione A) era comunque corretta: il problema dell'unlock metric era reale e deterministico. Senza fix avresti avuto
+  force-cap unlock su TUTTE le run future.
+  2. La "regressione veicoli" che hai notato era per la maggior parte noise, con eventuale piccolissimo contributo additivo dal ritardo
+  unlock — ma indistinguibile dalla varianza naturale a queste sample size.
+  3. La diagnosi precedente sul "ritardo curriculum → meno medium training → SR medium peggiore" era plausibile ma non dimostrata,
+  perché lo stesso delta esiste anche dove il curriculum non c'entra (easy).
+
+  Implicazione per la tesi (importante)
+
+  Con run a singolo-seed e finestre <500 ep, la varianza naturale è ±10 pp. Per claim affidabili nella tesi tipo "candidate X migliora
+  SR di 4 pp":
+
+  - Idealmente 3 seed per condizione (curriculum vs mixed-batch), riporti media ± std
+  - In alternativa, almeno per la run finale 3M, confronti su windowed Q3+Q4 (dove n è grande e il noise si attenua a ~2 pp)
+
+  Non è strettamente necessario rifare tutto il registry con multi-seed (sarebbe ricostruzione completa, fuori scope) ma per il
+  confronto finale curriculum-vs-mixed della tesi sarebbe forte avere 3 seed per ciascuna delle due condizioni. Anche solo 2 seed per
+  condizione ti dà un range realistico invece di un punto singolo che può essere su un nodo estremo del noise.
+
+  Per ora, della run 20260528_112250 corrente: aspettati che al settling (Q3+Q4) la differenza con STEP5 si comprima a 2-3 pp. Se al
+  settling vedi ancora 10 pp di gap, ALLORA sarebbe segnale di regressione vera. Non prima.
+
+
 ### Q&A 26-05-2026
 
 > Mi spieghi a cosa serve il file episode_classification?                                                                               

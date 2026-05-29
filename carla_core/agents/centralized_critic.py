@@ -881,9 +881,11 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                 continue
 
             reasons = [d["termination_reason"] for d in agent_data.values()]
+            # route_short counts as success for the per-policy SR fed to the
+            # curriculum unlock manager (same rationale as mappo_runtime.py).
             episode.custom_metrics[f"{policy_id}/success_rate"] = (
-                reasons.count("route_complete") / n
-            )
+                reasons.count("route_complete") + reasons.count("route_short")
+            ) / n
             episode.custom_metrics[f"{policy_id}/collision_rate"] = (
                 reasons.count("collision") / n
             )
