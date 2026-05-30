@@ -12,7 +12,8 @@
       "WebFetch(domain:github.com)",
       "Bash(rtk ls *)",
       "Bash(rtk read *)",
-      "Bash(rtk wc *)"
+      "Bash(rtk wc *)",
+      "Bash(rtk git *)"
     ]
   },
   "enableAllProjectMcpServers": true,
