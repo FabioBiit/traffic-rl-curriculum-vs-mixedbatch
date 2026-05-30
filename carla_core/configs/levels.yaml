@@ -2,20 +2,6 @@
 # Used by CurriculumManager and BatchLevelSampler in curriculum_batch_manager.py
 # Training levels: traffic + route difficulty on fixed map (Town03).
 # Map-based generalization tested in final eval (Town05).
-#
-# Pedestrian route distances are decoupled from vehicle distances (EvoPedDistRecalibrate):
-# the CARLA 0.9.16 sidewalk graph is disconnected at intersections, so the empirical
-# planner-output median is ~23m. Vehicle distances stay at 30/60/100m; pedestrian
-# distances calibrated against the planner-output percentiles to keep route_short
-# rate ~10-25% across levels (target was ~37/54% at 60/100m).
-#
-# Test (Town05) is map-transfer interpolation for both agent classes:
-#   veh 80m = 80% of veh-hard 100m  (interpolation between medium-60 and hard-100)
-#   ped 35m = 87% of ped-hard 40m   (interpolation between medium-25 and hard-40)
-# Both stay inside the training difficulty envelope, isolating "new map" as the
-# single confounding variable. Caveat: Town05 sidewalk topology may yield a
-# different route_short rate than Town03 — interpret a low ped test SR with care
-# (could be policy non-generalization OR planner degeneration on Town05).
 
 levels:
   # eval only
@@ -23,8 +9,8 @@ levels:
     map: "Town05"
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
-    route_distance_m: 80                 # veh: interpolation between medium-60 and hard-100
-    route_distance_m_pedestrian: 35      # ped: interpolation between medium-25 and hard-40
+    route_distance_m: 80
+    route_distance_m_pedestrian: 80
 
 # route-only difficulty: NPC fixed at medium values, route distance varies
 levels_path:
@@ -33,19 +19,19 @@ levels_path:
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
     route_distance_m: 30
-    route_distance_m_pedestrian: 15
+    route_distance_m_pedestrian: 30
   medium:
     map: "Town03"
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
     route_distance_m: 60
-    route_distance_m_pedestrian: 25
+    route_distance_m_pedestrian: 60
   hard:
     map: "Town03"
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
     route_distance_m: 100
-    route_distance_m_pedestrian: 40
+    route_distance_m_pedestrian: 100
 
 # traffic-only difficulty: route fixed at medium values, NPC counts vary
 levels_traffic:
@@ -54,19 +40,19 @@ levels_traffic:
     n_vehicles_npc: 5
     n_pedestrians_npc: 10
     route_distance_m: 60
-    route_distance_m_pedestrian: 25
+    route_distance_m_pedestrian: 60
   medium:
     map: "Town03"
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
     route_distance_m: 60
-    route_distance_m_pedestrian: 25
+    route_distance_m_pedestrian: 60
   hard:
     map: "Town03"
     n_vehicles_npc: 30
     n_pedestrians_npc: 60
     route_distance_m: 60
-    route_distance_m_pedestrian: 25
+    route_distance_m_pedestrian: 60
 
 # mixed difficulty: both route distance and NPC counts vary (mirrors levels:)
 levels_mixed:
@@ -75,16 +61,16 @@ levels_mixed:
     n_vehicles_npc: 5
     n_pedestrians_npc: 10
     route_distance_m: 30
-    route_distance_m_pedestrian: 15
+    route_distance_m_pedestrian: 30
   medium:
     map: "Town03"
     n_vehicles_npc: 15
     n_pedestrians_npc: 30
     route_distance_m: 60
-    route_distance_m_pedestrian: 25
+    route_distance_m_pedestrian: 60
   hard:
     map: "Town03"
     n_vehicles_npc: 30
     n_pedestrians_npc: 60
     route_distance_m: 100
-    route_distance_m_pedestrian: 40
+    route_distance_m_pedestrian: 100
