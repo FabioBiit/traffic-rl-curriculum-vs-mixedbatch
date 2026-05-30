@@ -56,7 +56,7 @@ Prefer targeted commands and avoid full raw logs unless necessary.
 
 # Project Operating Brief
 
-**Last updated:** 2026-05-27
+**Last updated:** 2026-05-30
 
 ---
 
@@ -176,6 +176,22 @@ low average speed, weak early route progress. Pedestrians are comparatively stro
 
 ## Next Planned Step
 
+**Update 2026-05-30 — `f51ac88` reverted (commit `23a0342`).** After this section was
+last written (2026-05-27), commit `f51ac88` was added (route_short-as-success counting +
+pedestrian route-distance recalibration 30/60/100 → 15/25/40 m) and run as r0529
+`20260529_122522` (3M, `--difficulty path`, seed 999, curriculum_lock disabled). r0529
+regressed vehicle EASY-band SR to ~61–63% vs pre-commit replicates (step5 `20260525_205912`
+~77–78%, r0528 `20260528_112250` ~74–75%) with a defensive zero-speed-freeze signature; the
+noise-vs-real question was not isolated (n=1 post-commit, analyzed live). User chose the
+robust path — **full revert of f51ac88 functional changes (commit `23a0342`, current
+`EVO/new-main` HEAD)** — restoring ped distances to match vehicle (path 30/60/100, test ped
+80) and `route_complete`-only success counting, i.e. the exact pre-f51ac88 step5 trunk.
+Non-code files of f51ac88 (`.claude/settings.local.json`, `docs/plans/PROPOSED_PLAN.md`)
+were kept on purpose. **Next action (user launches):** a fresh confirmation run on
+`23a0342`, expected to reproduce step5/r0528 healthy behavior (NOT r0529's regression) —
+see the f51ac88 row in the Candidate Registry. The Step-5 eval relaunch described below
+remains pending and is unaffected (eval tooling only).
+
 **Branch state (verified 2026-05-27)**: `EVO/new-main` HEAD at commit `d0731ca`
 ("Fix evaluation bugs in CARLA MAPPO training"). All P1+P2+P3 commits
 (`9c20f97 EvoP1CurriculumRehearsalFloors`, `749c8dc EvoP2UnlockGateMinPolicySR`,
@@ -261,12 +277,15 @@ If step 5 shows any of these regressions, contingency knobs ready:
   `[1.2,2.6]→2.28 m/s`, `[1.5,2.2]→2.64 m/s`. V1 with band `[1.2, 2.6]` converged at 2.14 m/s
   (best), but the asymmetry remains a latent risk.
 
-**Candidate queue (updated 2026-05-27)**:
+**Candidate queue (updated 2026-05-30)**:
 `EvoEntropy (PASS, 20260520_133747) → Ped-route+Ped-speed bundle (PARTIAL, 20260525_091300)
 → V3 retune (REJECTED gate2 FAIL, 20260525_125127, reverted) → V1 (PROMOTED, 20260525_162428)
 → Step 5 training 3M COMPLETED (20260525_205912)
 → EvalBugfix (commit d0731ca + Patch B uncommitted; eval-tooling only, no training change)
-→ Step 5 stochastic eval RELAUNCH PENDING → [V2/V4/V5 contingent on step 5 evidence]
+→ Step 5 stochastic eval RELAUNCH PENDING
+→ f51ac88 (route_short-count + ped-dist recalibration) REJECTED/REVERTED 23a0342 (r0529 20260529_122522 vehicle-SR regression)
+→ fresh confirmation run on 23a0342 PENDING (user launches)
+→ [V2/V4/V5 contingent on evidence]
 → R-norm v2 (gated on Block 4 evidence)`.
 File-overlap ordering enforced: V1/V2 share `carla_multi_agent_env.py` (apply sequentially,
 never in parallel); P1/P2 share `curriculum_batch_manager.py`.
@@ -302,6 +321,7 @@ never in parallel); P1/P2 share `curriculum_batch_manager.py`.
 | V1 (safe_to_push tolerance) | promoted (trunk) | 20260525_162428 | Narrow diff (`carla_multi_agent_env.py:1927` `_vehicle_reward`): `safe_to_push = hazard_risk < 0.75 → < 0.85`. 300K easy-locked, seed 999. Episode integrity 6/6 (444 ep × 6 = 2664 records, no NaN/inf). Cumulative metrics vs EvoEntropy `20260520_133747`: **Gate PASS 5/5**: veh SR 62.76% (+2.28 pp ≥ +2 pp), veh stuck+timeout 25.53% (−2.97 pp ≤ −2 pp), veh collision 7.43% (−1.02 pp, _improved_), veh offroad 4.28% (−1.45 pp, _improved_), ped SR 85.89% (+0.22 pp). Bonus: veh speed 18.30 km/h (+2.27), ped speed 2.136 m/s (back inside `[1.5, 2.2]` window). Trajectory Q1→Q4 vehicle SR `19.5→73.3→76.6→81.7` (+5.1 pp Q3→Q4, **strongest ascending of 4 runs**); Q4 veh speed 26.38 km/h (highest across V3/Bundle/EvoE/V1). Mechanism confirmed: raising threshold from 0.75 to 0.85 keeps urgency reward and `target_min_speed=8.0` penalty active under hazard ∈ [0.75, 0.85), preventing defensive equilibrium. Safety floor preserved at hazard ≥ 0.85. Merged into the unified `EVO/new-main` ≡ `EVO/curriculum-stack` (P1+P2+P3 + V1 verified on both branches at commit `d84fa3a`); step 5 launched as run `20260525_205912` (3M, `--difficulty path`). |
 | Step 5 training (3M, `--difficulty path`) | completed (training only) | 20260525_205912 | First full unlock-path 3M run on the unified `EVO/new-main` (V1 + P1+P2+P3 stack, curriculum_lock disabled, `easy=30 / medium=60 / hard=100` m, budget `0.30/0.35/0.35`). Seed 999, entropy schedule transition at step 2.49M (83% of 3M). Training data complete on disk; first deterministic eval attempt INVALIDATED by eval-pipeline bugs (see EvalBugfix below). **Eval consolidation pending** (stochastic relaunch after fixes). Training-side metrics not yet recomputed from disk for this entry. |
 | EvalBugfix (eval tooling, 2026-05-27) | applied / not a policy change | — | Commit `d0731ca` ("Fix evaluation bugs in CARLA MAPPO training") + uncommitted Patch B in `evaluate_carla_mappo.py:891`. Four eval-pipeline bugs: (1) per-episode env seed collapse to `seed_base` (`evaluate_carla_mappo.py:248` → `seed_base + reset_count`); (2) `deterministic_policy=true` forcing action collapse in continuous Gaussian policy (`eval.yaml:7`, `final_eval_job.json:143`, `mappo_runtime.py:340` default fallback → all set to `false`); (3) eval `episodes.jsonl` not written (`MAPPO_EPISODE_LOG` not propagated to subprocess; clean-restart of stale JSONL); (4) RLlib torch-seed correlation across episodes — `exp_seed = seed_base` constant → identical Gaussian noise stream restarts via `mappo_runtime.py:292 .debugging(seed=...)`, fixed to `seed_base + episode_idx`. Effect on first deterministic eval attempt of `20260525_205912`: implausible flat 33.33% success rate (1-of-3 agents completing every episode), interrupted at 82/400. No training-side change. Per the "Do Not Infer" rules, no policy claim derivable from this entry. |
+| f51ac88 episode (route_short-as-success + ped-distance recalibration) | rejected / reverted (`23a0342`, 2026-05-30) | 20260529_122522 (r0529) | Two coupled changes in one commit (`f51ac88`, 2026-05-29): (1) `route_short` counted as success in the cumulative tracker (`train_carla_mappo.py`), the curriculum unlock metric (`mappo_runtime.py`), and the per-policy metric (`centralized_critic.py`); (2) pedestrian route distances recalibrated 30/60/100 → 15/25/40 m in `levels.yaml` (vehicle distances unchanged). Run r0529 (3M target, `--difficulty path`, seed 999, curriculum_lock disabled) analyzed LIVE at ~1.0M/3.0M (easy+medium unlocked, hard not reached): vehicle EASY-band SR regressed to ~61–63% vs pre-commit replicates step5 `20260525_205912` (~77–78%) and r0528 `20260528_112250` (~74–75%) on matched easy step-bands, with stuck + no_wp_steps up (defensive zero-speed-freeze signature). Attribution NOT isolated (halves confounded in one commit): the `route_short`-counting half is RL-loss-inert (feeds only the curriculum manager + TensorBoard, never reward/value/advantage; did NOT speed unlock — medium appeared LATER, 909K vs 625/742K), so it cannot explain a vehicle regression; the ped-distance half is the plausible coupling culprit via the shared hazard channel (ped_ttc/ped_occ → hazard_risk → safe_to_push gate) but was never A/B-isolated. `route_short`-as-success also contradicted the Measurement Rules (route_complete only). Noise-vs-real not resolved (n=1 post-commit, live); user chose the robust path — **full revert of both functional halves** (commit `23a0342`) restoring ped distances to match vehicle (path 30/60/100, test ped 80) and `route_complete`-only counting = the exact pre-f51ac88 step5 trunk. Non-code files of f51ac88 (`.claude/settings.local.json`, `docs/plans/PROPOSED_PLAN.md`) kept; f51ac88 stays in history (ped distances reintroducible later). |
 
 See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation details.
 
