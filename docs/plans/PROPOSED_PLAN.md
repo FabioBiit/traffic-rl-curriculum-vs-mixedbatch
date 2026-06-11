@@ -2895,6 +2895,210 @@
 
 ##########################################################################################################################################
 
+### Q&A 11-06-2026
+
+> La valutiamo la run e stiliamo un nuovo piano per trovare un compromesso accettabile (che non degeneri veicoli e pedoni) per ottimizzare le SR di V e P.
+
+Alcune fix pedonali possono modificare la SR veicolo perché pedoni e veicoli condividono scena e hazard channel:
+
+  ped_ttc/ped_occ → hazard_risk → safe_to_push → reward veicolo.
+
+  Rischio per proposta
+
+  ┌───────────────────────────────────┬──────────────────────────────────────────────────────────┐
+  │ Proposta                          │ Impatto veicoli                                          │
+  ├───────────────────────────────────┼──────────────────────────────────────────────────────────┤
+  │ Seed pedonale deterministico      │ Nessun effetto medio atteso; cambia solo riproducibilità │
+  │ Planner con route contigue valide │ Possibile: pedoni più mobili e più a lungo               │
+  │ Raggio waypoint 2→3 m             │ Possibile: cambia il momento di terminazione             │
+  │ Rotte pedoni 15/25/40 m           │ Alto e già associato a regressione                       │
+  │ Reward/speed pedoni               │ Alto: modifica direttamente il moto e quindi gli hazard  │
+  └───────────────────────────────────┴──────────────────────────────────────────────────────────┘
+
+  Il precedente f51ac88, pur confondendo due cambi, è un avvertimento concreto:
+
+  ┌──────────────────────┬───────────┬───────────┐
+  │ Delta r0529 vs r0528 │      Easy │      Hard │
+  ├──────────────────────┼───────────┼───────────┤
+  │ Ped SR               │ +14.11 pp │ +41.29 pp │
+  │ Veh SR               │  −6.11 pp │  −9.70 pp │
+  │ Veh stuck+timeout    │  +3.61 pp │ +11.95 pp │
+  └──────────────────────┴───────────┴───────────┘
+
+  Quindi non riproporrei l’accorciamento globale delle rotte.
+
+  Via Di Mezzo
+
+  Proporrei un solo candidato comportamentale:
+
+  ### P1-Pareto: route validity conservativa
+
+  1. Mantenere distanze pedoni 30/60/100 m.
+  2. Non modificare reward, velocità, osservazioni o max_steps.
+  3. Cercare tutte le diramazioni sidewalk, invece di usare sempre nexts[0].
+  4. Accettare esclusivamente catene contigue con rapporto lunghezza/target valido.
+  5. Se lo spawn non supporta una route valida, ricampionare solo quel pedone in una zona vicina equivalente.
+  6. Eliminare la sequenza di punti navmesh casuali non connessi.
+  7. Non scegliere rotte che evitino artificialmente i veicoli: la distribuzione iniziale delle distanze pedone-veicolo deve
+     restare confrontabile.
+
+  Questa soluzione corregge il planner senza rendere artificialmente più corto il compito.
+
+  Stima ottimistica, non causale, se il fallback raggiungesse le prestazioni delle route valide:
+
+  ┌─────────┬──────────────────┬────────────────────┐
+  │ Livello │ Ped SR osservata │ SR su route valide │
+  ├─────────┼──────────────────┼────────────────────┤
+  │ Easy    │           64.20% │             81.35% │
+  │ Medium  │           31.36% │             51.09% │
+  │ Hard    │           11.00% │             23.14% │
+  └─────────┴──────────────────┴────────────────────┘
+
+  ### P0 obbligatorio
+
+  Prima dell’A/B va aggiunto world.set_pedestrians_seed(...) prima dello spawn. CARLA 0.9.16 lo richiede per riprodurre
+  percorsi pedonali. Serviranno:
+
+  - baseline corrente + P0;
+  - candidato P0 + P1;
+  - stessi seed.
+
+  Non confronterei direttamente P1 con le vecchie run non ped-seeded.
+
+  Protocollo anti-regressione
+
+  Prima del training:
+
+  1. Frozen-checkpoint A/B sul checkpoint 20260610_192146.
+  2. Stessi scenari e seed, baseline planner contro P1.
+  3. Breakdown easy/medium/hard, separato per policy.
+
+  Gate Pareto:
+
+  ┌───────────────────────┬───────────────────┐
+  │ Metrica               │            Soglia │
+  ├───────────────────────┼───────────────────┤
+  │ Ped fallback          │ ≤ 5%, target ≤ 1% │
+  │ Ped route_short       │              ≤ 2% │
+  │ Ped SR medium/hard    │           ≥ +5 pp │
+  │ Ped stuck+timeout     │           ≤ −5 pp │
+  │ Veh SR per livello    │           ≥ −2 pp │
+  │ Veh stuck+timeout     │           ≤ +2 pp │
+  │ Veh collision/offroad │           ≤ +1 pp │
+  │ Integrità             │ 6/6, zero NaN/inf │
+  └───────────────────────┴───────────────────┘
+
+  Solo dopo il PASS del frozen-checkpoint farei training paired. Il raggio waypoint e la reward pedonale resterebbero
+  candidati successivi e isolati.
+
+  Nota ulteriore: gli attori terminati vengono rimossi da self.agents, ma non immediatamente fermati o distrutti. Prima di
+  intervenire sul momento di terminazione va auditato anche questo lifecycle; altrimenti completamenti pedonali più precoci
+  potrebbero alterare indirettamente i veicoli.
+
+  Questa è la strada più conservativa per cercare un miglioramento Pareto, senza sacrificare i veicoli né falsare il task
+  pedonale.
+
+  Fonte API: CARLA 0.9.16 Python API (https://carla.readthedocs.io/en/0.9.16/python_api/). Nessun file modificato.
+
+> Sì, è plausibile recuperare i pedoni senza scartare carla_mappo_20260610_192146. Non serve ancora un disaccoppiamento
+  architetturale completo.
+
+  Evidenza principale
+
+  ┌──────────────────────────────┬────────┐
+  │ Metrica                      │ Valore │
+  ├──────────────────────────────┼────────┤
+  │ Vehicle SR                   │ 62,38% │
+  │ Pedestrian SR                │ 37,92% │
+  │ Pedestrian sidewalk_fallback │ 35,73% │
+  │ SR pedoni su fallback        │     0% │
+  │ Fallback hard                │ 52,48% │
+  └──────────────────────────────┴────────┘
+
+  Il problema dominante è quindi la generazione delle route: oltre un terzo dei pedoni riceve una route fallback che, in
+  questa run, non produce mai route_complete.
+
+  Come controfattuale ottimistico, se i fallback ottenessero le prestazioni osservate sulle route valide dello stesso
+  livello:
+
+  ┌─────────────┬──────────────┬─────────────────────────────┐
+  │ Livello     │ SR osservata │ Controfattuale route valide │
+  ├─────────────┼──────────────┼─────────────────────────────┤
+  │ Easy        │       64,20% │                      81,35% │
+  │ Medium      │       31,36% │                      51,09% │
+  │ Hard        │       11,00% │                      23,14% │
+  │ Complessiva │       37,92% │                 circa 55,2% │
+  └─────────────┴──────────────┴─────────────────────────────┘
+
+  Non è una previsione causale: le route attualmente valide potrebbero essere intrinsecamente più semplici. Indica però che
+  il margine potenziale è ampio.
+
+  Come garantire la distanza
+
+  La garanzia dovrebbe essere sulla lunghezza del percorso pedonale connesso, non sulla distanza euclidea:
+
+  1. Mantenere i target 30/60/100 m.
+  2. Esplorare tutti i rami Waypoint.next(), non soltanto nexts[0].
+  3. Accettare esclusivamente una catena continua di sidewalk con lunghezza, ad esempio, target ≤ L ≤ target + spacing.
+  4. Se il punto iniziale non consente quella lunghezza, rispawnare solamente quel pedone usando un RNG dedicato.
+  5. Se dopo un numero limitato di tentativi non esiste una route valida, rigenerare la scena: niente fallback con punti
+     navmesh indipendenti.
+  6. Non modificare reward, velocità, raggio waypoint o definizione di successo nella stessa candidata.
+
+  Blocchi coinvolti:
+
+  - carla_core/envs/route_planner.py:253: planner pedonale, attualmente segue solo nexts[0].
+  - carla_core/envs/carla_multi_agent_env.py:953: fallback navmesh non connesso.
+  - carla_core/envs/carla_multi_agent_env.py:1097: assegnazione route pedonale.
+
+  Impatto sui veicoli
+
+  Non possiamo garantire a priori che la Vehicle SR rimanga esattamente 62,38%:
+
+  - route valide renderebbero i pedoni mobili più a lungo;
+  - i veicoli osservano i pedoni;
+  - _path_hazard_risk influenza direttamente il reward veicolare e il gate safe_to_push in carla_core/envs/
+    carla_multi_agent_env.py:1689.
+
+  D’altra parte, pedoni su sidewalk con traiettorie continue potrebbero essere più prevedibili degli attuali fallback.
+  L’effetto netto va misurato, non assunto.
+
+  Disaccoppiamento
+
+  Le policy sono già parametricamente separate:
+
+  - vehicle_policy
+  - pedestrian_policy
+
+  La configurazione è visibile in carla_core/training/mappo_runtime.py:294. Non condividono gli stessi pesi; condividono
+  ambiente fisico e informazione globale del critic. Questo coupling è parte del problema MARL studiato, non un difetto da
+  eliminare completamente.
+
+  La strategia più conservativa sarebbe:
+
+  1. Conservare il checkpoint di questa run come vehicle anchor.
+  2. Testare il checkpoint congelato con planner vecchio vs planner route-strict, su seed appaiati.
+  3. Se il veicolo regge, continuare dal checkpoint addestrando soltanto pedestrian_policy, con vehicle_policy congelata.
+  4. Valutare entrambe le policy insieme: congelare i pesi veicolari impedisce il forgetting, ma non impedisce una
+     variazione della Vehicle SR causata dai nuovi comportamenti pedonali.
+
+  Gate proposto:
+
+  ┌───────────────────────────┬─────────┐
+  │ Metrica                   │  Soglia │
+  ├───────────────────────────┼─────────┤
+  │ Ped fallback              │     ≤1% │
+  │ Ped route_short           │     ≤2% │
+  │ Ped SR medium/hard        │ ≥ +5 pp │
+  │ Vehicle SR per livello    │ ≥ −2 pp │
+  │ Vehicle stuck+timeout     │ ≤ +2 pp │
+  │ Vehicle collision/offroad │ ≤ +1 pp │
+  └───────────────────────────┴─────────┘
+
+  Conclusione: non scarterei questa run e non disaccoppierei completamente il sistema. Procederei con route pedonali
+  strettamente valide e, successivamente, fine-tuning ped-only dal suo checkpoint. È la soluzione con la massima protezione
+  dei pesi veicolari e il minor rischio sperimentale. Nessun file è stato modificato.
+
 ### Q&A 29-05-2026
 
 > La SR infeririore sui veicoli non dipende dalla fix A per i pedoni, ma è solo rumore tra run corretto?
