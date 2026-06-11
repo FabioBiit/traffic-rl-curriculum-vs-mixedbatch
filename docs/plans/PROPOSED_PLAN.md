@@ -2897,7 +2897,7 @@
 
 ### Q&A 11-06-2026
 
-> La valutiamo la run e stiliamo un nuovo piano per trovare un compromesso accettabile (che non degeneri veicoli e pedoni) per ottimizzare le SR di V e P.
+> Valutiamo la run "carla_mappo_20260610_192146" e stiliamo un nuovo piano per trovare un compromesso accettabile (che non degeneri veicoli e pedoni) per ottimizzare le SR di V e P.
 
 Alcune fix pedonali possono modificare la SR veicolo perché pedoni e veicoli condividono scena e hazard channel:
 
