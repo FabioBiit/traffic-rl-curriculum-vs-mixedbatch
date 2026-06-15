@@ -47,7 +47,6 @@ Changelog v0.2:
   - _advance_pedestrian_waypoint() replaces _advance_pedestrian_goal()
   - _pedestrian_reward() v5: waypoint-based, aligned with vehicle reward
   - _route_completion() unified for both agent types
-  - _NavPoint helper class for pedestrian waypoint interface compatibility
   - Reward v5 for both vehicles and pedestrians (5 terms each)
   - Pedestrian route completion now terminates episode
 """
@@ -88,18 +87,6 @@ N_NEARBY_VEHICLES_FOR_VEHICLE = 3
 N_NEARBY_VEHICLES_FOR_PEDESTRIAN = 2
 N_NEARBY_PEDESTRIANS_FOR_VEHICLE = 2
 PEDESTRIAN_MAX_SPEED = 5.0  # m/s (~18 km/h, running)
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-class _NavPoint:
-    """Lightweight wrapper to give a carla.Location the same .transform.location
-    interface as carla.Waypoint, so pedestrian routes reuse vehicle WP logic."""
-    __slots__ = ["transform"]
-
-    def __init__(self, location):
-        self.transform = type("T", (), {"location": location})()
 
 # ---------------------------------------------------------------------------
 # Config
@@ -401,6 +388,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
             if self._traffic_spawned:
                 self._cleanup_traffic()
             respawn_traffic = True
+
+        # P0: seed CARLA's pedestrian/navmesh RNG before any spawn so RL-pedestrian
+        # spawn points and routes are reproducible per episode (and vary across
+        # episodes via reset_count). CARLA 0.9.16: "Should be set before pedestrians
+        # are spawned" (world.yml). Mirrors the (seed + reset_count) pattern at _setup_agents.
+        ped_seed = int(self.cfg["traffic"].get("seed", 42)) + int(self._reset_count)
+        self._world.set_pedestrians_seed(ped_seed)
 
         self._cleanup_agents()
         self._setup_agents()
@@ -950,34 +944,6 @@ class CarlaMultiAgentEnv(ParallelEnv):
 
         return None
 
-    def _setup_pedestrian_route_fallback(self, ad: AgentData, route_len: int):
-        """Fallback to navmesh sampling if no sidewalk waypoint is resolvable."""
-        ad.route_waypoints = []
-        ad.goal_location = None
-        current_loc = ad.actor.get_location()
-
-        for _ in range(route_len):
-            goal = None
-            for _ in range(20):
-                candidate = self._world.get_random_location_from_navigation()
-                if candidate and current_loc.distance(candidate) > 5.0:
-                    goal = candidate
-                    break
-            if goal is None:
-                break
-            ad.route_waypoints.append(_NavPoint(goal))
-            current_loc = goal
-
-        if ad.route_waypoints:
-            ad.goal_location = ad.route_waypoints[0].transform.location
-        else:
-            loc = ad.actor.get_location()
-            ad.goal_location = carla.Location(x=loc.x + 30.0, y=loc.y, z=loc.z)
-            ad.route_waypoints = [_NavPoint(ad.goal_location)]
-
-        self._update_route_length_metrics(ad)
-        ad.prev_location = ad.actor.get_location()
-
     def _reset_route_diagnostics(self, ad: AgentData):
         ad.route_candidate_attempts_configured = 0
         ad.route_candidate_attempts_used = 0
@@ -1095,64 +1061,90 @@ class CarlaMultiAgentEnv(ParallelEnv):
         ad.prev_location = ad.actor.get_location()
 
     def _setup_pedestrian_route(self, ad: AgentData):
-        """Build a pedestrian route by chaining sidewalk waypoints like vehicles."""
-        # Block 5.1: distance-based sidewalk routing (if configured)
+        """Build a pedestrian route via the crosswalk-aware sidewalk planner (P1).
+
+        The planner chains sidewalk waypoints and crosses crosswalks at dead-ends
+        (route_planner.plan_pedestrian_route_by_distance). If an origin cannot yield
+        a route >= floor, the pedestrian is respawned at a new navmesh location
+        (bounded, on the P0-seeded RNG); the final attempt accepts any contiguous
+        chain. The disconnected-navmesh fallback is removed.
+        """
         self._reset_route_diagnostics(ad)
         ped_dist = self.cfg["episode"].get("route_distance_m_pedestrian")
         ad.route_target_distance_m = float(ped_dist or 0.0)
-        ad.route_source = "legacy_chain"
-        if ped_dist is not None and self._route_planner is not None:
-            origin = ad.actor.get_location()
-            ped_route_min_ratio = float(
-                self.cfg["episode"].get("pedestrian_route_min_ratio", 0.5)
-            )
-            wps = self._route_planner.plan_pedestrian_route_by_distance(
+
+        if ped_dist is None or self._route_planner is None:
+            # Distance routing disabled: single forward sidewalk step.
+            start_wp = self._get_sidewalk_waypoint(ad.actor.get_location())
+            nxts = ([w for w in start_wp.next(2.5)
+                     if w.lane_type == carla.LaneType.Sidewalk] if start_wp else [])
+            ad.route_waypoints = nxts[:1] or ([start_wp] if start_wp else [])
+            ad.current_wp_idx = 0
+            ad.goal_location = (ad.route_waypoints[0].transform.location
+                                if ad.route_waypoints else ad.actor.get_location())
+            self._update_route_length_metrics(ad)
+            ad.prev_location = ad.actor.get_location()
+            ad.route_source = "legacy_chain"
+            return
+
+        ped_min_ratio = float(self.cfg["episode"].get("pedestrian_route_min_ratio", 0.5))
+        max_respawn = int(self.cfg["episode"].get("pedestrian_max_respawn", 3))
+
+        origin = ad.actor.get_location()
+        wps, n_cross, respawned = None, 0, False
+        for attempt in range(max_respawn + 1):
+            ratio = ped_min_ratio if attempt < max_respawn else 0.0
+            cand, nc = self._route_planner.plan_pedestrian_route_by_distance(
                 origin, ped_dist, self._map,
-                min_route_ratio=ped_route_min_ratio,
+                min_route_ratio=ratio, return_meta=True,
             )
-            if wps is not None and len(wps) >= 2:
-                ad.route_waypoints = wps
-                ad.current_wp_idx = 0
-                ad.goal_location = wps[0].transform.location
-                self._update_route_length_metrics(ad)
-                ad.prev_location = ad.actor.get_location()
-                ad.route_source = "sidewalk_distance"
-                return
-            ad.route_source = "sidewalk_fallback"
-            logger.debug("Ped distance routing fallback for %s", ad.agent_id)
-        elif ped_dist is not None:
-            ad.route_source = "sidewalk_fallback"
-
-        route_len = self.cfg["episode"].get("route_length_pedestrian", 10)
-        ad.route_waypoints = []
-        ad.current_wp_idx = 0
-        ad.goal_location = None
-
-        start_wp = self._get_sidewalk_waypoint(ad.actor.get_location())
-        if start_wp is None:
-            self._setup_pedestrian_route_fallback(ad, route_len)
-            return
-
-        current_wp = start_wp
-
-        for _ in range(route_len):
-            nexts = [
-                wp for wp in current_wp.next(2.5)
-                if wp.lane_type == carla.LaneType.Sidewalk
-            ]
-            if not nexts:
+            if cand is not None and len(cand) >= 2:
+                wps, n_cross, respawned = cand, nc, attempt > 0
                 break
+            new_loc = self._world.get_random_location_from_navigation()
+            if new_loc is not None:
+                origin = new_loc
 
-            current_wp = nexts[0]
-            ad.route_waypoints.append(current_wp)
+        if wps is None:
+            # Town03 audit: 100% resolve. Bounded last resort: draw origins until a
+            # contiguous chain exists (never the disconnected-navmesh fallback).
+            for _ in range(20):
+                new_loc = self._world.get_random_location_from_navigation()
+                if new_loc is None:
+                    continue
+                cand, nc = self._route_planner.plan_pedestrian_route_by_distance(
+                    new_loc, ped_dist, self._map, min_route_ratio=0.0, return_meta=True,
+                )
+                if cand is not None and len(cand) >= 2:
+                    origin, wps, n_cross, respawned = new_loc, cand, nc, True
+                    break
 
-        if not ad.route_waypoints:
-            self._setup_pedestrian_route_fallback(ad, route_len)
-            return
+        if wps is None:
+            # Degenerate origin (no sidewalk chain anywhere): single forward step.
+            start_wp = self._get_sidewalk_waypoint(origin)
+            nxts = ([w for w in start_wp.next(2.5)
+                     if w.lane_type == carla.LaneType.Sidewalk] if start_wp else [])
+            wps = nxts[:1] or ([start_wp] if start_wp else [])
+            if not wps:
+                road_wp = self._map.get_waypoint(origin, project_to_road=True)
+                wps = [road_wp] if road_wp is not None else []
+            respawned = True
 
-        ad.goal_location = ad.route_waypoints[0].transform.location
+        if respawned and wps:
+            ad.actor.set_location(origin)  # move ped to its respawned route start
+
+        ad.route_waypoints = wps
+        ad.current_wp_idx = 0
+        ad.goal_location = wps[0].transform.location if wps else origin
         self._update_route_length_metrics(ad)
-        ad.prev_location = ad.actor.get_location()
+        ad.prev_location = origin
+
+        if respawned:
+            ad.route_source = "respawn"
+        elif n_cross > 0:
+            ad.route_source = "sidewalk_crosswalk"
+        else:
+            ad.route_source = "sidewalk_distance"
 
     # ------------------------------------------------------------------
     # Traffic (NPC)
