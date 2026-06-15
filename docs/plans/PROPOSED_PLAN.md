@@ -2895,9 +2895,241 @@
 
 ##########################################################################################################################################
 
+### Q&A 15-06-2026
+
+❯ Questo è l'output dello script: (venv) PS                                                                                 
+  C:\Users\kyros\OneDrive\Desktop\TESI_PROJECT_traffic-rl-curriculum-vs-mixedbatch\traffic-rl-curriculum-vs-mixedbatch>     
+  python carla_core/scripts/verify-check-test/audit_sidewalk_chains.py                                                      
+  INFO:  Found the required file in cache!  Carla/Maps/Nav/Town10HD_Opt.bin                                                 
+  INFO:  Found the required file in cache!  Carla/Maps/Nav/Town03.bin                                                       
+  # audit_sidewalk_chains | map=Carla/Maps/Town03 | n_seeds=600 | spacing=2.5 | pedestrians_seed=set                        
+    ... 100/600 seeds (0.1s)                                                                                                
+    ... 200/600 seeds (0.1s)                                                                                                
+    ... 300/600 seeds (0.2s)                                                                                                
+    ... 400/600 seeds (0.2s)                                                                                                
+    ... 500/600 seeds (0.3s)                                                                                                
+    ... 600/600 seeds (0.3s)                                                                                                
+                                                                                                                            
+  ## sampling: requested=600  navmesh_none=0  resolved=600/600 (100.0% of spawned)                                          
+     resolve branch: exact=550  projected=50  | spawn->sidewalk dist p50=0.56m p90=0.97m max=18.81m                         
+     greedy reach  (m): p10=7.5 p50=41.9 p90=266.6 max=509.3  deadend=91.0%                                                 
+     branch reach  (m): p10=7.5 p50=40.0 p90=121.1 max=334.3  DFS_capped=0.0%                                               
+     branching: mean_max_outdeg=0.97  (>1 means greedy next[0] discards alternatives)                                       
+                                                                                                                            
+  ## per-target rates  (denominator = all 600 samples; unresolved/navmesh_none count as failure)                            
+                                                                                                                            
+    target=30m (easy)  predicted CURRENT fallback=21.00%  | empirical r0610=21.08%                                          
+        lo  band[lo*T]  greedy_ok  branch_ok   recover   respawn                                                            
+      0.50       15.0m      79.0%      77.5%      0.0%     22.5%                                                            
+      0.60       18.0m      73.0%      71.3%      0.0%     28.7%                                                            
+      0.70       21.0m      69.5%      67.7%      0.0%     32.3%                                                            
+      0.80       24.0m      65.7%      63.8%      0.0%     36.2%                                                            
+      0.90       27.0m      62.2%      60.3%      0.0%     39.7%                                                            
+      1.00       30.0m      59.8%      58.0%      0.0%     42.0%                                                            
+      1.10       33.0m      57.2%      55.3%      0.0%     44.7%                                                            
+      1.20       36.0m      54.5%      52.7%      0.0%     47.3%                                                            
+                                                                                                                            
+    target=60m (medium)  predicted CURRENT fallback=40.17%  | empirical r0610=38.62%                                        
+        lo  band[lo*T]  greedy_ok  branch_ok   recover   respawn                                                            
+      0.50       30.0m      59.8%      58.0%      0.0%     42.0%                                                            
+      0.60       36.0m      54.5%      52.7%      0.0%     47.3%                                                            
+      0.70       42.0m      50.0%      48.2%      0.0%     51.8%                                                            
+      0.80       48.0m      44.2%      42.2%      0.0%     57.8%                                                            
+      0.90       54.0m      41.2%      39.2%      0.0%     60.8%                                                            
+      1.00       60.0m      38.3%      36.3%      0.0%     63.7%                                                            
+      1.10       66.0m      34.7%      31.0%      0.0%     69.0%                                                            
+      1.20       72.0m      32.7%      28.5%      0.0%     71.5%                                                            
+                                                                                                                            
+    target=100m (hard)  predicted CURRENT fallback=56.50%  | empirical r0610=52.48%                                         
+        lo  band[lo*T]  greedy_ok  branch_ok   recover   respawn                                                            
+      0.50       50.0m      43.5%      41.5%      0.0%     58.5%                                                            
+      0.60       60.0m      38.3%      36.3%      0.0%     63.7%                                                            
+      0.70       70.0m      33.3%      29.5%      0.0%     70.5%                                                            
+      0.80       80.0m      29.5%      25.5%      0.0%     74.5%                                                            
+      0.90       90.0m      26.0%      21.0%      0.0%     79.0%                                                            
+      1.00      100.0m      24.8%      19.0%      0.0%     81.0%                                                            
+      1.10      110.0m      22.3%      16.7%      0.0%     83.3%                                                            
+      1.20      120.0m      20.2%      16.0%      0.0%     84.0%                                                            
+                                                                                                                            
+  # wrote audit_sidewalk_chains_Town03_20260615_095912.json  (600 records, 0.4s total)                                      
+
+● L'audit ha prodotto un risultato decisivo che cambia il piano. Lo script si è auto-validato e ha ucciso la mezza-proposta
+  centrale del report.
+
+  Verdetto: P1 "branch-aware" è empiricamente morto
+
+  ┌─────────────────────────┬────────────────────────────────────────────────┬─────────────────────────────────────────┐
+  │        Evidenza         │                     Numero                     │               Conseguenza               │
+  ├─────────────────────────┼────────────────────────────────────────────────┼─────────────────────────────────────────┤
+  │ Modello validato        │ fallback predetto 21.0 / 40.2 / 56.5% vs       │ il modello offline è fedele → mi fido   │
+  │                         │ empirico r0610 21.1 / 38.6 / 52.5%             │ del resto                               │
+  ├─────────────────────────┼────────────────────────────────────────────────┼─────────────────────────────────────────┤
+  │ Le sidewalk NON si      │ mean_max_outdeg = 0.97 (<1)                    │ next()[0] non scarta quasi nulla        │
+  │ ramificano              │                                                │                                         │
+  ├─────────────────────────┼────────────────────────────────────────────────┼─────────────────────────────────────────┤
+  │ Branch-aware non        │ recover = 0.0% a ogni target e ogni banda      │ esplorare i rami è inutile su Town03    │
+  │ recupera niente         │                                                │                                         │
+  ├─────────────────────────┼────────────────────────────────────────────────┼─────────────────────────────────────────┤
+  │ Il collo di bottiglia è │ 91% dead-end; catena contigua honest (branch   │ le sidewalk sono segmenti per-isolato   │
+  │  la geometria           │ simple-path) p50 = 40m, p90 = 121m             │ che si interrompono ai junction         │
+  └─────────────────────────┴────────────────────────────────────────────────┴─────────────────────────────────────────┘
+
+  Il next(spacing) filtrato Sidewalk segue la topologia di corsia, che non attraversa gli incroci: la connettività
+  cross-junction esiste solo via crosswalk/navmesh. Risultato: la mediana di sidewalk contigua è ~40m, quindi i target
+  pedoni 60/100m eccedono la geometria di Town03.
+
+  Cosa muore del report
+
+  La proposta "validità stretta + respawn" è geometricamente insostenibile su medium/hard: stringere la banda a lo=1.0 porta
+  il respawn a 42% (medium) e 81% (hard) — e ogni respawn ripesca dalla stessa distribuzione, quindi il loop non converge.
+  Non è un problema di policy né di ricerca: a 100m solo il 19% degli spawn ha una catena contigua. L'11% di SR pedoni hard
+  non è (solo) policy debole — è un task in parte geometricamente impossibile. Questo è il pezzo di evidenza che mancava a
+  f51ac88.
+
+  Riallineamento — le opzioni reali (non più branch-aware)
+
+  - A — Crosswalk stitching (principled): cucire i segmenti sidewalk attraverso i crosswalk (map.get_crosswalks(), API
+  0.9.16) per ricostruire route reali da 60/100m. Se funziona, teniamo i target veri. Costo: prima un mini-spike offline
+  (estendo l'audit) per misurare se attraversare i crosswalk alza davvero la reach contigua — zero rischio, nessuna modifica
+  env.
+  - C — Adaptive chain (pragmatic): usare la catena contigua greedy com'è (target adattivo = lunghezza raggiungibile, floor
+  ~12-15m), eliminando il fallback navmesh degenere (la causa diretta della SR=0%); respawn solo se nemmeno il floor è
+  raggiungibile. Diff narrow su route_planner.py/_setup_pedestrian_route, nessun codice veicolo. Route più corte ma oneste e
+  completabili.
+  - B — Decouple target pedoni (15/30/60, scollegati dai veicoli): coerente con l'audit (easy 15m → respawn 22%),
+  combinabile con C. È la metà "buona" di f51ac88, ma senza l'hack route_short-as-success e ora giustificata empiricamente.
+
+  Tutte e tre restano architecture-neutral e gated dal frozen A/B (il coupling veicolo via canale hazard va comunque
+  misurato).
+
+
+### Q&A 12-06-2026
+
+## Answer Claude F5
+
+> La mia valutazione: il report è solido, lo confermo quasi integralmente sui dati — con 3 precisazioni fattuali e 4 
+  riallineamenti di protocollo
+
+  Ho verificato ogni claim del report contro episodes.jsonl (r0610/r0528/step5) e contro il codice. Nessun file modificato
+  (plan-only).
+
+  1. Claim del report verificati ✓
+
+  ┌────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────┐
+  │                   Claim                    │                                Verdetto                                 │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Ped SR su sidewalk_fallback = 0%           │ ✓ esatto (0.00%, n=3534; identico in r0528. In step5 era 56.98% raw =   │
+  │                                            │ l'inflazione che Block-5.1 ha rimosso)                                  │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Fallback hard 52.48%                       │ ✓ esatto (easy 21.08%, medium 38.62%)                                   │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Controfattuale 81.35 / 51.09 / 23.14       │ ✓ esatto (SR su sidewalk_distance per livello)                          │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Delta r0529 vs r0528 (ped +14.11/+41.29,   │ ✓ tutti coincidono con i miei ricalcoli                                 │
+  │ veh −6.11/−9.70, s+t +3.61/+11.95)         │                                                                         │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Planner segue solo nexts[0]                │ ✓ route_planner.py:291 (catena greedy, nessuna esplorazione rami)       │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Fallback navmesh sconnesso                 │ ✓ carla_multi_agent_env.py:959-976 (punti casuali, vincolo solo >5 m)   │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Lifecycle: terminati rimossi ma non        │ ✓ carla_multi_agent_env.py:622-623; cleanup solo a fine episodio        │
+  │ fermati/distrutti                          │                                                                         │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │ Policy già separate, policies_to_train     │ ✓ mappo_runtime.py:294-309 → finetune ped-only = modifica di 1 riga     │
+  ├────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────┤
+  │                                            │ ✓ zero occorrenze; API confermata nella source 0.9.16                   │
+  │ set_pedestrians_seed assente nel repo      │ (PythonAPI/docs/world.yml): "Should be set before pedestrians are       │
+  │                                            │ spawned"                                                                │
+  └────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────┘
+
+  2. Tre precisazioni fattuali (affinano il report)
+
+  1. sidewalk_fallback copre DUE percorsi di codice, non uno. Quando il planner by-distance fallisce (env:1121), si passa
+  prima alla catena legacy route_length_pedestrian=10 × 2.5 m (env:1138-1147, max ~25 m) e solo se anche questa fallisce al
+  navmesh sconnesso (env:953). I dati lo mostrano: ratio fallback mediano 0.18–0.22 (catene legacy degeneri, dominanti) ma
+  media 1.3–10.3 (outlier navmesh fino a ~309 m). Il fix P1 deve eliminare/sostituire entrambi.
+  2. Il "fallback SR = 0%" è strutturale, non (solo) comportamentale: il 56% dei fallback peds arriva in fondo alla sua
+  route ma viene demotato a route_short (ratio < 0.5) dalla classificazione d84fa3a. Quindi il margine recuperabile è in
+  parte già "moto esistente" su task degenere — rafforza la tesi che il problema è il task, non la policy.
+  3. Il lifecycle è più grave di come descritto: gli attori terminati non solo non vengono distrutti — proseguono con
+  l'ultimo control applicato (i walker completati continuano a camminare "fantasma" fino a fine episodio, nessuno azzera il
+  WalkerControl). Con P1 i completamenti pedonali aumentano → più ghost-walkers in scena → il canale hazard cambia
+  composizione. L'audit che il report chiede è necessario, e va fatto prima del frozen A/B (è un confound dell'A/B stesso).
+
+  3. Nuova evidenza empirica (non nel report): il coupling misurato è favorevole
+
+  Veh SR nello stesso episodio in funzione del numero di pedoni fallback (r0610):
+
+  ┌─────────┬──────────────────┬───────┬───────┬────────────────────────────┐
+  │ Livello │       fb=0       │ fb=1  │ fb=2  │            fb=3            │
+  ├─────────┼──────────────────┼───────┼───────┼────────────────────────────┤
+  │ easy    │ 68.82 (coll 7.5) │ 66.91 │ 62.57 │ 54.55 (coll 18.2, n=11 ep) │
+  ├─────────┼──────────────────┼───────┼───────┼────────────────────────────┤
+  │ medium  │ 63.65            │ 62.12 │ 61.66 │ 64.24                      │
+  ├─────────┼──────────────────┼───────┼───────┼────────────────────────────┤
+  │ hard    │ 53.75            │ 54.89 │ 53.79 │ 55.34                      │
+  └─────────┴──────────────────┴───────┴───────┴────────────────────────────┘
+
+  Su easy i fallback correlano con esiti veicolo peggiori (collision raddoppia); su medium/hard piatto. Non è causale (la
+  zona di spawn confonde), ma non c'è alcun segnale che pedoni su route valide danneggino i veicoli — semmai il contrario.
+  Inoltre le route valide attuali sono già quasi a target (ratio mediano 0.92–0.97), quindi P1 non allunga il task valido:
+  converte route degeneri in route ben poste.
+
+  4. Riallineamenti di protocollo (le mie correzioni al report)
+
+  1. Gate frozen-checkpoint: renderli asimmetrici. Sul checkpoint congelato i gate pedonali comportamentali (+5 pp SR, −5 pp
+  s+t) misurano transfer zero-shot su una distribuzione di route nuova: possono fallire anche se il fix è giusto (la policy
+  attuale su hard collassa a 0.72 m/s). Vincolanti sul frozen solo: (a) meccanismo planner (fallback ≤1%, route_short ~0,
+  ratio mediano ≥0.9, latenza pianificazione accettabile), (b) non-degrado veicoli per livello (≥−2 pp SR, ≤+2 s+t, ≤+1
+  coll/off — qui il frozen è pienamente significativo: task veicolo invariato), (c) ped SR ≥ baseline come sanity. Il +5 pp
+  diventa gate della fase training.
+  2. No "rigenerare la scena" (parte 2, punto 5): è rejection sampling della scena → biasa la distribuzione verso scene
+  ped-friendly e contraddice il punto 7 della parte 1. Tenere la versione parte 1: ricampionare solo quel pedone, con stream
+  RNG dedicato — usando l'infrastruttura già esistente SeedSequence([traffic_seed, reset_count, crc32(agent_id)]), così le
+  route dei veicoli restano byte-identiche negli A/B appaiati.
+  3. Banda target ≤ L ≤ target+spacing troppo stretta → rischio loop di respawn su Town03 (non sappiamo quanto siano
+  frequenti catene contigue ≥100 m). Prima di scrivere il planner serve un audit offline di misura (script standalone, zero
+  modifiche env): da N punti sidewalk, esplorazione di tutti i rami next(spacing) con dedup, distribuzione delle lunghezze
+  contigue raggiungibili → calibra la banda (propongo partire da [0.9, 1.5]·target, coerente col vehicle_route_max_ratio=2.0
+  esistente) e dice se 100 m hard è geometricamente sostenibile.
+  4. P0 va applicato per-reset, non una tantum: set_pedestrians_seed(seed_base + reset_count) prima degli spawn/draw
+  (pattern già usato nel fix eval seed_base + reset_count). Copre walker NPC (spawn env:1189, goal env:1209) e ogni draw
+  navmesh residuo; sync_mode è già attivo. Concordo: nessun confronto diretto con run non ped-seeded.
+
+  5. Sequenza operativa che propongo (attendo tua approvazione, poi preparo i piani)
+
+  P0-audit  (misura, no env change): script catene sidewalk Town03 + audit lifecycle ghost-walking
+  P0        set_pedestrians_seed (world-load + per-reset)                    [riproducibilità]
+  P1        planner branch-aware + respawn pedone (RNG dedicato),
+            eliminati entrambi i fallback path; distanze 30/60/100 INVARIATE [env correctness]
+  Frozen A/B su checkpoint r0610 step_003000615, seed appaiati, 4 scenari   [gate punto 4.1]
+  Finetune ped-only da r0610 (~300–500K, policies_to_train=["pedestrian_policy"],
+            obs invariate ⇒ checkpoint-compatibile)                          [gate: ped med/hard ≥+5pp,
+                                                                              veh per-livello ≥−2/+2/+1]
+  Solo dopo PASS: replica 3M from-scratch per la tesi
+
+  Nota sul finetune: congelare i pesi veicolo impedisce il forgetting ma non congela la veh SR (coupling ambientale) — il
+  gate veicolo per livello va misurato comunque, come dice correttamente il report. Raggio waypoint e reward pedonale
+  restano candidati successivi e isolati (concordo).
+
+  Bottom line: il report è affidabile (tutti i numeri riprodotti esattamente) e la direzione P0→P1→frozen A/B→finetune
+  ped-only è quella giusta e la più protettiva per i veicoli. I miei riallineamenti: gate frozen asimmetrici, niente
+  scene-regeneration, banda di accettazione calibrata da un audit offline preliminare, P0 per-reset con stream per-agente, e
+  audit lifecycle promosso a prerequisito (ghost-walking verificato nel codice).
+  
+
 ### Q&A 11-06-2026
 
 > Valutiamo la run "carla_mappo_20260610_192146" e stiliamo un nuovo piano per trovare un compromesso accettabile (che non degeneri veicoli e pedoni) per ottimizzare le SR di V e P.
+
+-> TOASK CLAUDE
+
+Mantenendo questa SR ottimale per i veicoli dobbiamo cerca di fixare la SR pedoni dobbiamo, trovando una "via di mezzo"
+  che non leda la SR dei veicoli attuali, ma che massimizzi entrambe. Come possiamo procedere? Effettuato le tue
+  considerazioni poi analizza questo report in chat e  riallinea, se necessariom, la tua analisi di conseguenza se ci sono
+  migliorire o proposte sensate <report> [Pasted text #1 +198 lines] </report> <contraints>-Attieniti alle best practice
+  di programmazione in python, alle guide ufficiali CARLA, ed effettua le tue considerazioni basandoti sui dati empirici,
+  cita solo fonti verificate e affini al nostro progetto di guida autonoma MAPPO. -No verbose.</contraints>
 
 Alcune fix pedonali possono modificare la SR veicolo perché pedoni e veicoli condividono scena e hazard channel:
 
