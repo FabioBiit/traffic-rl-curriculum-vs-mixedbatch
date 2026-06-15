@@ -2897,7 +2897,7 @@
 
 ### Q&A 15-06-2026
 
-❯ Questo è l'output dello script: (venv) PS                                                                                 
+> Questo è l'output dello script: (venv) PS                                                                                 
   C:\Users\kyros\OneDrive\Desktop\TESI_PROJECT_traffic-rl-curriculum-vs-mixedbatch\traffic-rl-curriculum-vs-mixedbatch>     
   python carla_core/scripts/verify-check-test/audit_sidewalk_chains.py                                                      
   INFO:  Found the required file in cache!  Carla/Maps/Nav/Town10HD_Opt.bin                                                 
@@ -3001,6 +3001,66 @@
 
   Tutte e tre restano architecture-neutral e gated dal frozen A/B (il coupling veicolo via canale hazard va comunque
   misurato).
+
+#### Esito spike crosswalk → Opzione A confermata (decisione utente: A)
+
+Spike (audit esteso `--crosswalks`, Town03, seed 999): 73 crosswalk, `used_crossing` 58.7%, mediana reach contigua **40m → 109m**. Fallback alla regola attuale `min_route_ratio=0.5`: easy 21%→5.8%, medium 40%→11.5%, hard 56%→23.0%. Target pieno (lo=1.0): easy 59.8→88.5%, medium 38.3→73.2%, hard 24.8→56.5%. Reward/termination compatibili col crossing: nessuna terminazione offroad pedoni (`_check_done` env:2034-2037 = route_complete + collisione; offroad è vehicle-only 2022-2031); road penalty −0.3/step (env:1990) dominato da +50/waypoint (env:1967). Trade-off intrinseco ("via di mezzo"): route reali ⇒ il pedone attraversa la strada ⇒ più interazione veicolo (hazard channel + rischio collisione ped) → gestito da frozen A/B (misura coupling) + finetune ped-only (ped impara crossing sicuro; veicolo congelato/protetto, SR comunque misurata).
+
+### PIANO — P1-Crosswalk (sostituisce il P1 branch-aware, falsificato dall'audit)
+
+**Obiettivo**: convertire le route fallback degeneri in route sidewalk contigue reali cucendo gli attraversamenti; distanze 30/60/100 m invariate.
+
+**Modifiche** (≤150 parole):
+- `route_planner.py::plan_pedestrian_route_by_distance`: al dead-end della catena greedy, trova il crosswalk più vicino entro `cross_radius` (~6 m) via `carla.Map.get_crosswalks()` (parsing poligoni + cache per-mappa); genera waypoint intermedi sull'attraversamento (passo `spacing`) fino al curb opposto; risolvi a sidewalk e prosegui la catena. Cap `max_cross` attraversamenti; dedup celle anti-loop. `min_route_ratio` resta 0.5 (banda permissiva).
+- `_setup_pedestrian_route` (env:1097): se neanche col crossing si raggiunge il floor, **respawn solo quel pedone** su RNG dedicato `SeedSequence([traffic_seed, reset_count, crc32(agent_id)])`; eliminato il fallback navmesh sconnesso (env:953-969) e la catena legacy (env:1138-1147).
+- Reward, obs, max_steps, codice veicolo: INVARIATI.
+
+**Gate frozen A/B** (checkpoint r0610 `step_003000615`, seed appaiati, 4 scenari): meccanismo (ped fallback ≤1%, route_short ~0, ratio mediano ≥0.9); **veicoli per-livello ≥−2pp SR / ≤+2 s+t / ≤+1 coll·off** (binding); ped SR ≥ baseline (sanity); integrità 6/6, zero NaN/inf. Coupling-crossing in primo piano. Il `+5pp` ped medium/hard è gate della fase finetune, non del frozen.
+
+**Sequenza**: P0 (`set_pedestrians_seed` per-reset) → P1-Crosswalk → frozen A/B → finetune ped-only (~300-500K, `policies_to_train=["pedestrian_policy"]`, obs invariate ⇒ checkpoint-compatibile) → solo dopo PASS, replica 3M from-scratch. Plan-only; run lanciate dall'utente.
+
+
+● Stato attuale: P0 + P1 implementati e compilati, ma mai eseguiti a runtime (uncommitted). Per la 3M from-scratch della
+  tesi, il piano che hai approvato mette 2 gate prima. Ecco cosa manca, in ordine:
+
+  ┌─────┬────────────────────────────────────────────────────┬──────────────────┬────────────────────┬────────────────┐
+  │  #  │                        Item                        │       Tipo       │       Effort       │     Stato      │
+  ├─────┼────────────────────────────────────────────────────┼──────────────────┼────────────────────┼────────────────┤
+  │ 1   │ Smoke test P0+P1 (pochi reset + ~5–10K step)       │ blocker tecnico  │ minuti–~1h         │ ❌ subito      │
+  ├─────┼────────────────────────────────────────────────────┼──────────────────┼────────────────────┼────────────────┤
+  │ 2   │ Commit P0+P1 su branch dedicato                    │ operativo        │ minuti             │ ❌             │
+  ├─────┼────────────────────────────────────────────────────┼──────────────────┼────────────────────┼────────────────┤
+  │ 3   │ Audit ghost-walking (+ eventuale fix stop/destroy) │ prerequisito A/B │ ~1–2h              │ ❌             │
+  ├─────┼────────────────────────────────────────────────────┼──────────────────┼────────────────────┼────────────────┤
+  │ 4   │ Frozen A/B su r0610 (gate veicolo vincolante)      │ gate scientifico │ ore (4×100 ep)     │ ❌             │
+  ├─────┼────────────────────────────────────────────────────┼──────────────────┼────────────────────┼────────────────┤
+  │ 5   │ Finetune ped-only ~300–500K (gate ped +5pp)        │ gate scientifico │ ~1/10–1/6 della 3M │ ❌             │
+  ├─────┼────────────────────────────────────────────────────┼──────────────────┼────────────────────┼────────────────┤
+  │ 6   │ 3M from-scratch                                    │ run finale       │ = step5/r0610      │ gated da #4–#5 │
+  └─────┴────────────────────────────────────────────────────┴──────────────────┴────────────────────┴────────────────┘
+
+  Il vero "manca subito" è #1. Il codice P1 non è mai girato: compila e l'integrazione è verificata, ma il path live (loop
+  respawn, set_location mid-setup, generazione waypoint crossing, set_pedestrians_seed nel reset) è non eseguito. Una run
+  corta deve confermare: nessuna eccezione, route_source ∈ {sidewalk_distance, sidewalk_crosswalk, respawn} con
+  distribuzione sana, route len sane, no NaN/inf, integrità 6/6. Senza questo, una run lunga è un azzardo.
+
+  Perché NON saltare dritti alla 3M: è la run più costosa. Il frozen A/B (#4) è l'assicurazione economica — misura Δveh SR
+  per livello sul checkpoint r0610 in poche ore, zero training. Se P1 sfora il gate veicolo (≥−2pp), lo scopri lì e ritocchi
+  (max_cross↓, crossing solo easy/medium), invece di bruciare l'intera 3M. Per questo il piano lo antepone.
+
+  Config da fissare alla 3M (già con default sensati): pedestrian_max_respawn=3, cross_radius/max_cross=6/8 — se li vuoi in
+  run_config.json per riproducibilità li espongo in curriculum_batch.yaml; seed 999; distanze 30/60/100 invariate; entropy
+  schedule fraction-based (già a 83%); comando identico a step5/r0610 (--mode curriculum --difficulty path --timesteps
+  3000000 --seed 999).
+
+  Sintesi:
+  - Alla 3M "in sicurezza" (consigliato): #1 + #3 + #4 + #5 ≈ mezza giornata–1 giorno di tempo macchina (escluso il
+  finetune) + il finetune #5.
+  - Minimo tecnico per lanciarla senza rete (sconsigliato): solo #1 (smoke) + #2 (commit), poi parte — ma senza misura del
+  rischio veicolo.
+
+  Immediato: preparo lo script di smoke-check (lanci una run cortissima, poi consolido route_source/NaN/integrità da
+  episodes.jsonl) per sbloccare #1. Procedo?
 
 
 ### Q&A 12-06-2026
