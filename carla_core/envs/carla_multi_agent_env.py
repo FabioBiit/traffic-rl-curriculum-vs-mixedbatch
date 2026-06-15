@@ -516,6 +516,14 @@ class CarlaMultiAgentEnv(ParallelEnv):
             terminations[agent_id] = term
             truncations[agent_id] = trunc
 
+            # Ghost-walking fix: stop a pedestrian the moment it terminates. Its
+            # WalkerControl otherwise persists (no further action once removed from
+            # self.agents below) and it keeps walking until episode-end cleanup,
+            # perturbing the vehicle hazard channel. Pedestrian-only; vehicles
+            # unchanged. The zero-speed control persists for the rest of the episode.
+            if term and ad.agent_type == "pedestrian" and ad.actor and ad.actor.is_alive:
+                ad.actor.apply_control(carla.WalkerControl(speed=0.0))
+
              # Path efficiency: optimal / actual (1.0 = perfect, <1.0 = inefficient)
             # Bug fix: stuck agents get 0.0 — metric not meaningful for
             # agents that failed to make real progress along the route.
