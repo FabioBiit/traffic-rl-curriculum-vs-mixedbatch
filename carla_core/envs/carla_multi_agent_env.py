@@ -402,6 +402,13 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 self._cleanup_traffic()
             respawn_traffic = True
 
+        # P0: seed CARLA's pedestrian/navmesh RNG before any spawn so RL-pedestrian
+        # spawn points and routes are reproducible per episode (and vary across
+        # episodes via reset_count). CARLA 0.9.16: "Should be set before pedestrians
+        # are spawned" (world.yml). Mirrors the (seed + reset_count) pattern at _setup_agents.
+        ped_seed = int(self.cfg["traffic"].get("seed", 42)) + int(self._reset_count)
+        self._world.set_pedestrians_seed(ped_seed)
+
         self._cleanup_agents()
         self._setup_agents()
 
