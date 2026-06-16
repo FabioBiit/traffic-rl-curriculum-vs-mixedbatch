@@ -90,6 +90,17 @@ def setup(run_dir: Path, episodes: int, seed_base: int):
 # --------------------------------------------------------------------------- #
 # consolidate
 # --------------------------------------------------------------------------- #
+# Eval reuses episode_id across scenarios (cross-scenario seed collision) and the
+# 'level' field is null in eval logs. Dedup by (episode_id, agent_id, target
+# distance) -- NOT (episode_id, agent_id), which would collapse scenarios -- and
+# recover the level from route_target_distance_m.
+_DIST_LEVEL = {30: "easy", 60: "medium", 100: "hard", 80: "test"}
+
+
+def _dist(rec):
+    return round(float(rec.get("route_target_distance_m") or 0))
+
+
 def _load(jsonl: Path):
     seen = {}
     with jsonl.open("r", encoding="utf-8") as fh:
@@ -98,16 +109,12 @@ def _load(jsonl: Path):
             if not line:
                 continue
             rec = json.loads(line)
-            seen[(rec.get("episode_id"), rec.get("agent_id"))] = rec
+            seen[(rec.get("episode_id"), rec.get("agent_id"), _dist(rec))] = rec
     return list(seen.values())
 
 
 def _level_of(rec):
-    for k in ("level", "scenario", "profile", "map_profile"):
-        v = rec.get(k)
-        if v:
-            return str(v)
-    return "?"
+    return _DIST_LEVEL.get(_dist(rec), f"d{_dist(rec)}")
 
 
 def _mean(xs):
@@ -161,8 +168,9 @@ def consolidate(run_dir: Path):
     print(f"# frozen A/B consolidate | run = {run_dir.name}")
     for a in ARMS:
         recs = data[a]
-        eps = len(set(r.get("episode_id") for r in recs))
-        bad = sum(1 for e, c in Counter(r.get("episode_id") for r in recs).items() if c != 6)
+        ep_keys = Counter((r.get("episode_id"), _dist(r)) for r in recs)
+        eps = len(ep_keys)
+        bad = sum(1 for k, c in ep_keys.items() if c != 6)
         print(f"  [{a:9s}] records={len(recs)} episodes={eps} !=6:{bad} NaN/inf:{_nan_count(recs)}")
 
     split = {a: _split(data[a]) for a in ARMS}
@@ -189,7 +197,7 @@ def consolidate(run_dir: Path):
             gate_pass = False
         tag = ("PASS" if ok else "FAIL") + ("" if binding else " (info)")
         print(f"  {lvl:7s} {b['sr']:7.2f} {c['sr']:7.2f} {d_sr:+6.2f} | "
-              f"{d_st:+6.2f} {d_coll:+6.2f} {d_off:+6.2f}  {tag}")
+              f"{d_st:+6.2f} {d_coll:+6.2f} {d_off:+6.2f}  {tag}  (n {b['n']}/{c['n']})")
 
     # ---- pedestrian mechanism (report) ----
     print("\n## PEDESTRIANS (report; +5pp med/hard is the finetune gate, not here)")
@@ -200,7 +208,7 @@ def consolidate(run_dir: Path):
         if not b or not c:
             continue
         print(f"  {lvl:7s} {b['sr']:7.2f} {c['sr']:7.2f} {c['sr']-b['sr']:+6.2f} "
-              f"{b['short']:7.2f} {c['short']:7.2f}")
+              f"{b['short']:7.2f} {c['short']:7.2f}  (n {b['n']}/{c['n']})")
     print("\n  ped route_source by arm (all levels):")
     for a in ARMS:
         src = Counter(r.get("route_source", "?") for r in split[a]["ped"]["all"])
