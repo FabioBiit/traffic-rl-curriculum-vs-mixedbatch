@@ -143,6 +143,7 @@ class MAPPOTrainingCallbacks(CentralizedCriticCallbacks):
                         "dist_to_next_wp": round(out.get("dist_to_next_wp", 0.0), 4),
                         "speed_kmh": round(out.get("speed_kmh", 0.0), 4),
                         "route_source": out.get("route_source", "unknown"),
+                        "route_n_crossings": int(out.get("route_n_crossings", 0)),
                         "route_target_distance_m": round(
                             out.get("route_target_distance_m", 0.0), 4
                         ),

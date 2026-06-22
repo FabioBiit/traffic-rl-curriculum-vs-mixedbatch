@@ -13,7 +13,9 @@
       "Bash(rtk ls *)",
       "Bash(rtk read *)",
       "Bash(rtk wc *)",
-      "Bash(rtk git *)"
+      "Bash(rtk git *)",
+      "Bash(rtk find *)",
+      "Bash(rtk grep *)"
     ]
   },
   "enableAllProjectMcpServers": true,
