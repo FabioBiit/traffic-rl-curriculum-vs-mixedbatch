@@ -241,7 +241,11 @@ def _build_scenario_env_cfg(
 ):
     scenario_env_cfg = deepcopy(base_env_cfg)
     scenario_env_cfg.setdefault("traffic", {})
-    scenario_env_cfg["traffic"]["seed"] = int(seed_base)
+    # Per-episode seed: child subprocesses each instantiate a fresh env so
+    # _reset_count would always be 1 and traffic.seed identical across episodes,
+    # collapsing 100 episodes/scenario into 100 replays of the same spawn+route.
+    # Mixing reset_count into the seed restores per-episode independence.
+    scenario_env_cfg["traffic"]["seed"] = int(seed_base) + int(reset_count)
     scenario_env_cfg.setdefault("runtime", {})
     scenario_env_cfg["runtime"]["close_mode"] = "robust"
 
@@ -786,6 +790,9 @@ def _looks_like_ray_startup_failure(failure):
         "auto_init_ray",
         "ray.init()",
         "ray.init(",
+        "unable to register worker with raylet",
+        "failed to register worker",
+        "rayletclient",
     )
     return any(token in haystack for token in ray_tokens)
 
@@ -869,13 +876,28 @@ def _run_episode_job(payload):
     )
     _register_eval_runtime()
 
+    # Enable per-agent episode logging in the eval child subprocess. The env's
+    # RLlib callback (mappo_runtime.py) only writes when MAPPO_EPISODE_LOG is
+    # set; without this the eval produces no per-episode jsonl for audit.
+    # Writes to out_dir/eval/episodes.jsonl so the training-side episodes.jsonl
+    # is never touched.
+    eval_log_path = Path(payload["out_dir"]) / "eval" / "episodes.jsonl"
+    eval_log_path.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["MAPPO_EPISODE_LOG"] = str(eval_log_path)
+
+    # Per-episode RLlib seed: each subprocess builds RLlib from scratch and
+    # `.debugging(seed=...)` propagates to torch/np RNGs. With a fixed seed_base
+    # the Gaussian action-noise stream would be identical across episodes
+    # (same torch.manual_seed → same sample sequence), correlating 100 eval
+    # trials per scenario. Mixing episode_idx breaks that correlation so the
+    # 400 episodes are closer to IID samples of the policy distribution.
     eval_config = _build_mappo_config(
         env_cfg=payload["env_cfg"],
         train_cfg=payload["train_cfg"],
         eval_cfg=payload["eval_cfg"],
         n_gpus=int(payload["n_gpus"]),
         n_workers=0,
-        exp_seed=int(payload["seed_base"]),
+        exp_seed=int(payload["seed_base"]) + int(payload["episode_idx"]),
         enable_periodic_evaluation=False,
     )
 
@@ -944,6 +966,7 @@ def _run_episode_eval_subprocess(
         result_path.unlink()
 
     payload = {
+        "out_dir": str(out_dir),
         "checkpoint_path": str(checkpoint_path),
         "env_cfg": deepcopy(env_cfg),
         "train_cfg": deepcopy(train_cfg),
@@ -1166,6 +1189,17 @@ def _run_evaluation_scenarios(
         started_epoch_s=eval_t0,
     )
 
+    # Each eval relaunch starts with a clean per-episode audit log so
+    # accumulated entries from previous runs don't pollute aggregations.
+    # Subprocesses append via MAPPO_EPISODE_LOG (see _run_episode_job).
+    _resolved_out_dir = (
+        _project_root() / out_dir if not Path(out_dir).is_absolute() else Path(out_dir)
+    )
+    _eval_episodes_log = _resolved_out_dir / "eval" / "episodes.jsonl"
+    _eval_episodes_log.parent.mkdir(parents=True, exist_ok=True)
+    if _eval_episodes_log.exists():
+        _eval_episodes_log.unlink()
+
     for map_name, profiles in scenario_groups.items():
         map_rows = raw.setdefault(map_name, {})
         for profile in profiles:
@@ -1319,8 +1353,9 @@ def _run_evaluation_scenarios(
                                         "    [WARN] retrying after Ray startup failure; "
                                         "preserving CARLA server"
                                     )
+                                    time.sleep(8.0)
                                 gc.collect()
-                                time.sleep(2.0)
+                                time.sleep(5.0)
 
                     if not episode_result or not episode_result["ok"]:
                         failure = last_failure or {"reason": "unknown episode worker failure"}

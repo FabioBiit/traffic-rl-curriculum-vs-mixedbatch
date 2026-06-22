@@ -767,6 +767,7 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                     "dist_to_next_wp": info.get("dist_to_next_wp", 0.0),
                     "speed_kmh": info.get("speed_kmh", 0.0),
                     "route_source": info.get("route_source", "unknown"),
+                    "route_n_crossings": info.get("route_n_crossings", 0),
                     "route_target_distance_m": info.get("route_target_distance_m", 0.0),
                     "route_optimal_length_m": info.get("route_optimal_length_m", 0.0),
                     "actual_distance_traveled_m": info.get(
@@ -826,6 +827,7 @@ class CentralizedCriticCallbacks(DefaultCallbacks):
                         "dist_to_next_wp": info.get("dist_to_next_wp", 0.0),
                         "speed_kmh": info.get("speed_kmh", 0.0),
                         "route_source": info.get("route_source", "unknown"),
+                        "route_n_crossings": info.get("route_n_crossings", 0),
                         "route_target_distance_m": info.get("route_target_distance_m", 0.0),
                         "route_optimal_length_m": info.get("route_optimal_length_m", 0.0),
                         "actual_distance_traveled_m": info.get(
