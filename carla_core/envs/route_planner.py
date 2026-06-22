@@ -258,7 +258,7 @@ class CARLARoutePlanner:
         spacing: float = 2.5,
         min_route_ratio: float = 0.5,
         cross_radius: float = 6.0,
-        max_cross: int = 8,
+        max_cross: int = 3,
         return_meta: bool = False,
     ):
         """Chain sidewalk waypoints until cumulative distance >= target, crossing
@@ -279,7 +279,12 @@ class CARLARoutePlanner:
             min_route_ratio: lower route-length bound relative to target;
                 routes shorter than target * min_route_ratio are rejected.
             cross_radius: max distance (m) from a dead-end to a crosswalk to cross.
-            max_cross: max crosswalk crossings per route.
+            max_cross: max crosswalk crossings per route. Default 3 bounds
+                pedestrian on-roadway exposure on long (hard, 100m) routes
+                where this cap binds hardest; each crossing places the ped on
+                the roadway, the main vehicle collision/offroad source (P1xV1).
+                Trims the high-crossing tail, spares the typical 1-2-crossing
+                routes that carry pedestrian SR.
             return_meta: if True return (wps, n_crossings); else wps (back-compat).
 
         Returns:

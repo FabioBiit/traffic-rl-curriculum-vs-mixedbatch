@@ -232,6 +232,7 @@ class AgentData:
         "actual_distance_traveled", # accumulata step-by-step
         "prev_location",            # per calcolo distanza incrementale
         "route_source",
+        "route_n_crossings",
         "route_target_distance_m",
         "route_candidate_attempts_configured",
         "route_candidate_attempts_used",
@@ -265,6 +266,7 @@ class AgentData:
         self.actual_distance_traveled = 0.0
         self.prev_location = None
         self.route_source = "unknown"
+        self.route_n_crossings = 0
         self.route_target_distance_m = 0.0
         self.route_candidate_attempts_configured = 0
         self.route_candidate_attempts_used = 0
@@ -589,6 +591,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
                 "dist_to_next_wp": self._distance_to_next_waypoint(ad),
                 "speed_kmh": self._speed_kmh(ad),
                 "route_source": ad.route_source,
+                "route_n_crossings": ad.route_n_crossings,
                 "route_target_distance_m": route_target,
                 "route_optimal_length_m": ad.route_optimal_length,
                 "actual_distance_traveled_m": ad.actual_distance_traveled,
@@ -1093,6 +1096,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             self._update_route_length_metrics(ad)
             ad.prev_location = ad.actor.get_location()
             ad.route_source = "legacy_chain"
+            ad.route_n_crossings = 0
             return
 
         ped_min_ratio = float(self.cfg["episode"].get("pedestrian_route_min_ratio", 0.5))
@@ -1153,6 +1157,7 @@ class CarlaMultiAgentEnv(ParallelEnv):
             ad.route_source = "sidewalk_crosswalk"
         else:
             ad.route_source = "sidewalk_distance"
+        ad.route_n_crossings = int(n_cross)
 
     # ------------------------------------------------------------------
     # Traffic (NPC)
