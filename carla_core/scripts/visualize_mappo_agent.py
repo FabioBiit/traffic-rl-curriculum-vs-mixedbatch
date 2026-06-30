@@ -150,6 +150,31 @@ def draw_waypoints(world, agent_data):
             )
 
 
+def _freeze_terminated_actors(env):
+    """Brake agents that have already terminated so they stop at the goal instead
+    of coasting on their last control input.
+
+    Cosmetic / visualization only: terminated agents are already removed from
+    ``env.agents`` by ``env.step`` (training is unaffected), but the underlying
+    CARLA actor keeps its last throttle until reset. Re-applied every step so the
+    full stop is held for the rest of the episode.
+    """
+    for agent_id in env._terminated_agent_infos:
+        ad = env._agent_data.get(agent_id)
+        if ad is None or ad.actor is None or not ad.actor.is_alive:
+            continue
+        try:
+            if ad.agent_type == "vehicle":
+                ad.actor.apply_control(
+                    carla.VehicleControl(throttle=0.0, brake=1.0, hand_brake=True)
+                )
+            else:
+                # WalkerControl defaults to speed=0 -> pedestrian stops.
+                ad.actor.apply_control(carla.WalkerControl())
+        except RuntimeError:
+            pass
+
+
 def _set_algo_env_close_mode_for_teardown(algo, mode):
     """Switch existing RLlib env instances to the requested close mode."""
     workers = getattr(algo, "workers", None)
@@ -529,6 +554,10 @@ def _run_visualization_worker(payload):
                     ep_max_route[agent_id] = max(ep_max_route[agent_id], route_completion)
                     ep_final_info[agent_id] = info
 
+                # Stop agents that reached the goal so they don't coast past it
+                # (visualization-only; training termination is unchanged).
+                _freeze_terminated_actors(env)
+
                 followed = env._agent_data.get(payload["follow"])
                 if followed and followed.actor and followed.actor.is_alive and env._world:
                     if str(payload["follow"]).startswith("pedestrian"):
@@ -712,6 +741,11 @@ def _launch_visualization_worker(args):
         str(Path(__file__).resolve()),
         "--worker-job",
         str(job_path),
+        # --difficulty is required=True at the parser level; forward it so the
+        # worker subprocess passes argparse. The worker reads the actual value
+        # from the job payload, this just satisfies the required check.
+        "--difficulty",
+        str(payload["difficulty"]),
     ]
 
     proc = subprocess.run(

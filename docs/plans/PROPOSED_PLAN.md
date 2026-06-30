@@ -161,6 +161,54 @@ dall'ottimizzatore. (Serie D: C2v2-A/D1/D2/D3/D2-Safety in CLAUDE.md registry.)
 
 ######################################################### Q&A (recente → vecchio )#########################################################
 
+### [26-06] Run MLP - GNN
+
+Disegno factorial 2×4 (n=1, seed 999)
+
+  Costante in tutte le celle (questo è ciò che rende leggibile un factorial a n=1): 47D obs, reward trunk
+  (D2/R1/V1/P1-crosswalk), 3M timesteps, curriculum 30/60/100 budget 0.30/0.35/0.35, seed 999 ovunque. L'unico vantaggio
+  statistico che hai è il seed-pairing: stesso 999 ⇒ stream di scenari identico tra celle ⇒ i delta cross-cella non sono
+  confusi dal sorteggio delle route. Non buttarlo via cambiando seed.
+
+  Vari solo: training mode × encoder del critico. 6 run nuovi (la cella MLP è già fatta).
+
+  Comandi (li lanci tu — io non lancio run)
+
+  # --- MLP+attention ---
+  python -m carla_core.training.train_carla_mappo --mode batch      --difficulty path --timesteps 3000000 --seed 999
+  --use-attention
+  python -m carla_core.training.train_carla_mappo --mode curriculum --difficulty path --timesteps 3000000 --seed 999
+  --use-attention
+
+  # --- GNN ---
+  python -m carla_core.training.train_carla_mappo --mode batch      --difficulty path --timesteps 3000000 --seed 999
+  --use-gnn
+  python -m carla_core.training.train_carla_mappo --mode curriculum --difficulty path --timesteps 3000000 --seed 999
+  --use-gnn
+
+  # --- GNN+attention (GAT) ---
+  python -m carla_core.training.train_carla_mappo --mode batch      --difficulty path --timesteps 3000000 --seed 999
+  --use-gnn --use-attention
+  python -m carla_core.training.train_carla_mappo --mode curriculum --difficulty path --timesteps 3000000 --seed 999
+  --use-gnn --use-attention
+
+  Ordine consigliato: GNN → attention → GAT. La coppia GNN per prima perché è il prior più rilevante per la tesi e perché se il critico GNN destabilizza sul reward-stack attuale lo scopri presto (~45h) invece che a fine matrice.
+
+  Tre caveat che devi mettere nero su bianco nella tesi
+
+  1. È un cambio sul critico, non sulla policy. Attention/GNN agiscono sull'encoder del centralized critic (CTDE): l'attore resta MLP decentralizzato. Quindi l'effetto architettura passa per il credit assignment in training, non per la rete che giri a test time. Conseguenza pratica: quando "vedi il modello visivamente", la rete eseguita è strutturalmente identica tra le 4 celle — cambiano solo le policy apprese.
+  2. n=1: leggi gli effetti principali, non il ranking fine. Con varianza same-seed ~±5pp, puoi affermare un effetto
+  principale (regime, architettura) e un'interazione solo se è grande (>~5pp). Tutto ciò che cade dentro i ±5pp è rumore e
+  va presentato come tale — esplorativo/descrittivo, non inferenziale. Annota la banda ±5pp sui grafici.
+  3. Re-validazione obbligatoria del critico. Questi encoder furono girati l'ultima volta pre-47D e pre-reward-trunk: non
+  hai garanzia che il value learning resti sano. Il tuo baseline è vf_explained_var ≈ 0.98. Tieni un criterio di abort: se a ~500K-1M step il vf_explained_var GNN/GAT è ≪ MLP o il KL diverge, fermi e non sprechi 22h.
+
+  Realtà del costo
+
+  ~135h di solo training (6 × ~22.5h) + 6 eval finali. ~6 giorni. È molto, ma è il prezzo del factorial completo che hai
+  scelto — confermato dai tuoi wall-clock (batch 81.563s, curr 80.925s).
+
+
 ### [15-06] Audit sidewalk chains → P1 "branch-aware" falsificato
 Audit offline (600 seed, Town03): modello fallback predetto 21.0/40.2/56.5% ≈ empirico r0610 21.1/38.6/52.5%
 (modello fedele). `mean_max_outdeg=0.97 (<1)` → le sidewalk non si ramificano, `next()[0]` non scarta nulla;
