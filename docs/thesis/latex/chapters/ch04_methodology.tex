@@ -1,0 +1,334 @@
+% ============================================================
+% Chapter 4 — Experimental Methodology (target 8–9 pp)
+% Status: FULL DRAFT 2026-07-14.
+% Sources: CLAUDE.md <measurement_rules>/<gate_policy>/<experimental_state>
+%   (repo-tracked project record), docs/EXPERIMENT_REGISTRY.md (App. A),
+%   episode_classification.py L69-85 (stuck/timeout split),
+%   carla_multi_agent_env.py L522-565 (path_efficiency).
+% All development-phase numbers below are quoted from the project registry
+% and are tied to run IDs; per-candidate detail condensed in Appendix A.
+% ============================================================
+\chapter{Experimental Methodology}
+\label{ch:methodology}
+
+The platform of \cref{ch:system} was not designed in one pass: it is the
+product of an iterative campaign in which every change had to pass a
+predefined quantitative gate before entering the trunk. This chapter
+documents the measurement rules (\cref{sec:metrics}), the gate protocol
+(\cref{sec:gate}), the validity defects found and fixed along the way
+(\cref{sec:bugs}), a summary of the iterations themselves
+(\cref{sec:iterations}), and the design of the final comparison campaign
+(\cref{sec:campaign}).
+
+% ------------------------------------------------------------
+\section{Metrics and Measurement Rules}
+\label{sec:metrics}
+
+\paragraph{Unit of measurement.}
+The unit of analysis is the \emph{agent-level record}: one JSON entry per
+agent per episode (six per episode, \cref{sec:termination}). All
+aggregates are computed over records after deduplication by episode and
+agent identifier (in evaluation, the scenario is part of the key, since
+episode identifiers can repeat across scenarios). Two integrity conditions
+are enforced before any number is reported: exactly six records per
+episode, and no non-finite value in any field. A run failing either
+condition is not analysed further.
+
+\paragraph{Strict success criterion.}
+An agent is successful if and only if its termination reason is
+\texttt{route\_complete}. In particular, \texttt{route\_short} --- reaching
+the end of a degenerately short route --- is \emph{not} success
+(\cref{sec:termination}). This rule was stress-tested during development:
+a change that counted \texttt{route\_short} as success was introduced and
+subsequently reverted (\cref{sec:iterations}), keeping the criterion
+strict at the cost of lower absolute numbers. \Cref{ch:discussion}
+discusses why mid-range absolute success rates are a feature, not a
+defect, of the resulting measurement: away from floor and ceiling, the
+metric retains room to move in both directions, which is precisely what a
+comparative study needs.
+
+\paragraph{Three reporting views.}
+Every result is reported for vehicles and pedestrians separately, plus a
+combined view; the two classes have different tasks, different action
+spaces and different structural limits (\cref{sec:ped-limits}), and the
+experimental record shows regime effects that exist for one class only.
+Joint episode-level success (``all six agents succeed'') is never used:
+with correlated agents in a shared world it compounds failures
+multiplicatively and hides class-specific structure.
+
+\paragraph{Metric catalogue.}
+\Cref{tab:metrics} defines the metrics used throughout
+\cref{ch:results}. Cumulative values over all training episodes are the
+primary aggregation; sliding-window success (window 50) is used only by
+the curriculum gate (\cref{sec:regimes}); within-run dynamics are shown
+by splitting training into quartiles (Q1--Q4).
+
+\begin{table}[t]
+  \centering\small
+  \caption{Metric catalogue. All rates are shares of agent-level records.}
+  \label{tab:metrics}
+  \begin{tabular}{@{}p{3.6cm}p{9.6cm}@{}}
+    \toprule
+    Metric & Definition \\
+    \midrule
+    Success rate (SR) & records with \texttt{route\_complete} \\
+    Collision rate & records with \texttt{collision} \\
+    Offroad rate & records with \texttt{offroad} (vehicles) \\
+    Stuck rate & truncated records with route completion $< 0.3$ or an active loop detector \\
+    Timeout rate & truncated records with route completion $\geq 0.3$ \\
+    Stuck$+$timeout & sum of the previous two; the primary anti-stall target \\
+    Route completion & fraction of route waypoints consumed, $[0,1]$ \\
+    Path efficiency & completed optimal length / actual distance travelled, capped at 1; defined as 0 for stuck records \\
+    Mean speed & km/h for vehicles, m/s for pedestrians \\
+    No-progress steps & steps since the last waypoint advance, at episode end \\
+    Route diagnostics & \texttt{route\_source} shares, under-target and too-short flags, crossing counts (\cref{sec:routes}) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ------------------------------------------------------------
+\section{Gate-Driven Development Protocol}
+\label{sec:gate}
+
+Run-to-run variance in this environment is large (quantified below at
+$\sim$10 percentage points of vehicle SR between identical replicates),
+and the available compute budget did not allow replicating every candidate
+change. The protocol adopted in response has four rules.
+
+\paragraph{1. One knob at a time.}
+Every candidate is a narrow, behaviourally isolated diff --- a single
+reward term, a single threshold, a single observation group. Candidates
+touching the same file are evaluated sequentially, never stacked. When a
+bundled change failed its gate, attribution between its halves was treated
+as unresolved rather than guessed.
+
+\paragraph{2. Paired A/B at a fixed diagnostic budget.}
+Each candidate runs for $3\times10^{5}$ steps against the current trunk
+baseline, with the same experiment seed and, thanks to the deterministic
+route seeding of \cref{sec:seeding}, a route sequence paired with the
+baseline by construction. Development-phase runs were locked to the easy
+level unless the candidate targeted the curriculum itself, so that level
+mixing could not confound the comparison. When runs of different lengths
+are compared, records are truncated to equal episode counts.
+
+\paragraph{3. A predefined quantitative gate.}
+For vehicle-focused changes the candidate is promoted only if, versus the
+paired baseline: vehicle SR improves by at least $+2.0$\,pp;
+stuck$+$timeout improves by at least $-2.0$\,pp; collision and offroad
+each worsen by no more than $+1.0$\,pp; and both integrity conditions of
+\cref{sec:metrics} hold. Changes that touch shared machinery carry a
+\emph{must-not-collapse} side condition on the other class (pedestrian SR
+within $-2$\,pp). A failed gate means the candidate is reverted; the trunk
+is never left in a partially evaluated state.
+
+\paragraph{4. Mechanism and outcome are recorded separately.}
+For each candidate the registry records whether the intended
+\emph{mechanism} occurred (e.g.\ the critic's explained variance rising
+from $\approx 0$ to $0.87$ after a value-loss fix) and whether the
+\emph{behavioural gate} passed --- the two frequently dissent. A small
+number of gate-failing knobs were knowingly retained with the hypothesis
+recorded as falsified (e.g.\ a tenfold collision penalty that left the
+collision rate flat), because reverting them would have restored a defect
+or because the failure itself was informative. These exceptions are
+explicit in the registry (\cref{app:registry}); nothing was retained
+silently.
+
+Within-run quartile trajectories complement the gate: a candidate whose
+cumulative numbers pass but whose Q4 declines (a signature observed for
+one pedestrian-pace retune) is treated as rejected.
+
+% ------------------------------------------------------------
+\section{Environment Validity: Bugs Found and Fixed}
+\label{sec:bugs}
+
+In a custom multi-agent platform the measurement apparatus is part of the
+experiment. Three episodes during development produced apparent policy
+effects that were in fact artifacts; they are reported here both because
+they shaped the final protocol and because their detection signatures may
+be useful to others.
+
+\paragraph{Route-length bug (task distribution).}
+The route planner could emit routes far longer than the level target, so
+nominal ``easy'' episodes were frequently not easy. Enforcing the
+$[0.5, 2.0]\times$ target bounds (\cref{sec:routes}) moved cumulative
+vehicle training SR by $\approx +50$\,pp \emph{with no change to the
+policy or the reward} --- a pure task-distribution change. Two
+consequences were adopted: absolute metrics are only comparable within the
+same environment version, and all earlier results were re-labelled as
+era-specific (the vehicle floor of the April pilot,
+\cref{sec:pilot}, was later traced to this defect). This episode is the
+strongest internal evidence for a rule used throughout this thesis:
+\emph{never compare absolute numbers across environment versions; anchor
+claims to paired contrasts within a version}.
+
+\paragraph{Route-seeding bug (broken pairing).}
+Per-agent route seeds were originally derived from Python's built-in
+\texttt{hash()}, which is salted per process: two nominally identical runs
+drew \emph{different} route sequences, silently degrading every A/B
+comparison. The fix derives seeds from an explicit
+\texttt{SeedSequence} over traffic seed, reset counter and a stable digest
+of the agent identifier (\cref{sec:seeding}). The lesson: pairing must be
+constructed and verified (byte-identical route-generation statistics
+across arms), not assumed.
+
+\paragraph{Evaluation-pipeline bugs (measurement collapse).}
+The first checkpoint evaluation returned a success rate of exactly
+33.33\% in every scenario --- one of three vehicles completing, every
+episode. This ``too clean to be true'' pattern exposed four coupled
+defects: (i) the per-episode scenario seed was constant, so every episode
+replayed the same traffic configuration; (ii) the policy was evaluated at
+its deterministic mean, collapsing the Gaussian policy onto a single
+trajectory per scenario; (iii) the evaluation subprocess never initialized
+the episode logger, so no agent-level records were written at all; and
+(iv) the torch seed was constant across episode subprocesses, so even
+stochastic actions would have replayed correlated noise streams. All four
+were fixed (per-episode scenario and sampler seeds, stochastic
+evaluation, logger propagation with clean restart), the partial
+deterministic evaluation was discarded, and the stochastic protocol of
+\cref{sec:eval-pipeline} became the standard. None of these fixes touches
+training; per the project's own rules, no policy claim is derived from
+them.
+
+The general lesson of this section: measurement validity has to be
+established \emph{before} tuning, and implausibly regular results are a
+detection signal, not good news.
+
+% ------------------------------------------------------------
+\section{Iterative Development Summary}
+\label{sec:iterations}
+
+\Cref{tab:candidates} condenses the development record; the full
+per-candidate registry, with run IDs and mechanisms, is in
+\cref{app:registry}. Development proceeded in six phases:
+
+\begin{enumerate}
+  \item \textbf{Architectural pilot (April 2026).} Nine runs crossing
+        critic encoders and training regimes, in the pre-bugfix
+        environment era. Data were integral but vehicles sat at floor SR
+        (0.2--3.8\%) in every cell, making the architectural comparison
+        uninformative --- and redirecting effort toward environment
+        validity (\cref{sec:pilot}).
+  \item \textbf{Correctness.} The route-length and route-seeding fixes of
+        \cref{sec:bugs}, plus per-step diagnostic instrumentation
+        (progress, no-progress steps, stuck causes, route provenance).
+  \item \textbf{Observability.} Route-aware vehicle features, then the
+        47D extension exposing no-progress state, loop-penalty state and
+        time remaining (\cref{sec:obs-actions}), closing the
+        state-aliasing gap between reward and observation. The resulting
+        easy-locked baseline was healthy (SR plateau $\approx 79$\%,
+        critic explained variance 0.983).
+  \item \textbf{Optimizer and reward iterations.} A sequence of
+        single-knob candidates with mixed verdicts (\cref{tab:candidates});
+        notably, a value-function repair whose mechanism was confirmed but
+        whose gate failed, and a tenfold collision penalty that left
+        collisions flat --- collision avoidance was not learnable from the
+        44D observations of that era, a perception limit rather than a
+        reward-weight problem.
+  \item \textbf{Cross-class coupling.} Faster pedestrians saturate the
+        vehicles' hazard channel and can push vehicles into a defensive
+        zero-speed equilibrium through the \texttt{safe\_to\_push} gate.
+        The promoted resolution (V1) raised the gate threshold from 0.75
+        to 0.85, keeping vehicle urgency active under moderate hazard;
+        a pedestrian-pace retune in the opposite direction (V3) was
+        rejected on a declining final-quartile trajectory.
+  \item \textbf{Curriculum mechanics and final trunk.} Windowed unlock
+        with rehearsal floors, the weakest-policy gate, and raised
+        pressure caps (\cref{sec:regimes}); finally, the pedestrian
+        crosswalk cap (\texttt{max\_cross} $8 \to 3$), the last change to
+        enter the trunk before the campaign (vehicle SR $+9.2$\,pp,
+        collision $-2.3$\,pp, offroad $-2.2$\,pp, pedestrians flat).
+\end{enumerate}
+
+Three full-length ($3\times10^{6}$ steps) replicates of the identical
+pre-campaign trunk quantify run-to-run variance: cumulative vehicle SR
+ranged 52.2--62.4\% across them under the same seed --- CARLA is not
+deterministic under load even when seeded. This $\sim$10\,pp band is the
+yardstick against which every effect in \cref{ch:results} is read, and
+motivates both the paired design and the caution attached to
+single-replicate deltas (\cref{sec:threats}).
+
+\begin{table}[t]
+  \centering\small
+  \caption{Condensed candidate registry (development phase, paired A/B at
+  $3\times10^{5}$ steps unless noted). Deltas are versus the paired
+  baseline of their era and are \emph{not} comparable across environment
+  versions. Full detail in \cref{app:registry}.}
+  \label{tab:candidates}
+  \begin{tabular}{@{}p{4.2cm}p{2.6cm}p{2.2cm}p{3.6cm}@{}}
+    \toprule
+    Candidate & Type & Verdict & Headline \\
+    \midrule
+    Diagnostic instrumentation & measurement & adopted & no policy change \\
+    Route-aware vehicle obs & observation & adopted & --- \\
+    Reward shaping block (anti-stall, min-speed) & reward & promoted & core of \cref{sec:rewards} \\
+    Early stuck termination & env dynamics & rejected & SR $-2.9$\,pp, s$+$t $+7.1$\,pp \\
+    Route-length fix & bug fix & adopted & $\approx +50$\,pp SR (distribution change) \\
+    Route-seed fix & bug fix & adopted & restores A/B pairing \\
+    Value-loss repair & optimizer & retained (gate fail) & expl.\ var.\ $0 \to 0.87$; collision $+3.3$\,pp \\
+    Discount $0.99 \to 0.997$ & optimizer & retained (falsified) & timeout $\to$ collision $\approx$ 1:1 \\
+    Entropy schedule (fraction-based) & optimizer & promoted & stable mechanism, no instability \\
+    Collision penalty $-50 \to -500$ & reward & retained (falsified) & collision flat ($-0.2$\,pp) \\
+    Progress-guard removal & reward & promoted & SR $+4.7$\,pp, s$+$t $-3.5$\,pp \\
+    47D observability (O1$+$O2) & observation & adopted & healthy baseline, expl.\ var.\ 0.983 \\
+    Pedestrian route/pace bundle & reward $+$ routes & partial & pace out of band; vehicle ripple \\
+    Pace-band retune & reward & rejected & overshoot worse; Q4 decline \\
+    Hazard-gate tolerance $0.75 \to 0.85$ & reward & promoted & 5/5: SR $+2.3$\,pp, s$+$t $-3.0$\,pp, coll./off.\ improved \\
+    \texttt{route\_short} as success & measurement & reverted & violated success criterion \\
+    Crosswalk cap $8 \to 3$ & routes & promoted & SR $+9.2$\,pp, coll.\ $-2.3$\,pp, off.\ $-2.2$\,pp \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ------------------------------------------------------------
+\section{Final Campaign Design}
+\label{sec:campaign}
+
+The final experiment is a $2 \times 2$ factorial:
+\{MLP, GNN critic encoder\} $\times$ \{curriculum, mixed-batch\} --- four
+runs of $3\times10^{6}$ steps each, all on the same frozen trunk, sharing
+a single experiment seed (999) paired across all four cells, with
+difficulty defined by route length (\cref{sec:routes}). Run
+configurations are byte-identical across cells except for the two
+experimental flags (regime and critic encoder), a property verified by
+direct configuration diff. The design was originally sized at three
+paired seeds per cell; the seed-replication axis was dropped for
+compute-budget reasons (each run occupies the single available machine
+for roughly two days, \cref{app:repro}). This reduction is declared here
+rather than hidden: with one seed per cell, every contrast in
+\cref{ch:results} is a \emph{paired case study}, not an estimate of a
+distribution.
+
+\paragraph{Contrasts.}
+The primary contrast is curriculum versus mixed-batch \emph{within}
+architecture. Crucially, it is observed \emph{twice} --- once under each
+critic architecture, trained independently --- so architecture
+replication partially substitutes for seed replication on the primary
+axis: a regime effect that appears with the same sign and comparable
+structure in both pairs is much harder to attribute to run-to-run noise
+than a single contrast would be. The secondary contrast is MLP versus GNN
+critic \emph{within} regime; the interaction reading (hypothesis H3,
+\cref{sec:rq}) is directional only at this sample size. No formal
+statistical inference is claimed anywhere: effects are read against the
+same-seed replicate band of \cref{sec:iterations} ($\sim$10\,pp of
+vehicle SR), and corroborated by consistency across difficulty levels,
+agent classes, evaluation scenarios and measurement layers rather than by
+tests.
+
+\paragraph{Measurement.}
+Each run is measured at the three levels of \cref{sec:eval-pipeline}:
+cumulative training metrics, static recomputation from logs, and the
+final 400-episode checkpoint evaluation (three Town03 scenarios plus the
+Town05 test scenario for map generalization), all reported per class.
+
+\paragraph{Declared scope.}
+The campaign does \emph{not} test: difficulty families based on traffic
+density or mixed axes (defined in configuration but unused); the
+attention critic encoder and PopArt normalization (available, disabled);
+actor architectures (always MLP); agent-count ablations (always
+$3+3$); or map pairs beyond Town03 $\to$ Town05.
+
+\todo{When the campaign is closed, state the final run matrix in \S 5.2
+(run IDs, commit hash, completion status). Current cells: MLP-C
+20260622\_171626 (train$+$eval), MLP-B 20260623\_171855 (train$+$eval),
+GNN-C 20260630\_181143 (train done, eval pending), GNN-B
+20260714\_155209 (training in flight; eval pending).}

@@ -1,0 +1,298 @@
+% ============================================================
+% Chapter 2 — Background (target 8–10 pp)
+% Status: FULL DRAFT 2026-07-14. All 12 bibliography entries verified
+% against publisher pages on 2026-07-14 (outline open item 5 closed).
+% Scope rule: only concepts actually used in Ch. 3–6, each with a
+% forward reference to where it is used.
+% ============================================================
+\chapter{Background}
+\label{ch:background}
+
+This chapter introduces the concepts the rest of the thesis builds on:
+single-agent reinforcement learning and policy gradients
+(\cref{sec:rl-essentials}), PPO and advantage estimation
+(\cref{sec:ppo}), multi-agent learning and MAPPO (\cref{sec:marl}),
+curriculum learning and its mixed-training control
+(\cref{sec:curriculum-bg}), and the CARLA simulator
+(\cref{sec:carla-bg}). Each concept is presented only to the depth at
+which it is used later.
+
+% ------------------------------------------------------------
+\section{Reinforcement Learning Essentials}
+\label{sec:rl-essentials}
+
+Reinforcement learning (RL) formalizes sequential decision making as a
+\emph{Markov decision process} (MDP): a tuple
+$(\mathcal{S}, \mathcal{A}, P, r, \gamma)$ of states, actions, transition
+dynamics $P(s' \mid s, a)$, reward function $r(s, a)$, and discount
+factor $\gamma \in [0, 1)$~\cite{sutton2018rl}. An agent acts through a
+\emph{policy} $\pi(a \mid s)$, and the learning objective is to maximize
+the expected discounted return
+\begin{equation}
+  J(\pi) \;=\; \mathbb{E}_{\pi}\!\left[\sum_{t=0}^{\infty} \gamma^{t}\,
+  r(s_t, a_t)\right].
+\end{equation}
+The discount sets an effective decision horizon of roughly
+$1/(1-\gamma)$ steps. This is not a cosmetic constant: the platform of
+\cref{ch:system} uses $\gamma = 0.997$, i.e.\ an effective horizon of
+$\approx 333$ steps, commensurate with episodes of up to 1{,}000 control
+steps in which sparse route-progress rewards may be tens of seconds
+apart.
+
+Two value functions summarize a policy: the state value
+$V^{\pi}(s) = \mathbb{E}_{\pi}[\,\text{return} \mid s_0 = s\,]$ and the
+action value $Q^{\pi}(s, a)$; their difference
+$A^{\pi}(s, a) = Q^{\pi}(s, a) - V^{\pi}(s)$, the \emph{advantage},
+measures how much better an action is than the policy's average in that
+state.
+
+\paragraph{Policy gradients and actor--critic methods.}
+When the policy is a differentiable function $\pi_{\theta}$ (here, a
+neural network), the policy-gradient theorem gives an unbiased gradient
+estimate of the objective:
+\begin{equation}
+  \nabla_{\theta} J \;=\;
+  \mathbb{E}_{\pi_{\theta}}\!\left[\nabla_{\theta}
+  \log \pi_{\theta}(a_t \mid s_t)\; A^{\pi}(s_t, a_t)\right].
+\end{equation}
+Estimating the advantage with raw Monte-Carlo returns yields high
+variance; subtracting a learned state-value baseline reduces variance
+without introducing bias. \emph{Actor--critic} methods therefore train
+two functions: the \emph{actor} $\pi_{\theta}$ and a \emph{critic}
+$V_{\phi}$ used to construct advantage estimates. This division of labour
+is the hook for the multi-agent architecture of \cref{sec:marl}: the
+critic is a training-time device, so it may receive information the
+actor never sees.
+
+\paragraph{Continuous actions.}
+For continuous control the policy is commonly a diagonal Gaussian: the
+network outputs a mean (and log-standard-deviation) per action dimension,
+and actions are sampled around it. Sampling is not an implementation
+detail but part of the learned object --- evaluating such a policy at its
+deterministic mean discards its stochastic structure, a point that
+becomes concrete in \cref{sec:bugs}.
+
+% ------------------------------------------------------------
+\section{Proximal Policy Optimization}
+\label{sec:ppo}
+
+Vanilla policy-gradient updates are fragile: a single large step can
+collapse a working policy, and on-policy data is stale immediately after
+the update. PPO~\cite{schulman2017ppo} addresses both with a
+\emph{clipped surrogate objective}. With the importance ratio
+$\rho_t(\theta) = \pi_{\theta}(a_t \mid s_t) / \pi_{\theta_{\text{old}}}(a_t \mid s_t)$,
+PPO maximizes
+\begin{equation}
+  L^{\mathrm{CLIP}}(\theta) \;=\;
+  \mathbb{E}_t\!\left[\min\bigl(\rho_t A_t,\;
+  \operatorname{clip}(\rho_t,\, 1-\varepsilon,\, 1+\varepsilon)\, A_t\bigr)\right],
+\end{equation}
+which removes any incentive to move the ratio beyond
+$[1-\varepsilon, 1+\varepsilon]$, allowing several epochs of minibatch
+gradient steps on each batch of experience without destructive updates.
+Implementations often add an adaptive Kullback--Leibler penalty toward
+the pre-update policy as a second safeguard; the configuration in
+\cref{sec:optimization} uses the clip ($\varepsilon = 0.2$) and a KL
+target of $0.02$ together.
+
+\paragraph{Generalized Advantage Estimation.}
+The advantage estimates $A_t$ come from GAE~\cite{schulman2016gae}:
+with temporal-difference residuals
+$\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$,
+\begin{equation}
+  A_t^{\mathrm{GAE}(\gamma,\lambda)} \;=\;
+  \sum_{l \geq 0} (\gamma\lambda)^{l}\, \delta_{t+l},
+\end{equation}
+where $\lambda \in [0,1]$ trades bias against variance between one-step
+TD ($\lambda = 0$) and Monte-Carlo returns ($\lambda = 1$). The platform
+uses $\lambda = 0.95$. GAE quality depends directly on the critic's
+quality --- one documented development episode
+(\cref{sec:iterations}) involved a critic whose explained variance was
+$\approx 0$, making advantages nearly baseline-free until the
+value-loss configuration was repaired.
+
+\paragraph{Entropy regularization.}
+An entropy bonus added to the objective sustains exploration by
+penalizing premature policy collapse. Its coefficient is typically
+annealed: high early (broad exploration), low late (exploitation and
+stable convergence). In this thesis the coefficient follows an explicit
+schedule from $0.03$ to $0.005$ anchored at a fixed \emph{fraction} of
+the training budget (\cref{sec:optimization}), so that runs of different
+lengths traverse the same exploration profile.
+
+% ------------------------------------------------------------
+\section{Multi-Agent Reinforcement Learning and MAPPO}
+\label{sec:marl}
+
+With $N$ agents acting in one environment, the MDP generalizes to a
+\emph{Markov game}: transitions and rewards depend on the joint action.
+Two structural difficulties follow.
+
+\paragraph{Non-stationarity.}
+From any single agent's perspective, the other agents are part of the
+environment --- and they are learning, so the environment's effective
+dynamics change over time. This breaks the stationarity assumptions
+underlying single-agent convergence guarantees and makes
+experience collected under old co-player policies
+misleading~\cite{lowe2017maddpg}. In the platform of \cref{ch:system}
+this is not a corner case but the core of the setting: six learning
+agents share one world, and \cref{ch:results} documents a concrete
+equilibrium (vehicles freezing in response to pedestrian behaviour) that
+only exists because of this coupling.
+
+\paragraph{Credit assignment and variance.}
+Each agent's return depends on all agents' actions, so the variance of
+naive policy-gradient estimates grows with the number of agents: an
+agent may be rewarded or punished for outcomes it did not cause.
+
+\paragraph{Centralized training, decentralized execution.}
+The now-standard resolution exploits the actor--critic division: train
+\emph{critics} with access to global information (all agents'
+observations, or the true state), while keeping \emph{actors}
+conditioned only on local observations~\cite{lowe2017maddpg}. The critic
+absorbs the non-stationarity --- conditioned on everyone's situation, the
+value target is better determined --- while execution remains fully
+decentralized, since critics are discarded after training. This is the
+CTDE paradigm used throughout this thesis.
+
+\paragraph{MAPPO.}
+MAPPO instantiates CTDE with PPO actors and a centralized value
+function. Yu et al.~\cite{yu2022surprising} showed that this
+conceptually minimal combination --- long assumed too sample-inefficient
+for MARL --- matches or exceeds off-policy methods on standard
+cooperative benchmarks (particle worlds, StarCraft micromanagement,
+Hanabi, football), provided the implementation details are right; among
+the factors they highlight are the design of the centralized critic's
+input and value normalization. Those two factors reappear concretely in
+this thesis as the global-observation layout of \cref{sec:obs-actions}
+and the value-loss configuration episode of \cref{sec:iterations}.
+
+\paragraph{Parameter sharing and heterogeneous classes.}
+Homogeneous agents can share one policy network, pooling their
+experience; heterogeneous agents cannot, since their observation and
+action spaces differ. The platform takes the intermediate route natural
+to its population: one shared policy per class (three vehicles; three
+pedestrians), two policies in total (\cref{sec:architecture}).
+
+\paragraph{Critic input encoders.}
+The simplest centralized critic flattens all agents' observations into
+one vector for an MLP. Structured alternatives treat agents as nodes of
+a set or graph: per-agent slots are embedded, combined by attention or
+by message passing, and pooled. The graph-based variant used as this
+thesis's secondary experimental axis applies GraphSAGE-style mean
+aggregation~\cite{hamilton2017graphsage} over the six agent nodes with
+an alive mask (\cref{sec:critic-encoders}). The comparison MLP-vs-GNN
+critic asks whether relational structure in value estimation changes
+what the (identical) actors learn.
+
+\paragraph{Coexistence rather than cooperation.}
+Unlike the benchmarks above, the agents of this thesis neither share a
+team reward nor compete: each pursues its own route under an individual
+reward (\cref{sec:rewards}). CTDE remains the right tool --- the
+centralized critic still stabilizes value estimation under mutual
+interaction --- but the setting is best described as \emph{coexistence}
+of independent tasks in a shared world, the framing formalized as
+parallel task coverage in \cref{sec:parallel-coverage}.
+
+% ------------------------------------------------------------
+\section{Curriculum Learning and Its Control Condition}
+\label{sec:curriculum-bg}
+
+\paragraph{Origins.}
+The idea that learning improves when examples are presented in a
+meaningful easy-to-hard order predates deep learning: Elman's
+``starting small'' experiments showed recurrent networks learning a
+complex grammar only when input complexity (or the network's effective
+memory) grew incrementally~\cite{elman1993starting}. Bengio et
+al.~\cite{bengio2009curriculum} named the strategy \emph{curriculum
+learning} and framed it as a continuation method: easy examples define a
+smoother version of the objective on which optimization starts, hard
+examples are introduced as training proceeds, with measurable gains in
+optimization speed and generalization on supervised tasks.
+
+\paragraph{Curriculum learning in RL.}
+In reinforcement learning the designer controls not just the order of
+data but the distribution of \emph{tasks}, making curricula both more
+powerful and harder to design. Narvekar et al.~\cite{narvekar2020curriculum}
+organize the field around three questions: how source tasks are
+generated, how they are \emph{sequenced}, and how knowledge transfers
+between them. Within that taxonomy, the mechanism of \cref{sec:regimes}
+is a performance-based sequencing scheme over a fixed task set: three
+difficulty levels ordered by route length, with progression gated on a
+windowed success threshold and guaranteed by budget-based pressure caps.
+The motivation for curricula in RL is largely about exploration: on hard
+tasks a weak policy may essentially never experience success, receiving
+no learning signal at all, while easy tasks provide dense early success
+from which competence can bootstrap.
+
+\paragraph{Known risks.}
+Three failure modes recur in the literature and shaped the design of
+\cref{sec:regimes}. First, \emph{forgetting}: neural networks trained on
+a shifted distribution tend to overwrite previously acquired
+competence~\cite{french1999catastrophic}; a curriculum that abandons
+easy tasks after progression may erode exactly the skills it built ---
+the platform therefore keeps all unlocked levels in the sampling mix
+rather than replacing them. Second, \emph{stalling}: a competence gate
+that is never met can trap training on easy tasks indefinitely ---
+hence the pressure caps that force progression within the budget.
+Third, \emph{gate mis-calibration}: unlocking too early exposes the
+policy to noise it cannot yet learn from; unlocking too late wastes
+budget. These risks are exactly the hypotheses H1 tests empirically
+(\cref{sec:rq}).
+
+\paragraph{The control condition: mixed training.}
+Every claim about ordering needs a baseline in which ordering is absent.
+The natural control is \emph{mixed} (interleaved) training: all
+difficulty levels presented from the first episode, with uniform
+exposure --- the RL analogue of training on a shuffled dataset, which is
+the default in supervised learning. The stratified sampler of
+\cref{sec:batch-arm} implements this control exactly (uniform $1/3$
+exposure with maximum imbalance of one episode), so that the
+curriculum-versus-mixed comparison isolates the ordering variable at
+equal budget. Mixed training carries its own hypothesized signature
+(H2): full task coverage from the start, at the price of a noisier early
+signal dominated by failures on hard tasks.
+
+% ------------------------------------------------------------
+\section{The CARLA Simulator}
+\label{sec:carla-bg}
+
+CARLA~\cite{dosovitskiy2017carla} is an open-source urban-driving
+simulator built on Unreal Engine~4, developed to support training and
+validation of autonomous driving systems. It runs as a server hosting
+the 3D world and physics, controlled by clients through a Python API;
+it ships with a set of towns of varying layout, scripted traffic, and
+configurable weather. Three features matter for this thesis
+(version 0.9.16 throughout):
+
+\begin{itemize}
+  \item \textbf{Synchronous mode with fixed time step.} The server
+        advances only on client ticks, at a fixed physics step
+        (\SI{0.05}{s} here). Experience collection is thus reproducible
+        in structure and independent of rendering or wall-clock speed
+        (\cref{sec:architecture}).
+  \item \textbf{Traffic Manager and walker control.} Scripted (NPC)
+        vehicles are driven by CARLA's Traffic Manager; pedestrians are
+        \emph{walker} actors that accept direct control commands, which
+        is what makes learning pedestrian policies possible
+        (\cref{sec:obs-actions}).
+  \item \textbf{Structurally different towns.} Training uses
+        \emph{Town03}, described by the official documentation as ``a
+        larger, urban map with a roundabout and large
+        junctions''~\cite{carladocs}; the generalization test uses
+        \emph{Town05}, a ``squared-grid town with cross junctions and a
+        bridge'', with multiple lanes per direction~\cite{carladocs}.
+        The layouts differ in kind, not just in size, making the
+        Town03$\to$Town05 transfer a genuine test of map generalization
+        (\cref{sec:generalization}).
+\end{itemize}
+
+Two scoping notes. First, in this thesis CARLA provides physics, world
+dynamics and traffic --- not perception: agents observe privileged state
+features (\cref{sec:obs-actions}), not camera or lidar streams, so all
+findings concern decision-making under interaction, not vision. Second,
+even in synchronous mode and fully seeded, CARLA under multi-agent load
+is not run-to-run deterministic; this irreducible variability is
+quantified with same-seed replicates and used as the yardstick for every
+effect size reported later (\cref{sec:iterations},
+\cref{sec:threats}).

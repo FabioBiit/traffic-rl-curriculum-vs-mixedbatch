@@ -1,0 +1,603 @@
+% ============================================================
+% Chapter 3 — System Design (target 11–13 pp)
+% Sources: carla_multi_agent_env.py, route_planner.py,
+%   curriculum_batch_manager.py, centralized_critic.py,
+%   levels.yaml, curriculum_batch.yaml, train_mappo.yaml.
+% Status: FULL DRAFT 2026-07-14 (§3.1–3.7 + Tab. 1–2 + Fig. 1 TikZ).
+% Pending: Fig. 2 (Town03 screenshot), Fig. 3 (route examples),
+%          Fig. 4 (curriculum state machine) — see \todo markers.
+% ============================================================
+\chapter{System Design}
+\label{ch:system}
+
+This chapter describes the experimental platform: a multi-agent
+reinforcement-learning environment built on the CARLA simulator, in which
+three vehicles and three pedestrians are trained jointly with MAPPO under
+two alternative training regimes --- curriculum and mixed-batch --- that
+share every other component of the stack. The design goal is that the
+training regime is the \emph{only} independent variable of the main
+experiment; everything documented in this chapter is common to both arms.
+
+% ------------------------------------------------------------
+\section{Architecture Overview}
+\label{sec:architecture}
+
+The platform consists of four layers (\cref{fig:architecture}): the CARLA
+server, a custom multi-agent environment, the RLlib training stack, and a
+logging/evaluation pipeline.
+
+\paragraph{Simulator.}
+CARLA 0.9.16~\cite{dosovitskiy2017carla}, built on Unreal Engine~4, runs as
+a standalone server. The environment drives it in \emph{synchronous mode}
+with a fixed physics step of \SI{0.05}{s} (\SI{20}{Hz}): the simulator
+advances only when the environment issues a tick, which makes experience
+collection deterministic with respect to scheduling and independent of
+wall-clock speed. Scripted (non-learning) traffic --- 15 NPC vehicles and
+30 NPC pedestrians in every training level --- is managed by the CARLA
+Traffic Manager, also in synchronous mode. Training uses the urban map
+\emph{Town03}; \emph{Town05} is reserved exclusively for the
+generalization test and is never seen during training.
+
+\paragraph{Multi-agent environment.}
+A custom environment (\texttt{CarlaMultiAgentEnv}) exposes the simulation
+to RLlib as a multi-agent interface with six learning agents: three
+vehicles and three pedestrians (walkers). At every reset the environment
+spawns the agents, assigns each an individual route (\cref{sec:routes}),
+and configures the scenario according to the difficulty level selected by
+the curriculum/batch manager (\cref{sec:regimes}). An episode lasts at most
+1{,}000 control steps (\SI{50}{s} of simulated time at \SI{20}{Hz}).
+
+\paragraph{Learning stack.}
+Training uses MAPPO~\cite{yu2022surprising} as implemented on
+Ray/RLlib~2.10.0 with PyTorch~2.7 (Python 3.11.9), in the
+\emph{centralized training with decentralized execution} (CTDE) paradigm.
+Two policies are learned: a \emph{vehicle policy} shared by the three
+vehicles and a \emph{pedestrian policy} shared by the three pedestrians
+(parameter sharing within each class, no sharing across classes, since the
+two classes have different observation and action spaces). Each actor is a
+multi-layer perceptron with two hidden layers of 256 units. A centralized
+critic receives a 225-dimensional global observation that concatenates
+per-agent information (\cref{sec:obs-actions}); the critic encoder is an
+MLP by default, with a GNN variant used as a secondary experimental axis
+(\cref{sec:critic-variants}).
+
+\paragraph{Logging and evaluation.}
+At the end of every episode the training process appends one JSON record
+\emph{per agent} (six per episode) to an \texttt{episodes.jsonl} file:
+termination reason, route completion, path efficiency, speed, and
+route-generation diagnostics. All results in \cref{ch:results} are computed
+from these records --- either the training stream (cumulative, on-policy
+metrics) or the records produced by a separate evaluation pipeline, which
+reloads a trained checkpoint and runs four fixed scenarios (easy, medium,
+hard on Town03; test on Town05) of 100 episodes each
+(\cref{sec:critic-variants}).
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+      node distance=7mm and 12mm,
+      box/.style={draw, rounded corners=2pt, align=center,
+                  minimum width=52mm, minimum height=11mm, font=\small},
+      lbl/.style={font=\scriptsize, midway},
+      >={Stealth[length=2.5mm]}]
+    \node[box] (carla) {CARLA 0.9.16 server\\ \scriptsize Town03 (train) / Town05 (test), TM};
+    \node[box, below=of carla] (env) {\texttt{CarlaMultiAgentEnv}\\ \scriptsize 3 vehicles + 3 walkers, route planner};
+    \node[box, right=of env] (mgr) {Curriculum / batch\\ manager \scriptsize (level per episode)};
+    \node[box, below=of env] (rllib) {Ray/RLlib 2.10 --- MAPPO (CTDE)\\ \scriptsize vehicle policy, pedestrian policy, centralized critic};
+    \node[box, below=of rllib] (log) {\texttt{episodes.jsonl}\\ \scriptsize 6 records/episode};
+    \node[box, right=of log] (eval) {Evaluation pipeline\\ \scriptsize $4$ scenarios $\times$ 100 ep};
+    \draw[->] (env) -- node[lbl, right] {tick / control} (carla);
+    \draw[<-] ([xshift=-8mm]env.north) -- node[lbl, left] {sensors, state} ([xshift=-8mm]carla.south);
+    \draw[->] (mgr) -- node[lbl, above] {level} (env);
+    \draw[->] (env) -- node[lbl, right] {obs, rewards} (rllib);
+    \draw[<-] ([xshift=-8mm]env.south) -- node[lbl, left] {actions} ([xshift=-8mm]rllib.north);
+    \draw[->] (rllib) -- (log);
+    \draw[->] (rllib) -| node[lbl, above, pos=0.25] {checkpoint} (eval);
+  \end{tikzpicture}
+  \caption{Component architecture. The curriculum/batch manager is the only
+  component that differs between the two experimental arms, and only in its
+  level-selection rule (\cref{sec:regimes}).}
+  \label{fig:architecture}
+\end{figure}
+
+% ------------------------------------------------------------
+\section{A Shared-World Multi-Agent Environment}
+\label{sec:shared-world}
+
+\subsection{Parallel task coverage}
+\label{sec:parallel-coverage}
+
+The six learning agents do not cooperate toward a joint goal: each agent is
+assigned its \emph{own} route and is evaluated individually on completing
+it. Because all six routes are placed in the same living world, a single
+episode simultaneously exercises six different micro-tasks --- different
+road geometries, different interactions with scripted traffic, and, most
+importantly, mutual interactions between learning agents (e.g.\ a learning
+vehicle yielding to a learning pedestrian). We refer to this design as
+\emph{parallel task coverage}: per wall-clock episode, the system collects
+experience across six task instances rather than one.
+
+This framing comes with two caveats that the analysis must respect. First,
+the six per-episode samples are \emph{correlated} --- the agents share the
+world state, so a traffic jam or a blocked crosswalk affects several
+records at once. Second, from the perspective of any single agent the
+environment is \emph{non-stationary} during training, because the other
+five agents' policies change over time; this is the standard motivation for
+the CTDE critic (\cref{ch:background}). Parallel task coverage is a
+property of the platform, present identically in both training regimes: it
+is part of the experimental frame, not an experimental variable.
+
+\subsection{Per-agent routes and seeding}
+\label{sec:seeding}
+
+At every reset, each agent receives an independent route whose target
+length is set by the active difficulty level (30/60/\SI{100}{m};
+\cref{sec:routes}). Route generation is deterministically seeded per agent
+with a seed sequence built from
+$\langle\text{traffic seed},\ \text{reset counter},\ \mathrm{crc32}(\text{agent
+id})\rangle$, so that (i) two training runs launched with the same
+experiment seed on the same code see the same sequence of route-generation
+draws, and (ii) route draws are decoupled across agents. This makes paired
+A/B comparisons route-matched by construction, a property the experimental
+protocol relies on (\cref{ch:methodology}).
+
+\subsection{Termination taxonomy and per-agent records}
+\label{sec:termination}
+
+Each agent terminates its episode independently with exactly one of six
+reasons, classified by a simulator-independent rule
+(\texttt{episode\_classification.py}):
+
+\begin{itemize}
+  \item \texttt{route\_complete} --- the agent reached the end of its
+        route. This is the \emph{only} outcome counted as success.
+  \item \texttt{route\_short} --- the agent reached the end of a route
+        whose optimal length turned out to be shorter than the level target
+        by more than a tolerance factor (degenerate route-generation
+        fallback). Reaching it is \emph{not} counted as success: this guard
+        prevents success-rate inflation through trivially short routes.
+  \item \texttt{collision} --- contact with any actor or static geometry.
+  \item \texttt{offroad} --- the vehicle moved more than \SI{5}{m} away
+        from the nearest driving-lane centre (vehicles only).
+  \item \texttt{stuck} --- prolonged lack of progress along the route.
+  \item \texttt{timeout} --- the 1{,}000-step episode cap elapsed first.
+\end{itemize}
+
+Every episode therefore yields exactly six agent-level records (three
+vehicle, three pedestrian) in \texttt{episodes.jsonl}. All aggregate
+metrics in this thesis are computed at the agent level over these records,
+always reported separately for vehicles and pedestrians; the measurement
+rules, including deduplication and the strict success criterion, are
+specified in \cref{ch:methodology}.
+
+% ------------------------------------------------------------
+% Sources (verified 2026-07-14): carla_multi_agent_env.py
+%   _get_vehicle_obs L1291-1381, _get_pedestrian_obs L1383-1445,
+%   _fill_nearby L1740-1764, constants L84-88; global obs layout
+%   centralized_critic.py (compute_global_obs_dim_with_mask, L115).
+\section{Observation and Action Spaces}
+\label{sec:obs-actions}
+
+Each agent receives a compact, class-specific observation vector with all
+components normalized to $[-1, 1]$ and sanitized against non-finite values
+before being returned to the learner. Vehicles observe 47 dimensions and
+pedestrians 26; \cref{tab:obs} lists both layouts. Three design choices
+deserve comment.
+
+\paragraph{Route-aware features.}
+Beyond the classic ego-kinematics and nearest-neighbour features, both
+classes observe a short \emph{preview} of their own route (relative
+offsets of upcoming waypoints in the ego frame) together with heading
+error and, for vehicles, upcoming turn angle and signed lateral error.
+These features give the policy the local geometry of the assigned task
+without revealing anything about the other agents' goals.
+
+\paragraph{Hazard preview channel.}
+A shared routine estimates, along the agent's forward corridor, a
+time-to-collision risk and a corridor-occupancy fraction, computed
+separately against vehicles (corridor \SI{3.5}{m} wide, \SI{40}{m} ahead,
+\SI{5}{s} horizon) and against pedestrians (\SI{3.0}{m}, \SI{30}{m},
+\SI{4}{s}); pedestrians observe the vehicle channel only (\SI{4.0}{m},
+\SI{30}{m}, \SI{4}{s}). The same four vehicle-side risk values are reused
+by the reward function as a safety gate (\cref{sec:rewards}), so the
+quantity that modulates the reward is always visible to the policy.
+
+\paragraph{Markov-consistency features.}
+The last three vehicle dimensions expose internal environment state that
+the reward depends on: the number of steps without waypoint progress
+(normalized by 300), the state of the anti-loop penalty, and the
+normalized time remaining before episode truncation. Without these, the
+penalties of \cref{sec:rewards} and the fixed horizon would act on
+information the agent cannot observe --- a state-aliasing defect that was
+identified and corrected during development (\cref{ch:methodology}).
+
+\begin{table}[t]
+  \centering\small
+  \caption{Observation layouts. Slashes denote normalization constants;
+  neighbour features are expressed in the ego frame.}
+  \label{tab:obs}
+  \begin{tabular}{@{}llp{8.0cm}@{}}
+    \toprule
+    Dims & Group & Content \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Vehicle (47D)}} \\
+    0--8   & Ego kinematics   & velocity (/30), acceleration (/10), speed (/120 km/h), planar heading \\
+    9--12  & Route tracking   & distance (/\SI{50}{m}) and bearing (/$\pi$) to next waypoint; signed in-lane lateral offset (lane widths); continuous route progress \\
+    13--14 & Traffic light    & at-light flag; state (red 1.0, yellow 0.5, green 0.0) \\
+    15--23 & Nearby vehicles  & 3 nearest within \SI{50}{m}: longitudinal and lateral offset (/50), relative speed (/30) \\
+    24     & Control memory   & previous steering command \\
+    25--30 & Route preview    & waypoints $+1/+3/+5$: longitudinal and lateral offsets (/50) \\
+    31--33 & Route geometry   & heading error; upcoming turn angle; signed lateral error to route \\
+    34--39 & Nearby pedestrians & 2 nearest within \SI{50}{m}, same 3 features \\
+    40--43 & Hazard preview   & time-to-collision risk and corridor occupancy, vs.\ vehicles and vs.\ pedestrians \\
+    44--46 & Progress/time    & steps without progress (/300); loop-penalty flag; time remaining \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Pedestrian (26D)}} \\
+    0--2   & Position         & world position ($x, y$ /500; $z$ /50) \\
+    3--6   & Kinematics       & velocity (/5), speed (/5 m/s) \\
+    7--8   & Heading          & planar forward vector \\
+    9--10  & Waypoint         & distance (/\SI{100}{m}) and bearing to current waypoint \\
+    11     & Surface          & on-sidewalk flag \\
+    12--17 & Nearby vehicles  & 2 nearest within \SI{50}{m}: same 3 features \\
+    18     & Progress         & route completion fraction \\
+    19--22 & Route preview    & waypoints $+1/+3$: longitudinal and lateral offsets (/100) \\
+    23     & Route geometry   & heading error \\
+    24--25 & Hazard preview   & vehicle time-to-collision risk and corridor occupancy \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Action spaces.}
+Both classes use continuous two-dimensional actions. The vehicle action is
+$[a_{\mathrm{tb}}, a_{\mathrm{steer}}] \in [-1,1]^2$, where positive
+$a_{\mathrm{tb}}$ maps to throttle and negative to brake (reverse gear is
+disabled), and $a_{\mathrm{steer}}$ is the steering command. The
+pedestrian action is $[a_{\mathrm{speed}}, a_{\Delta\mathrm{h}}]$ with
+$a_{\mathrm{speed}} \in [0,1]$ scaling a maximum walking speed of
+\SI{5.0}{m/s} and $a_{\Delta\mathrm{h}} \in [-1,1]$ commanding a heading
+change of up to $\pm 45^{\circ}$ per step.
+
+\paragraph{Global observation for the centralized critic.}
+During training only, the critic receives a fixed-slot concatenation of
+all agents' observations followed by a per-agent alive mask:
+$[\,v_0\,|\,v_1\,|\,v_2\,|\,p_0\,|\,p_1\,|\,p_2\,|\,\text{alive}_{6}\,]$,
+i.e.\ $3 \times 47 + 3 \times 26 + 6 = 225$ dimensions. The alive mask is
+necessary because agents terminate independently
+(\cref{sec:termination}): slots of terminated agents are masked rather
+than silently reused. Actors never see this vector, preserving
+decentralized execution.
+
+% ------------------------------------------------------------
+% Sources (verified 2026-07-14): carla_multi_agent_env.py
+%   _vehicle_reward L1866-1960 ("Vehicle Reward v5"),
+%   _pedestrian_reward L1962-2010 ("Pedestrian Reward v5").
+\section{Reward Design}
+\label{sec:rewards}
+
+Rewards are per-agent and identical in both training regimes.
+\Cref{tab:rewards} lists every component with its trigger and magnitude;
+this section explains the structure. The final form is the outcome of the
+gate-driven iterations documented in \cref{sec:iterations}; no claim of
+optimality is attached to the individual coefficients.
+
+\paragraph{Progress core.}
+For both classes the dominant signal is a sparse bonus per route waypoint
+reached ($+100$ for vehicles, $+50$ for pedestrians), complemented by a
+dense shaping term proportional to the per-step reduction of the distance
+to the next waypoint. Waypoints skipped by cutting across the route are
+penalized, so progress cannot be gamed by shortcuts.
+
+\paragraph{Safety terms.}
+A collision costs vehicles $-500$, applied once at the step of first
+contact (the episode then terminates). Two further vehicle terms penalize
+leaving the lane (linear beyond \SI{2}{m} from the lane centre; episode
+termination occurs at \SI{5}{m}, \cref{sec:termination}) and exceeding
+50~km/h. Pedestrian collisions cost $-50$, and pedestrians receive a
+small per-step incentive to stay on sidewalks rather than on driving
+lanes.
+
+\paragraph{Hazard-gated anti-stall shaping (vehicles).}
+The empirically most delicate block counteracts the \emph{defensive
+equilibrium} in which a vehicle stops indefinitely to avoid any risk. All
+of its terms are suspended while the vehicle is legitimately waiting at a
+red or yellow light. The scalar $\mathit{hazard} =
+\max(\text{TTC}_{\mathrm{veh}}, \text{occ}_{\mathrm{veh}},
+\text{TTC}_{\mathrm{ped}}, \text{occ}_{\mathrm{ped}})$ summarizes the
+hazard-preview channel of \cref{sec:obs-actions}, and a boolean
+$\mathit{safe\_to\_push} = (\mathit{hazard} < 0.85)$ gates the pushing
+terms: an idle penalty below 2.5~km/h; a start bonus proportional to
+throttle, route alignment, and an urgency factor that grows with the time
+spent without progress; and a minimum-speed shaping around a target of
+8~km/h, active only when the vehicle is aligned with its route (alignment
+$> 0.25$). Above the hazard threshold every pushing incentive disappears,
+so the policy is never rewarded for accelerating into a risky corridor.
+Independently of the gate, a no-progress ramp (after 100 steps without
+reaching a waypoint) and an anti-loop penalty make prolonged stalling and
+circling strictly unprofitable, and a steering-smoothness pair discourages
+jerky control.
+
+\paragraph{Pedestrian pace band.}
+Pedestrians earn a per-step bonus while walking within a comfort band of
+$[1.2, 2.6]$~m/s, with an idle penalty below 0.15~m/s and a running
+penalty above 3.0~m/s. The band is intentionally wide: at 2.0~m/s a
+pedestrian covers \SI{100}{m} --- the hard-level target --- within the
+\SI{50}{s} horizon. The bonus-only (asymmetric) design of this band and
+its interaction with the vehicles' hazard gate are analysed empirically in
+\cref{ch:results}.
+
+\begin{table}[t]
+  \centering\small
+  \caption{Reward components. ``Gated'' vehicle rows are suspended while
+  waiting at a red/yellow light; rows marked $^{\dagger}$ additionally
+  require $\mathit{safe\_to\_push}$ ($\mathit{hazard} < 0.85$) and route
+  alignment $> 0.25$.}
+  \label{tab:rewards}
+  \begin{tabular}{@{}p{3.4cm}p{5.6cm}p{4.6cm}@{}}
+    \toprule
+    Component & Trigger & Value \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Vehicle}} \\
+    Waypoint reached      & per waypoint advanced & $+100$ \\
+    Skipped waypoint      & per waypoint skipped & $-10$ \\
+    Dense progress        & change in distance to next waypoint & $+4.0$ per metre closed \\
+    Collision             & first contact (terminal) & $-500$ \\
+    Off-lane              & $>$ \SI{2}{m} from lane centre & $-0.5$ per metre \\
+    Overspeed             & speed $> 50$ km/h & $-0.10$ per km/h over \\
+    Idle (gated)          & speed $< 2.5$ km/h & $-0.15$ \\
+    Start bonus (gated$^{\dagger}$) & throttle while idle & $(0.20 + 0.30\,u)\cdot\text{thr}\cdot\text{align}$, brake symmetric; $u = \min(\text{no-progress}/200, 1)$ \\
+    Min-speed shaping (gated$^{\dagger}$) & speed below / above 8 km/h & $-0.04\,(8 - v)\cdot\text{align}$ / $+0.15\cdot\text{align}$ \\
+    No-progress ramp (gated) & $>$ 100 steps without waypoint & $-0.004$ per step, capped $-1.0$ \\
+    Smooth steering       & $|\Delta \text{steer}| < 0.1$ at $> 5$ km/h & $+0.1$ \\
+    Steering jerk         & $|\Delta \text{steer}| > 0.5$ & $-0.3$ \\
+    Anti-loop             & loop detector active & $-1.0$ \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Pedestrian}} \\
+    Waypoint reached      & per waypoint advanced & $+50$ \\
+    Skipped waypoint      & per waypoint skipped & $-10$ \\
+    Dense progress        & change in distance to waypoint & $+2.0$ per metre closed \\
+    Collision             & first contact (terminal) & $-50$ \\
+    Sidewalk / roadway    & per step on sidewalk / driving lane & $+0.2$ / $-0.3$ \\
+    Walking pace          & speed $\in [1.2, 2.6]$ m/s & $+0.3$ \\
+    Idle                  & speed $< 0.15$ m/s & $-0.15$ \\
+    Running               & speed $> 3.0$ m/s & $-0.7$ per m/s over \\
+    Anti-loop             & loop detector active & $-1.0$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ------------------------------------------------------------
+% Sources (verified 2026-07-14): route_planner.py (min_route_ratio=0.5,
+%   max_route_ratio=2.0 L145-146/206-207, max_cross=3 L261/329, short-chain
+%   rejection L368-369); levels.yaml (levels_path 30/60/100, test Town05 80);
+%   route_source labels carla_multi_agent_env.py L1040-1159.
+\section{Route Generation and Difficulty Levels}
+\label{sec:routes}
+
+Difficulty is defined by the \emph{target length} of the per-agent routes,
+with all other scenario parameters held constant: the three training
+levels (easy, medium, hard) place both vehicle and pedestrian targets at
+30, 60 and \SI{100}{m} respectively, always on Town03 and always with the
+same scripted traffic (15 NPC vehicles, 30 NPC pedestrians). A fourth,
+evaluation-only level (\emph{test}) uses Town05 with \SI{80}{m} targets
+and the same traffic counts. The configuration also defines level families
+where difficulty varies by traffic density instead of route length; these
+are not used in this thesis (\cref{sec:campaign}).
+
+\paragraph{Vehicle routes.}
+Vehicle routes are planned on the road topology with CARLA's global route
+planner: candidate destinations are sampled around the target distance and
+a candidate is accepted only if its optimal path length lies within
+$[0.5, 2.0] \times$ the target, with up to 32 attempts per reset. If no
+candidate survives, the environment falls back to a legacy waypoint-chain
+generator. The applied generator is recorded per record
+(\texttt{route\_source} $\in$ \{\texttt{grp},
+\texttt{legacy\_fallback}\}), so the share of fallback routes is always
+measurable.
+
+\paragraph{Pedestrian routes.}
+Pedestrian routes are chains of sidewalk segments connected through
+crosswalks. Two constraints shape them: chains whose cumulative length
+falls below $0.5 \times$ the target are rejected (the same lower-bound
+guard that backs the \texttt{route\_short} demotion of
+\cref{sec:termination}), and the number of crosswalk crossings per route
+is capped at three --- a bound on the pedestrians' on-roadway exposure
+whose value was set empirically (\cref{sec:iterations}). The generator
+records its outcome per record (\texttt{sidewalk\_crosswalk},
+\texttt{sidewalk\_distance}, \texttt{respawn}, \texttt{legacy\_chain}),
+together with feasibility diagnostics (optimal length, target error,
+under-target and too-short flags, candidate attempts). Pedestrian route
+feasibility on Town03 is a structural limitation of the platform ---
+sidewalk topology often cannot support the nominal medium/hard targets ---
+and is analysed separately in \cref{sec:ped-limits}, where environment
+limits are explicitly distinguished from policy limits.
+
+\todo{Fig.~3: example routes per level. Generator script ready at
+\texttt{docs/thesis/scripts/make\_fig3\_route\_examples.py} (requires a
+live CARLA server; user runs it); then include
+\texttt{figures/route\_examples.pdf} here.}
+
+% ------------------------------------------------------------
+% Sources (verified 2026-07-14): curriculum_batch.yaml (all thresholds);
+%   curriculum_batch_manager.py (_balanced_policy_success_details L391-423:
+%   min over policies; window_full L129/382; BatchLevelSampler L902-940).
+\section{Curriculum and Mixed-Batch Training Regimes}
+\label{sec:regimes}
+
+The training regime is the independent variable of the main experiment.
+Both regimes are implemented by the same manager component, consulted once
+per episode reset to select the difficulty level; they share the level
+definitions of \cref{sec:routes}, the total budget of $3 \times 10^6$
+environment steps, and every other component described in this chapter.
+They differ \emph{only} in the level-selection rule.
+
+\subsection{Curriculum arm: competence-gated progression}
+\label{sec:curriculum-arm}
+
+Training starts with only the easy level unlocked. Higher levels unlock
+through a competence gate evaluated on a sliding window of the last 50
+episodes: the windowed success rate is computed separately for the vehicle
+policy and the pedestrian policy, and the gate binds on the \emph{minimum}
+of the two --- progression requires the weaker class to be competent, not
+the average. Medium unlocks at a windowed success rate of at least 70\%,
+hard at 60\%; the window must be full, and a minimum share of the total
+budget must already have been spent at the preceding levels (20\% on easy
+before medium; 28\% on medium before hard). Two design decisions deserve
+justification:
+
+\begin{itemize}
+  \item \textbf{Windowed, not cumulative.} The cumulative success rate is
+        a lagging integrator dragged down by cold-start failures: a policy
+        can be competent \emph{now} while its since-birth average is still
+        far below threshold. Gating on a sliding window measures current
+        competence.
+  \item \textbf{Pressure caps.} If a threshold is never met, the level
+        force-unlocks anyway once a fixed share of the total budget has
+        been consumed (30\% for medium, 70\% for hard). This guarantees
+        that every level is visited within the budget, so the curriculum
+        arm can never terminally stall on easy --- at worst it degrades
+        toward a delayed mixed exposure.
+\end{itemize}
+
+Once unlocked, levels are sampled with weights that normalize to
+$0.30/0.35/0.35$ (easy/medium/hard) under budget constraints (easy at most
+30\% of the budget once medium is available, medium at most 35\%, hard at
+least 35\%). Newly unlocked levels pass through a short \emph{probation}
+phase with reduced sampling pressure (hard is temporarily de-emphasized at
+weight 0.85), smoothing the transition instead of switching abruptly.
+
+\subsection{Batch arm: stratified interleaving}
+\label{sec:batch-arm}
+
+The mixed-batch arm is the \emph{no-ordering control}: all three levels
+are available from the first episode. Levels are sampled by stratified
+shuffling without replacement with a window of three: each consecutive
+window of three episodes drawn from one sampler instance is a uniformly
+random permutation of \{easy, medium, hard\}, giving uniform $1/3$
+exposure with a maximum imbalance of one episode per sampler --- avoiding
+both the drift of i.i.d.\ sampling and any fixed deterministic ordering
+within the window. In the realized campaign logs, where episodes from
+parallel rollout workers interleave, the global level shares stay within
+$\approx 2$ percentage points of uniform and all three levels appear
+within the first twenty episodes (\cref{sec:integrity}).
+
+\subsection{What the comparison isolates}
+\label{sec:isolation}
+
+Under this construction, the two arms consume the same budget over the
+same task distribution in expectation; what differs is \emph{when} each
+part of that distribution is presented and whether presentation is
+conditioned on measured competence. Any behavioural difference between the
+arms is therefore attributable to the ordering policy, up to run-to-run
+variance --- which is quantified separately in \cref{ch:results} and
+discussed in \cref{sec:threats}.
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+      state/.style={draw, rounded corners=2pt, align=center,
+                    minimum width=34mm, minimum height=13mm, font=\small},
+      gate/.style={font=\scriptsize, align=center},
+      >={Stealth[length=2.5mm]}, node distance=17mm]
+    \node[state] (s1) {easy only\\ \scriptsize sampling: easy 1.0};
+    \node[state, right=of s1] (s2) {easy $+$ medium\\ \scriptsize probation, then\\ \scriptsize $\propto 0.30/0.35$};
+    \node[state, right=of s2] (s3) {easy $+$ medium $+$ hard\\ \scriptsize probation (hard $\times$0.85), then\\ \scriptsize $\propto 0.30/0.35/0.35$};
+    \draw[->] (s1.north east) to[bend left=28]
+      node[gate, above] {win.\ SR $\geq 0.70$\\ $\wedge$ easy share $\geq 0.20$} (s2.north west);
+    \draw[->, dashed] (s1.south east) to[bend right=28]
+      node[gate, below] {cap: 30\% budget} (s2.south west);
+    \draw[->] (s2.north east) to[bend left=28]
+      node[gate, above] {win.\ SR $\geq 0.60$\\ $\wedge$ med.\ share $\geq 0.28$} (s3.north west);
+    \draw[->, dashed] (s2.south east) to[bend right=28]
+      node[gate, below] {cap: 70\% budget} (s3.south west);
+  \end{tikzpicture}
+  \caption{Curriculum progression. Solid edges: competence gates on the
+  windowed success rate (minimum over the two policies, window of 50
+  episodes, window full) with budget-share floors. Dashed edges: pressure
+  caps guaranteeing progression within the budget. In the campaign's
+  seed-999 curriculum run, medium unlocked at episode 842 of 3{,}220
+  (26.1\%) and hard at episode 2{,}286 (71.0\%), for a final level mix of
+  32.5\% easy / 45.8\% medium / 21.6\% hard --- timings consistent with
+  the pre-campaign trunk replicates.}
+  \label{fig:curriculum-fsm}
+\end{figure}
+
+% ------------------------------------------------------------
+% Sources (verified 2026-07-14): centralized_critic.py (GraphConvLayer
+%   L336-356, GNNCriticEncoder L414-497, critic MLP 225->256->256->1);
+%   run_config.json of campaign runs (all optimizer values, byte-identical
+%   across arms except mode/use_gnn).
+\section{Critic Encoder Variants and Training Pipeline}
+\label{sec:critic-variants}
+
+\subsection{Critic encoders}
+\label{sec:critic-encoders}
+
+In the default configuration the centralized critic is an MLP mapping the
+225-dimensional global observation through two hidden layers of 256 units
+to a scalar value. The secondary experimental axis
+(\cref{sec:campaign}) replaces this encoder with a graph-based one, while
+\emph{both actors remain the identical MLPs} of \cref{sec:architecture}:
+any behavioural difference between the two variants is therefore
+attributable to value estimation during training, not to policy capacity,
+and at execution time the two variants are indistinguishable in
+architecture.
+
+The GNN encoder splits the global observation back into the six per-agent
+slots, projects each through a per-class linear layer into a
+64-dimensional node embedding, and applies two rounds of message passing
+with GraphSAGE-style mean aggregation~\cite{hamilton2017graphsage}: each
+node combines its own embedding with the mean of the other \emph{alive}
+agents' embeddings through separate learned weights, followed by an ELU
+activation. A masked mean-pool over alive nodes produces the input to the
+value head. The alive mask from the global observation drives both the
+aggregation and the pooling, so terminated agents drop out of the
+critic's summary instead of contributing stale slots. (The codebase also
+provides an attention-based critic encoder and PopArt value
+normalization behind configuration flags; both remain disabled throughout
+this thesis.)
+
+\subsection{Optimization settings}
+\label{sec:optimization}
+
+All campaign runs share the same optimizer configuration, byte-identical
+across arms except for the regime and encoder flags: learning rate
+$5\times10^{-4}$; discount $\gamma = 0.997$; GAE $\lambda = 0.95$; PPO
+clip 0.2 with an additional KL penalty (target 0.02); gradient clipping at
+0.5; value-loss coefficient 0.05 with the value clip effectively disabled
+($10^6$); training batch 8{,}000 steps, minibatch 256, 15 SGD epochs per
+batch, rollout fragments of 200 steps. The entropy coefficient follows a
+schedule from 0.03 to 0.005 with the transition anchored at 83\% of the
+total budget (step 2.49M of 3M) --- expressed as a budget fraction so that
+short diagnostic runs and full runs traverse the same exploration profile.
+The full configuration files are reproduced in \cref{app:hyperparams};
+the empirical justification of the non-default values (notably $\gamma$,
+the value-loss settings, and the entropy schedule) is part of the
+iterative record in \cref{ch:methodology}.
+
+\subsection{Evaluation pipeline}
+\label{sec:eval-pipeline}
+
+Results are measured at three levels, all computed from agent-level
+records (\cref{sec:termination}):
+
+\begin{enumerate}
+  \item \textbf{Training stream}: the cumulative metrics over all training
+        episodes. These are on-policy and, in the curriculum arm, computed
+        over a level mix that changes over time --- they characterize the
+        training process, not final ability.
+  \item \textbf{Static recomputation}: an offline pass over the training
+        logs that recomputes all aggregates from disk, deduplicates
+        records, and verifies integrity (exactly six records per episode,
+        no non-finite values).
+  \item \textbf{Final checkpoint evaluation}: the trained checkpoint is
+        reloaded and run on four fixed scenarios of 100 episodes each ---
+        easy, medium and hard on Town03, plus the test level on Town05
+        (\cref{sec:routes}), the latter measuring map generalization on
+        roads never seen in training. Episodes are evaluated with the
+        stochastic policy (sampling from the learned Gaussian) and
+        per-episode reseeding of both the scenario and the action sampler.
+        Evaluating the deterministic policy mean was deliberately
+        rejected: for a continuous Gaussian policy it collapses behaviour
+        onto a single trajectory per scenario, a failure mode analysed in
+        \cref{sec:bugs}.
+\end{enumerate}

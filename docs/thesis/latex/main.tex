@@ -1,0 +1,103 @@
+% ============================================================
+% Curriculum vs Mixed-Batch Training in MARL for Urban Driving
+% Bachelor's thesis (triennale) — ~60 pages, English
+% Build: latexmk -pdf main.tex   (requires biber)
+% ============================================================
+\documentclass[12pt,a4paper,oneside]{report}
+
+% --- Encoding & language ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[english]{babel}
+\usepackage{csquotes}
+
+% --- Layout ---
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{microtype}
+
+% --- Math, tables, units, figures ---
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{verbatim}
+\usepackage{siunitx}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+
+% --- Bibliography ---
+\usepackage[style=numeric-comp,sorting=none,backend=biber]{biblatex}
+\addbibresource{bibliography.bib}
+
+% --- Colors, links, cross-references (hyperref near the end) ---
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+
+% --- Working notes: red TODO markers, remove before submission ---
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% ============================================================
+\begin{document}
+
+% ----------------- Title page (placeholder) -----------------
+\begin{titlepage}
+  \centering
+  {\scshape\Large \todo{University name --- Department --- Degree programme} \par}
+  \vspace{3cm}
+  {\huge\bfseries Curriculum versus Mixed-Batch Training in Multi-Agent Reinforcement Learning for Urban Autonomous Driving\par}
+  \vspace{2cm}
+  {\Large Candidate: \todo{name}\par}
+  \vspace{0.5cm}
+  {\Large Supervisor: \todo{name}\par}
+  \vfill
+  {\large Academic year \todo{2025/2026}\par}
+\end{titlepage}
+
+% ----------------- Abstract (written last) ------------------
+\begin{abstract}
+\todo{$\sim$250 words: research question, method (CARLA 0.9.16, MAPPO/CTDE,
+6 agents, $2\times2$ seed-paired campaign), 2--3 headline numbers,
+conclusion. Written after Chapter 5 is final.}
+\end{abstract}
+
+\tableofcontents
+
+% ----------------- Acronyms ---------------------------------
+\chapter*{Acronyms}
+\addcontentsline{toc}{chapter}{Acronyms}
+\begin{tabular}{ll}
+CTDE  & Centralized Training with Decentralized Execution \\
+GAE   & Generalized Advantage Estimation \\
+GNN   & Graph Neural Network \\
+MAPPO & Multi-Agent Proximal Policy Optimization \\
+MARL  & Multi-Agent Reinforcement Learning \\
+MLP   & Multi-Layer Perceptron \\
+NPC   & Non-Player Character (scripted traffic participant) \\
+PPO   & Proximal Policy Optimization \\
+RL    & Reinforcement Learning \\
+SR    & Success Rate \\
+TM    & (CARLA) Traffic Manager \\
+\end{tabular}
+
+% ----------------- Chapters ---------------------------------
+\input{chapters/ch01_introduction}
+\input{chapters/ch02_background}
+\input{chapters/ch03_system_design}
+\input{chapters/ch04_methodology}
+\input{chapters/ch05_results}
+\input{chapters/ch06_discussion}
+\input{chapters/ch07_conclusions}
+
+% ----------------- Appendices -------------------------------
+\appendix
+\input{chapters/appendices}
+
+% ----------------- Bibliography -----------------------------
+\printbibliography[heading=bibintoc]
+
+\end{document}

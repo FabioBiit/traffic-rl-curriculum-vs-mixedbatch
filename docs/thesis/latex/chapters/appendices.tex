@@ -1,0 +1,140 @@
+% ============================================================
+% Appendices A–D
+% Status 2026-07-14: A, B, D full draft; C awaits the campaign.
+% Sources: project registry (CLAUDE.md / docs/EXPERIMENT_REGISTRY.md),
+% config snapshots in latex/configs/ (copied from carla_core/configs
+% on 2026-07-14), hardware read from the machine.
+% ============================================================
+
+\chapter{Experiment Registry (Condensed)}
+\label{app:registry}
+
+\Cref{tab:registry} lists every evaluated candidate with its run
+identifier, verdict, and headline outcome. Development-phase A/B runs are
+$3\times10^{5}$ steps, seed 999, easy-locked unless noted; deltas are
+versus the paired baseline of their era (\cref{sec:gate}) and are not
+comparable across environment versions (\cref{sec:bugs}). The full
+registry, with per-candidate mechanisms and pseudocode, is maintained in
+the repository (\texttt{docs/EXPERIMENT\_REGISTRY.md}).
+
+\begin{small}
+\begin{longtable}{@{}p{3.1cm}p{2.8cm}p{2.0cm}p{5.6cm}@{}}
+  \caption{Condensed experiment registry. SR = vehicle success rate,
+  s$+$t = stuck$+$timeout, EV = critic explained variance.}
+  \label{tab:registry}\\
+  \toprule
+  Candidate & Run ID & Verdict & Outcome \\
+  \midrule
+  \endfirsthead
+  \toprule
+  Candidate & Run ID & Verdict & Outcome \\
+  \midrule
+  \endhead
+  C0 diagnostics & --- & adopted & episode-log instrumentation; measurement only \\
+  C1 route-aware obs & --- & adopted & geometric route features (44D era) \\
+  C2v2-A movement reward & 20260514\_001215 & not promoted & SR up but s$+$t worsened \\
+  D1 obs/reward & 20260514\_073353 & rejected & SR down, s$+$t up \\
+  D2 reward shaping & 20260514\_095921 & promoted & anti-stall block of \cref{sec:rewards} \\
+  D1$+$D2 & 20260514\_133823 & rejected & worse than D2 alone \\
+  D2-Safety & 20260514\_155151 & rejected & SR down, no safety gain \\
+  D3 early stuck termination & 20260514\_190424 & rejected & SR $-2.9$\,pp, s$+$t $+7.1$\,pp \\
+  Easy-only path lock & 20260514\_211642 & evidence only & exploratory, no gate \\
+  H1$+$H1.1 value-loss repair & 20260515\_175921 & retained (gate fail) & EV $0 \to 0.87$; collision $+3.3$\,pp \\
+  H2 discount $0.99 \to 0.997$ & 20260515\_211055 & retained (falsified) & collision $+5.2$\,pp, timeout$\to$collision $\approx$1:1 \\
+  H3 entropy schedule (step-based) & 20260516\_144007 & gate fail & mechanism confirmed (entropy $4.78 \to 3.25$); deltas within noise \\
+  R3 collision penalty $\times 10$ & 20260516\_200545 & retained (falsified) & collision flat ($-0.2$\,pp): perception limit, not reward weight \\
+  R1 progress-guard removal & 20260517\_134652 & promoted & SR $+4.7$\,pp, s$+$t $-3.5$\,pp, coll.\ $-1.5$\,pp \\
+  R2 gated steering bonus & 20260517\_164707 & not promoted & SR $-1.9$\,pp, offroad $+3.2$\,pp \\
+  Route-length bugfix & 20260517\_212109 & adopted (bug fix) & $\approx +50$\,pp SR: task-distribution change (\cref{sec:bugs}) \\
+  Route-seed fix & --- & adopted (bug fix) & restores A/B route pairing (\cref{sec:bugs}) \\
+  O1$+$O2 observability (47D) & 20260518\_195947 & adopted & healthy baseline: easy-locked SR $\approx 79$\%, EV 0.983 \\
+  Entropy schedule (fraction-based) & 20260520\_133747 & promoted & stable mechanism; baseline for later gates \\
+  Ped route$+$pace bundle & 20260525\_091300 & partial & ped SR flat but pace out of band; vehicle ripple (stuck $+4.7$\,pp) \\
+  V3 pace-band retune & 20260525\_125127 & rejected & overshoot worse (2.64\,m/s); Q4 SR decline \\
+  V1 hazard-gate $0.75 \to 0.85$ & 20260525\_162428 & promoted & 5/5: SR $+2.3$\,pp, s$+$t $-3.0$\,pp, coll./off.\ improved \\
+  Unlock-path training at 3M & 20260525\_205912 & completed & first full-horizon curriculum run (V1$+$P1--P3 stack) \\
+  Evaluation-pipeline fixes & commit \texttt{d0731ca} & adopted (tooling) & four coupled eval bugs (\cref{sec:bugs}); no training change \\
+  \texttt{route\_short} as success & 20260529\_122522 & reverted & violated the success criterion; vehicle regression suspected, unresolved ($n=1$) \\
+  Post-revert confirmation & 20260610\_192146 & pass & regression not reproduced; third member of the replicate band \\
+  Crosswalk cap $8 \to 3$ & 20260622\_132848 & promoted & SR $+9.2$\,pp, coll.\ $-2.3$\,pp, off.\ $-2.2$\,pp, ped flat (hard-locked A/B) \\
+  \bottomrule
+\end{longtable}
+\end{small}
+
+\chapter{Full Configuration}
+\label{app:hyperparams}
+
+The three configuration files below are verbatim snapshots (2026-07-14)
+of the campaign trunk; the per-run \texttt{run\_config.json} written at
+launch is the authoritative record for any individual run and was used to
+verify that campaign cells differ only in the two experimental flags
+(\cref{sec:campaign}). The traffic and mixed level families in
+\texttt{levels.yaml} are defined but unused in this thesis.
+
+\section*{\texttt{train\_mappo.yaml}}
+{\scriptsize\verbatiminput{configs/train_mappo.yaml}}
+
+\section*{\texttt{curriculum\_batch.yaml}}
+{\scriptsize\verbatiminput{configs/curriculum_batch.yaml}}
+
+\section*{\texttt{levels.yaml}}
+{\scriptsize\verbatiminput{configs/levels.yaml}}
+
+\chapter{Per-Run Results}
+\label{app:per-seed}
+\todo{Complete per-run tables for the four campaign runs (populate once
+the $2\times2$ matrix is closed: full metric catalogue per cell, per
+class, per level, training $+$ final evaluation).}
+
+\chapter{Reproducibility}
+\label{app:repro}
+
+\paragraph{Software stack.}
+CARLA 0.9.16 (server and Python API); Python 3.11.9; PyTorch 2.7
+(CUDA 12.6); Ray/RLlib 2.10.0. Training and simulator run on the same
+machine.
+
+\paragraph{Hardware.}
+All runs were executed on a single laptop-class machine: Intel Core
+i7-10870H (8 cores / 16 threads), \SI{16}{GB} RAM, NVIDIA GeForce RTX
+3080 Laptop GPU (\SI{8}{GB}), Windows 11. The resource envelope is part
+of the study's design constraints: it motivates the $3\times10^{5}$-step
+diagnostic budget of the gate protocol (\cref{sec:gate}) and the
+$n=3$-seed ceiling of the campaign.
+
+\paragraph{Code version.}
+The campaign trunk is commit \texttt{7defb03} (merge of the crosswalk-cap
+branch, 2026-06-22); later commits up to the writing of this thesis touch
+documentation and visualization tooling only. Each run directory stores
+its own \texttt{run\_config.json} (exact configuration), checkpoints, and
+\texttt{episodes.jsonl} (raw agent-level records) from which every number
+in this thesis is recomputed.
+
+\paragraph{Commands.}
+Training (one per campaign cell; the four cells vary only
+\texttt{--mode} and \texttt{--use-gnn}):
+\begin{quote}\small\ttfamily
+python -m carla\_core.training.train\_carla\_mappo --mode curriculum
+--difficulty path --timesteps 3000000 --seed 999 [--use-gnn]
+\end{quote}
+Training writes a \texttt{final\_eval\_job.json} into the run directory;
+the final 400-episode evaluation (\cref{sec:eval-pipeline}) is launched
+with:
+\begin{quote}\small\ttfamily
+python -m carla\_core.training.evaluate\_carla\_mappo --job
+<run\_dir>/final\_eval\_job.json
+\end{quote}
+Static recomputation from logs and thesis figures:
+\begin{quote}\small\ttfamily
+python carla\_core/scripts/verify-check-test/evaluate\_run\_static.py \\
+python docs/thesis/scripts/make\_pilot\_collapse\_fig.py \\
+python docs/thesis/scripts/make\_fig3\_route\_examples.py
+\end{quote}
+
+\paragraph{Seeds.}
+Campaign: a single experiment seed (999), paired across all four cells.
+April pilot era: seed 42. Per-agent route seeds derive
+deterministically from the experiment seed (\cref{sec:seeding}). Note
+that seeding does not make CARLA runs identical (\cref{sec:threats});
+reproducibility here means reproducing the \emph{distribution} of
+outcomes and every reported aggregate from the archived logs.

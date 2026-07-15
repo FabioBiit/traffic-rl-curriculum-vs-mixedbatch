@@ -1,0 +1,125 @@
+% ============================================================
+% Chapter 6 — Discussion (target 4–5 pp)
+% ============================================================
+\chapter{Discussion}
+\label{ch:discussion}
+
+\todo{Chapter not started. Skeleton below per the outline.}
+
+\section{What Task Ordering Changes (and What It Does Not)}\label{sec:ordering}
+% Interpretation of the 4 comparison axes.
+
+\section{Parallel Task Coverage Revisited}\label{sec:ptc-revisited}
+% What the evidence says about interactions, correlated samples,
+% non-stationarity.
+
+% --- §6.3–6.4 drafted 2026-07-14 (results-independent; re-read after
+%     Ch. 5 is final to update the n-per-cell statement). ---
+\section{Threats to Validity}
+\label{sec:threats}
+
+\paragraph{Simulator non-determinism under identical conditions.}
+The dominant threat, quantified rather than assumed: three full-length
+runs of byte-identical code, configuration and seed produced cumulative
+vehicle success rates ranging 52.2--62.4\% (\cref{sec:iterations}).
+CARLA under multi-agent load is not run-to-run deterministic even in
+synchronous mode with all seeds fixed. Every effect in this thesis is
+therefore read against this $\sim$10\,pp band: differences within it are
+never attributed to an experimental factor, whatever their direction. The
+band was measured on the pre-campaign trunk at training level; it is
+assumed representative for campaign-era runs, which is itself an
+approximation.
+
+\paragraph{Sample size.}
+Each cell contains a single run: the design was reduced from three paired
+seeds per cell to one for compute reasons, a decision declared in
+\cref{sec:campaign}. Every conclusion therefore rests on paired
+contrasts, not on estimated distributions. Seed pairing and
+byte-identical configurations make the contrasts internally clean, and
+the primary contrast carries one built-in replication --- it is observed
+independently under both critic architectures --- but no formal
+statistical inference is possible at this $n$, and none is claimed. The
+mitigations are the replicate band above and consistency checks ---
+direction agreement across difficulty levels, evaluation scenarios,
+agent classes, and measurement layers --- rather than significance
+tests.
+
+\paragraph{Evaluation noise.}
+The final evaluation uses 100 episodes per scenario, i.e.\ 300 vehicle
+records; at mid-range success rates the binomial standard error alone is
+$\approx$3\,pp per scenario, before accounting for the within-episode
+correlation of the three vehicles, which lowers the effective sample
+further. Scenario-level differences of a few points are therefore not
+individually meaningful; only patterns across scenarios are interpreted.
+
+\paragraph{Reward--curriculum coupling.}
+The reward function was tuned through gate iterations run mostly on
+easy-locked configurations (\cref{sec:gate}), so the trunk's shaping may
+be implicitly biased toward short routes. Both regimes share the
+identical reward, so the primary contrast remains internally valid; the
+caveat applies to interpreting \emph{absolute} performance on hard
+routes, and to the possibility that a differently tuned reward would
+shift the two regimes differently.
+
+\paragraph{Single map pair.}
+Generalization is measured on exactly one transfer, Town03 $\to$ Town05.
+The two layouts differ in kind (\cref{sec:carla-bg}), which makes the
+test meaningful, but claims are limited to this pair; no evidence is
+offered that the ranking of regimes transfers to other maps, traffic
+compositions, or weather conditions.
+
+\paragraph{Measurement history.}
+The evaluation pipeline itself failed validity once
+(\cref{sec:bugs}), and the route-length defect silently redefined the
+task distribution for a whole era of experiments. Both were caught by
+integrity signals (implausibly regular outputs; missing per-agent logs).
+The protocol now in place --- integrity checks, paired configurations,
+recomputation from raw logs --- was built in response, but the general
+lesson stands as a threat class: in a custom platform, apparent effects
+must first survive the question ``is the instrument measuring what it
+claims?''
+
+\paragraph{Pedestrian route feasibility.}
+Pedestrian results at medium/hard difficulty are confounded by a
+structural environment limit: Town03's sidewalk topology often cannot
+support the nominal route targets (\cref{sec:routes}). \Cref{sec:ped-limits}
+separates environment-attributable from policy-attributable failure, and
+pedestrian-side regime conclusions are restricted accordingly.
+
+% ------------------------------------------------------------
+\section{Scope Limitations}
+\label{sec:scope}
+
+Beyond threats to internal validity, the design deliberately fixes
+several dimensions; findings should not be read beyond them.
+
+\begin{itemize}
+  \item \textbf{Actor architecture is fixed.} Both classes use MLP
+        actors throughout; only the \emph{critic encoder} varies (MLP
+        vs.\ GNN, training-side only). This thesis makes no claim about
+        policy-network architecture, and the GNN axis speaks only to
+        value estimation under CTDE.
+  \item \textbf{The shared-world frame is not ablated.} Parallel task
+        coverage (\cref{sec:parallel-coverage}) is the fixed frame of
+        both arms, not a treatment: there is no 1-agent-per-world
+        control, so its causal contribution to sample efficiency is
+        characterized, not isolated.
+  \item \textbf{Privileged observations, no perception.} Agents observe
+        curated state features (\cref{sec:obs-actions}), not sensors.
+        All findings concern decision-making under interaction;
+        nothing follows for camera- or lidar-based pipelines.
+  \item \textbf{One algorithm, one platform version.} MAPPO on
+        RLlib~2.10.0 and CARLA~0.9.16 throughout. Regime effects are
+        conditional on this stack; other algorithms may interact with
+        task ordering differently.
+  \item \textbf{Difficulty is route length only.} The configuration
+        defines traffic-density and mixed difficulty families, but they
+        are unused (\cref{sec:campaign}); ``difficulty'' in every claim
+        means target route length at fixed traffic.
+  \item \textbf{Fixed population.} Always 3 vehicles $+$ 3 pedestrians;
+        no scaling evidence in either direction.
+  \item \textbf{Pedestrian route generation.} The sidewalk-chain planner
+        with its crossing cap is part of the platform being studied; its
+        known feasibility limits bound what pedestrian policies can
+        express, independently of training regime.
+\end{itemize}

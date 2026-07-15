@@ -1,0 +1,56 @@
+# MAPPO Training Configuration — Multi-Agent with Centralized Critic
+# =================================================================
+# Extends train.yaml for MAPPO-specific settings.
+# Loads multi_agent.yaml for environment configuration.
+
+experiment:
+  name: "carla_mappo"
+  mode: "auto"                 # Auto-resolve from run/output naming, or override with --mode
+  output_dir: "carla_core/experiments"
+
+resources:
+  num_workers: 0                # 0 = local driver only (CARLA single instance)
+  num_gpus: 1
+
+rollout:
+  rollout_fragment_length: 200
+  train_batch_size: 8000        # 4000 -> 8000 Reward v6
+  sgd_minibatch_size: 256       # Finetune T1: 256 -> 512 after PLAN B OBS-only (NO_PASS => Revert)
+  num_sgd_iter: 15              # Finetune T1: 15 -> 10 to reduce PPO data reuse (NO_PASS => Revert)
+
+optimization:
+  lr: 0.0005                    # 0.0003 -> 0.0005 Reward v8 # 0.0005 -> 0.0003 Reward v7 # 0.0003 -> 0.0005 Reward v6
+  gamma: 0.997                  # H2: orizzonte effettivo ~5s -> ~17s (1/(1-gamma) step x 0.05s)
+  gae_lambda: 0.95
+  clip_param: 0.2
+  entropy_coeff: 0.03           # 0.05 -> 0.03 Reward v6 # 0.01 -> 0.05 Reward v5 
+  entropy_coeff_schedule_fraction: [[0.0, 0.03], [0.83, 0.005]]   # H3 + schema-clean: fractions of total_timesteps (0.83 = endpoint at 83% budget). Expanded to absolute schedule by train_carla_mappo.py.
+  grad_clip: 0.5                # 1.0 -> 0.5 Reward v8 #0.5 -> 1.0 Reward v7
+  vf_clip_param: 1000000.0      # H1: clamp non vincolante — il critic deve poter apprendere returns O(10^2-10^3)
+  vf_loss_coeff: 0.05           # H1.1: ribilancia la quota della value-loss nella norma globale.
+  use_kl_loss: true             # Reward v8
+  kl_target: 0.02               # Reward v8
+  kl_coeff: 0.3                 # Reward v8
+
+schedule:
+  total_timesteps: 1000000
+  checkpoint_freq: 100000
+  stop_on_nan: true             # Stop training if NaN/Inf is detected in trainer metrics
+
+runtime:
+  fast_exit_after_final_eval_launch: true
+  # Exit the parent process immediately after scheduling the final eval launcher.
+  # This avoids the CARLA/RLlib teardown path that can abort in libcarla after long runs.
+
+model:
+  hidden_size: 256              # MLP and GNN hidden layer size for actor and critic
+  n_hidden_layers: 2            # Number of hidden layers
+  use_popart: false             # Enable PopArt value normalization (Block 4.2)
+  popart_beta: 0.0003           # EMA decay for PopArt running statistics
+  use_attention: false          # Enable Attention critic encoder (Block 4.4)
+  attention_embed_dim: 64       # Per-agent embedding dim for attention critic
+  attention_heads: 4            # Number of attention heads
+  use_gnn: false                # Enable GNN critic encoder (Block 4.5)
+  gnn_embed_dim: 64             # Per-agent embedding dim for GNN
+  gnn_heads: 4                  # Attention heads (only when use_gnn+use_attention -> GAT)
+  gnn_layers: 2                 # Number of GNN message-passing layers

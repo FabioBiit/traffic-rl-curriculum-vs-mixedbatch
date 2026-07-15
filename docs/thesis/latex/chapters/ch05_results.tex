@@ -1,0 +1,339 @@
+% ============================================================
+% Chapter 5 — Results (target 14–16 pp)
+% Written LAST among the big chapters, once the 2x2 campaign (n=1 seed,
+% decided 2026-07-14: S2/S3 dropped for compute budget) is consolidated.
+% Every number recomputed from episodes.jsonl on disk.
+% Data status (2026-07-14 evening): MLP-C 20260622_171626 train+eval OK;
+% MLP-B 20260623_171855 train+eval OK; GNN-C 20260630_181143 train only;
+% GNN-B 20260714_155209 training in flight; final evals remain for the
+% two GNN runs only.
+% ============================================================
+\chapter{Results}
+\label{ch:results}
+
+\todo{Awaiting campaign consolidation. Section skeleton below.}
+
+% Sources: recomputed from disk 2026-07-14 (9 runs × episodes.jsonl,
+% dedup + route_complete only; integrity 6/6, 0 bad lines on all).
+% Figure: docs/thesis/scripts/make_pilot_collapse_fig.py.
+\section{Preliminary Architectural Pilot (April 2026)}
+\label{sec:pilot}
+
+Before the correctness fixes of \cref{sec:bugs}, nine runs (April--early
+May 2026) crossed critic encoders and training regimes in the
+first-generation environment: seed 42, budgets of $1$M or $3$M steps,
+44D-era vehicle observations, and the pre-fix route planner. They are
+reported here as a preliminary study --- not because their comparisons
+hold (they do not), but because they motivated the methodology of
+\cref{ch:methodology} and provide this thesis's clearest cautionary
+example about aggregate metrics. All nine logs pass the integrity checks
+of \cref{sec:metrics}; \cref{tab:pilot} reports the recomputed
+cumulative metrics.
+
+\begin{table}[t]
+  \centering\small
+  \caption{April 2026 pilot runs, recomputed from disk (cumulative,
+  agent-level; \%). All runs: seed 42, Town03, pre-route-length-fix
+  environment. Per-record speed was not yet logged in this era.
+  $^{a}$~architecture untagged in run metadata (old configuration
+  schema); confirmed MLP by the author. $^{b}$~variant with attention critic encoder
+  and PopArt enabled. $^{c}$~stopped at $\approx$2.7M of 3M.}
+  \label{tab:pilot}
+  \begin{tabular}{@{}llllrrrrrr@{}}
+    \toprule
+    Run & Regime & Critic & Steps & Ep. & \multicolumn{4}{c}{Vehicles} & Ped. \\
+    \cmidrule(lr){6-9}\cmidrule(l){10-10}
+    & & & & & SR & s$+$t & coll. & off. & SR \\
+    \midrule
+    0406 & curr.\ & MLP & 1M & 1062 & 1.2 & 46.4 & 31.8 & 20.7 & 82.4 \\
+    0411 & curr.\ & MLP & 3M & 3047 & 2.0 & 53.2 & 30.6 & 14.2 & 67.4 \\
+    0425 & curr.\ & GNN & 3M & 3015 & 1.2 & 70.8 & 19.5 & 8.6 & 70.6 \\
+    0430 & curr.\ & GNN$^{b}$ & 3M & 2188 & 1.8 & 50.9 & 28.9 & 18.5 & 66.2 \\
+    0504 & curr.\ & GNN & 3M$^{c}$ & 2730 & 3.9 & 64.3 & 21.1 & 10.8 & 75.4 \\
+    0405 & batch & MLP & 1M & 1066 & 1.9 & 42.3 & 38.3 & 17.6 & 77.0 \\
+    0408 & batch & MLP$^{a}$ & 3M & 3038 & 0.2 & 57.8 & 28.2 & 13.8 & 72.5 \\
+    0421 & batch & GNN & 3M & 3078 & 2.7 & 49.5 & 30.5 & 17.4 & 74.4 \\
+    0502 & batch & GNN & 3M & 3054 & 3.0 & 58.2 & 23.6 & 15.3 & 74.4 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Four observations, in decreasing order of certainty:
+
+\begin{enumerate}
+  \item \textbf{Vehicles sat at floor in every cell} (SR 0.2--3.9\%).
+        At floor, the success metric has no room to express differences:
+        whatever effect architecture or regime may have had is compressed
+        below the noise. The pilot's architectural comparison on vehicles
+        is therefore \emph{uninformative} --- the counterexample that
+        motivates running the main campaign in the mid-range regime. The
+        floor itself was later traced to the route-length defect of
+        \cref{sec:bugs}.
+  \item \textbf{Pedestrians learned} (SR 66--82\%): the platform was
+        trainable for the simpler class even in this era, localizing the
+        failure to the vehicle task rather than to the stack --- and
+        illustrating why all reporting is per class
+        (\cref{sec:metrics}).
+  \item \textbf{A qualitative architectural signature.} Among the
+        curriculum runs, the plain GNN-critic run (0425) shows the most
+        defensive failure profile of the nine: the highest
+        stuck$+$timeout (70.8\%) with the lowest collision (19.5\%) and
+        offroad (8.6\%), versus 53.2/30.6/14.2\% for its MLP counterpart
+        (0411). At floor SR this is hypothesis-generating at most;
+        whether a regime-dependent architectural signature reappears on
+        the healthy trunk is exactly question H3, taken up in
+        \cref{sec:arch-axis}.
+  \item \textbf{Cumulative aggregates can hide a collapse.} Run 0504 was
+        flagged during training as having collapsed mid-run --- yet its
+        \emph{cumulative} vehicle SR (3.9\%) is the highest of all nine.
+        \Cref{fig:pilot-collapse} resolves the paradox: the run sustained
+        a windowed SR of 10--14\% for roughly 500 episodes, then dropped
+        abruptly to near zero around episode 1{,}100 and never recovered;
+        the cumulative figure is entirely inherited from the
+        pre-collapse phase. This lesson --- current competence must be
+        measured on a window, not since birth --- directly shaped the
+        windowed unlock metric of \cref{sec:regimes} and the quartile
+        reporting of \cref{sec:metrics}.
+\end{enumerate}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\textwidth]{pilot_collapse_timeseries}
+  \caption{Windowed vehicle SR (100-episode window) for the two plain
+  GNN-curriculum pilot runs. Run 0504 (dashed) sustains 10--14\% for
+  $\approx$500 episodes, collapses near episode 1{,}100, and never
+  recovers --- while ending with the \emph{highest} cumulative SR of the
+  pilot (3.9\%, \cref{tab:pilot}). Cumulative aggregates inherit
+  history; collapse detection requires windowed views.}
+  \label{fig:pilot-collapse}
+\end{figure}
+
+% Sources for §5.2–5.4, §5.6: docs/thesis/data/campaign_consolidation.json,
+% recomputed from disk 2026-07-15 by docs/thesis/scripts/
+% consolidate_campaign.py (dedup, route_complete only, per class).
+% GNN-B cells marked \todo until its training + the two GNN evals land.
+\section{Campaign Integrity and Setup Recap}
+\label{sec:integrity}
+
+\Cref{tab:runmatrix} lists the campaign runs. All were launched on the
+same trunk (commit \texttt{7defb03}) with seed 999; configuration diffs
+confirm the cells differ only in the regime and critic-encoder flags
+(\cref{sec:campaign}). The three completed training logs pass every
+integrity condition of \cref{sec:metrics}: exactly six records per
+episode throughout, zero malformed lines, zero non-finite values.
+
+\begin{table}[t]
+  \centering\small
+  \caption{Campaign run matrix (all: 3M steps, Town03, seed 999, trunk
+  \texttt{7defb03}). Realized level exposure is reported as
+  easy/medium/hard shares of episodes.}
+  \label{tab:runmatrix}
+  \begin{tabular}{@{}llrrlll@{}}
+    \toprule
+    Cell & Run ID & Episodes & Records & Level mix (\%) & Integrity & Final eval \\
+    \midrule
+    MLP-curr.\ & 20260622\_171626 & 3220 & 19{,}320 & 32.5/45.8/21.6 & OK & 400 ep, done \\
+    MLP-batch  & 20260623\_171855 & 3180 & 19{,}080 & 35.3/32.8/31.9 & OK & 400 ep, done \\
+    GNN-curr.\ & 20260630\_181143 & 3293 & 19{,}758 & 32.4/37.4/30.1 & OK & \todo{pending} \\
+    GNN-batch  & 20260714\_155209 & \multicolumn{4}{l}{\todo{training in progress}} & \todo{pending} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The realized exposure matches the two designs: the batch run stays within
+$\approx 2$ percentage points of the uniform $1/3$ per level, with all
+three levels present within its first twenty episodes; the curriculum
+runs concentrate easy/medium exposure early and reach hard only after
+their unlocks (\cref{sec:sample-efficiency}), ending with hard shares of
+21.6\% (MLP) and 30.1\% (GNN).
+
+% ------------------------------------------------------------
+\section{Sample Efficiency}
+\label{sec:sample-efficiency}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{learning_curves}
+  \caption{Windowed success rate (100-episode window) versus environment
+  steps for the completed cells. \todo{Re-run
+  \texttt{make\_fig5\_learning\_curves.py} to add GNN-batch when its
+  training completes.} Important caveat: each curve is measured on that
+  run's \emph{own concurrent level mix} --- gated for the curriculum
+  cells, uniform for batch --- so vertical comparisons between arms are
+  not like-for-like until the curriculum has unlocked all levels; the
+  distribution-matched comparison is the final evaluation
+  (\cref{sec:final-performance}).}
+  \label{fig:learning-curves}
+\end{figure}
+
+\paragraph{Early phase: indistinguishable take-off.}
+All three completed cells climb at the same speed: the 100-episode
+windowed vehicle SR first crosses 30\% after 137--140K steps and 50\%
+after 162--167K steps in every cell --- a spread of a few percent,
+far inside noise. The notable part is \emph{what} each policy crossed it
+on: the curriculum cells on easy-only exposure, the batch cell on the
+full uniform mix including \SI{100}{m} routes. At equal budget, early
+success-rate take-off was not the discriminating factor between regimes
+in this campaign.
+
+\paragraph{Unlock timing (curriculum cells).}
+Medium unlocked at practically the same point in both curriculum runs
+(episode 842 of 3220, 26.1\%, MLP; episode 860 of 3293, 26.1\%, GNN).
+Hard, however, unlocked much earlier under the GNN critic: episode
+1{,}910 (58.0\% of training) versus 2{,}286 (71.0\%) for MLP --- the
+latter consistent with the 70\%-budget pressure cap firing rather than
+the competence gate (\cref{sec:regimes}), while the GNN cell reached the
+hard gate on competence. The result is visible in the exposure shares of
+\cref{tab:runmatrix}: the GNN-curriculum policy saw $\approx 40$\% more
+hard episodes than its MLP counterpart.
+
+\paragraph{After the take-off.}
+From $\approx 0.5$M steps the MLP-batch curve settles visibly below the
+two curriculum curves (\cref{fig:learning-curves}), which track each
+other closely; all curves drift downward late in training as the
+curriculum mixes harden (curriculum cells) and as pedestrian windowed
+success declines --- the within-run dynamics are analysed in
+\cref{sec:behavior}.
+
+% ------------------------------------------------------------
+\section{Final Cumulative Performance}
+\label{sec:final-performance}
+
+\begin{table}[t]
+  \centering\small
+  \caption{Cumulative training metrics per cell (agent-level, \%;
+  speed in km/h for vehicles, m/s for pedestrians).
+  \todo{Add the GNN-batch row when its training completes.}}
+  \label{tab:cumulative}
+  \begin{tabular}{@{}lrrrrrrrr@{}}
+    \toprule
+    & \multicolumn{5}{c}{Vehicles} & \multicolumn{3}{c}{Pedestrians} \\
+    \cmidrule(lr){2-6}\cmidrule(l){7-9}
+    Cell & SR & s$+$t & coll. & off. & speed & SR & s$+$t & speed \\
+    \midrule
+    MLP-curr.\ & 57.28 & 30.48 & 8.84 & 3.41 & 10.2 & 56.59 & 42.56 & 1.96 \\
+    MLP-batch  & 46.31 & 23.61 & 17.33 & 12.76 & 18.7 & 57.06 & 42.03 & 1.61 \\
+    GNN-curr.\ & 56.55 & 20.84 & 13.37 & 9.23 & 18.0 & 60.50 & 38.58 & 1.91 \\
+    GNN-batch  & \multicolumn{8}{l}{\todo{training in progress}} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering\small
+  \caption{Final 400-episode evaluation, MLP pair (agent-level, \%).
+  Scenarios: easy/medium/hard on Town03, test on Town05.
+  \todo{Twin table for the GNN pair once its evaluations run.}}
+  \label{tab:eval-mlp}
+  \begin{tabular}{@{}llrrrrr@{}}
+    \toprule
+    Scenario & Cell & veh SR & veh s$+$t & veh coll. & veh off. & ped SR \\
+    \midrule
+    easy   & MLP-curr.\ & 60.33 & 28.00 & 7.33 & 4.33 & 58.00 \\
+           & MLP-batch  & 41.33 & 28.33 & 18.00 & 12.33 & 58.67 \\
+    medium & MLP-curr.\ & 51.67 & 36.00 & 9.00 & 3.33 & 40.67 \\
+           & MLP-batch  & 31.00 & 27.67 & 25.33 & 16.00 & 41.67 \\
+    hard   & MLP-curr.\ & 44.33 & 38.33 & 14.33 & 3.00 & 26.67 \\
+           & MLP-batch  & 29.00 & 29.67 & 23.33 & 18.00 & 32.33 \\
+    test   & MLP-curr.\ & 37.00 & 50.67 & 11.00 & 1.33 & 62.67 \\
+           & MLP-batch  & 18.00 & 39.00 & 37.33 & 5.67 & 63.00 \\
+    \midrule
+    all    & MLP-curr.\ & 48.33 & 38.25 & 10.42 & 3.00 & 47.00 \\
+           & MLP-batch  & 29.83 & 31.17 & 26.00 & 13.00 & 48.92 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{The primary contrast, MLP pair.}
+On the distribution-matched final evaluation
+(\cref{tab:eval-mlp}), the curriculum-trained vehicle policy completes
+48.33\% of routes against 29.83\% for batch: $+18.5$ percentage points,
+with the same sign in \emph{all four} scenarios ($+19.0$, $+20.7$,
+$+15.3$, $+19.0$\,pp) and in cumulative training ($+11.0$\,pp,
+\cref{tab:cumulative}). The margin is roughly two to four times the
+same-seed replicate band of \cref{sec:iterations}, and its consistency
+across scenarios, difficulty levels and measurement layers is what the
+paired design can offer in place of seed replication
+(\cref{sec:campaign}).
+
+\paragraph{Two different ways to fail.}
+The regimes produce recognizably different driving. The batch policy is
+nearly twice as fast (18.7 vs.\ 10.2 km/h in training) but converts that
+mobility into contact: collision 17.3\% vs.\ 8.8\% and offroad 12.8\%
+vs.\ 3.4\% in training, widening to collision 26.0\% vs.\ 10.4\% at
+evaluation. The curriculum policy fails mostly by stalling
+(stuck$+$timeout 38.3\% vs.\ 31.2\% at evaluation). Neither profile
+dominates the other on every axis --- the curriculum trades speed for
+safety --- but on the strict success criterion the trade resolves
+clearly in its favour.
+
+\paragraph{Pedestrians: no regime effect.}
+Pedestrian success is flat between arms everywhere: 56.6 vs.\ 57.1\% in
+training, 47.0 vs.\ 48.9\% at evaluation, and within $\pm 6$\,pp in
+every scenario. The training regime, in this platform, is a
+vehicle-policy variable; the pedestrian task appears insensitive to task
+ordering. Pedestrian failure structure is taken up in
+\cref{sec:ped-limits}.
+
+\paragraph{GNN-curriculum (training-only preview).}
+Pending its evaluation, the GNN-curriculum cell lands within noise of
+MLP-curriculum on headline SR (56.55 vs.\ 57.28\%) while redistributing
+the failure mass: less stalling ($-9.6$\,pp stuck$+$timeout), more
+contact ($+4.5$\,pp collision, $+5.8$\,pp offroad), and much higher
+speed (18.0 vs.\ 10.2 km/h) --- closer to the batch cell's mobility with
+curriculum-level success. If confirmed at evaluation, the critic encoder
+would be shaping the \emph{risk profile} more than the success rate;
+this thread is picked up in \cref{sec:arch-axis}.
+
+\section{Behavioral Analysis}\label{sec:behavior}
+% 2–2.5 pp: Q1->Q4 trajectories (data ready in campaign_consolidation.json:
+% all cells decline Q1->Q4; MLP-B declines on a CONSTANT mix — real late
+% degradation vs mix-hardening for C cells — disentangle), speed profiles,
+% no_wp_steps, stuck causes; defensive-equilibrium case study (hazard gate)
+% + P1xV1 coupling; ped windowed decline (fig) mix-confounded for C.
+
+\section{Generalization: Town03 to Town05}
+\label{sec:generalization}
+
+The test scenario places the same policies on Town05 --- a squared-grid,
+multi-lane layout structurally unlike Town03 (\cref{sec:carla-bg}) ---
+for 100 episodes at \SI{80}{m} targets, with traffic as in training.
+Three observations from the MLP pair (\cref{tab:eval-mlp}); the GNN pair
+is \todo{pending evaluation}.
+
+\paragraph{The ordering survives the map change.}
+Curriculum completes 37.0\% of Town05 routes against batch's 18.0\%
+($+19.0$\,pp) --- essentially the same margin as in-domain. The
+absolute drop from the Town03 scenario average is nearly identical for
+the two arms ($-15.1$\,pp from 52.1\% for curriculum; $-15.8$\,pp from
+33.8\% for batch), so the curriculum advantage is not a Town03
+idiosyncrasy: it transfers whole to roads never seen in training.
+Read against hypothesis H2, the broader early coverage of the batch
+regime bought it \emph{no} generalization edge --- if anything the
+relative drop is worse from its lower base ($-47$\% vs.\ $-29$\%
+relative).
+
+\paragraph{Failure signatures amplify off-distribution.}
+Each arm fails on Town05 the way it fails at home, only more so: the
+curriculum policy stalls (stuck$+$timeout 50.7\%, its highest anywhere)
+while keeping contact low (collision 11.0\%, offroad 1.3\%); the batch
+policy crashes (collision 37.3\%, its highest anywhere). Novel roads
+stress exactly the axis each policy already leaned on.
+
+\paragraph{Pedestrians transfer easily.}
+Pedestrian success on Town05 (62.7 vs.\ 63.0\%) exceeds both arms'
+Town03 hard-level results by $\approx 30$\,pp --- the \SI{80}{m} test
+routes are more feasible than Town03's \SI{100}{m} hard routes, pointing
+again at route feasibility rather than policy generalization as the
+pedestrian bottleneck (\cref{sec:ped-limits}).
+
+\section{Architecture Axis: MLP vs GNN Critic}\label{sec:arch-axis}
+% 1.5–2 pp (H3): does the C-vs-B contrast replicate on both architectures?
+% arch x regime interaction; link to April pilot signature.
+
+\section{Pedestrian Structural Limits}\label{sec:ped-limits}
+% 1–1.5 pp: route feasibility (under_target/too_short/sidewalk_fallback),
+% medium/hard collapse: environment vs policy limits.
+
+\section{Findings versus Hypotheses}\label{sec:findings}
+% 0.5–1 pp: H1/H2/H3 -> supported/rejected/partial per axis.
