@@ -29,7 +29,7 @@ RUNS = {
     "MLP-C": {"dir": EXP / "curriculum/EVAL_DONE_comparison_3M_MLP/carla_mappo_20260622_171626", "arch": "MLP", "regime": "curriculum"},
     "MLP-B": {"dir": EXP / "batch/EVAL_DONE_comparison_3M_MLP/carla_mappo_20260623_171855", "arch": "MLP", "regime": "batch"},
     "GNN-C": {"dir": EXP / "curriculum/GNN/carla_mappo_20260630_181143", "arch": "GNN", "regime": "curriculum"},
-    # "GNN-B": {"dir": EXP / "batch/carla_mappo_20260714_155209", "arch": "GNN", "regime": "batch"},  # enable when training done
+    "GNN-B": {"dir": EXP / "batch/carla_mappo_20260714_155209", "arch": "GNN", "regime": "batch"},
 }
 SCEN = {30.0: "easy", 60.0: "medium", 100.0: "hard", 80.0: "test"}
 WINDOW = 100

@@ -32,21 +32,16 @@ No local TeX installation? Zip this folder and upload it to Overleaf
   candidate registry); final `\todo`: run matrix once the campaign closes.
 - Ch. 2: FULL DRAFT §2.1–2.5; all 12 bibliography entries verified against
   publisher pages on 2026-07-14 (no TODO left in bibliography.bib).
-- Ch. 5: §5.1–5.4 + §5.6 FULL DRAFT — MLP half is final (recomputed via
-  ../scripts/consolidate_campaign.py → ../data/campaign_consolidation.json);
-  GNN-B and the two GNN evals slot in via `\todo` marks; figures:
-  pilot_collapse_timeseries.pdf + learning_curves.pdf (re-run the script
-  to add GNN-B). §5.5/5.7/5.8/5.9 pending.
-- Ch. 6: §6.3 (threats) + §6.4 (scope) FULL DRAFT; §6.1–6.2 await Ch. 5.
-- Ch. 3: Fig. 4 (curriculum state machine, TikZ) done with real unlock
-  timings; Fig. 3 generator script ready in ../scripts/ (needs live CARLA,
-  user runs it); Fig. 2 (Town03 screenshot) still pending.
+- ALL BODY TEXT DRAFTED (2026-07-16): Ch. 2–7 complete, Abstract written,
+  Appendices A–D complete. Campaign 2×2 closed and consolidated
+  (../data/campaign_consolidation.json; rebuild via
+  ../scripts/consolidate_campaign.py). Figures generated:
+  pilot_collapse_timeseries.pdf + learning_curves.pdf (4 cells).
 - Sanity checks pass on all sources (env/brace balance, cross-refs, cite
-  keys) — not yet compiled (no local TeX).
-- Ch. 1: draft exists only in the 2026-07-06 session chat — paste into
-  `chapters/ch01_introduction.tex`.
-- Appendices: A (condensed registry, longtable), B (verbatim YAML snapshots
-  in `configs/`), D (reproducibility) FULL DRAFT; C awaits the campaign.
-- Awaiting campaign (GNN-B in flight, then evals) for Ch. 5 core, §6.1–6.2,
-  Ch. 7, Abstract, App. C. Pending user actions: paste Ch. 1 draft; first
-  compile on Overleaf/MiKTeX; run Fig. 3 script; Fig. 2 screenshot.
+  keys) — NOT YET COMPILED (no local TeX): first Overleaf compile is the
+  main outstanding validation.
+- Remaining: Ch. 1 (paste user's 2026-07-06 draft, then polish + add H3);
+  Fig. 2 (Town03 screenshot, user); Fig. 3 (run ../scripts/
+  make_fig3_route_examples.py with live CARLA, user); optional extra
+  figures (failure-mode stacked bars, Town05 bars); final \todo sweep;
+  title-page fields; page-count check (~60 pp target).

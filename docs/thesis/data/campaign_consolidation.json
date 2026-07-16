@@ -1020,6 +1020,555 @@
     "legacy_fallback": 9.73
    }
   },
-  "eval": null
+  "eval": {
+   "records": 2406,
+   "bad_lines": 0,
+   "nonfinite_values": 0,
+   "scenarios": {
+    "easy": {
+     "veh": {
+      "n": 303,
+      "sr": 52.48,
+      "route_short": 0.0,
+      "stuck": 20.46,
+      "timeout": 1.65,
+      "st": 22.11,
+      "coll": 13.53,
+      "off": 11.88,
+      "speed": 16.831,
+      "route_completion": 0.823,
+      "path_eff": 0.696,
+      "no_wp": 258.521
+     },
+     "ped": {
+      "n": 303,
+      "sr": 71.95,
+      "route_short": 1.32,
+      "stuck": 23.1,
+      "timeout": 3.3,
+      "st": 26.4,
+      "coll": 0.33,
+      "off": 0.0,
+      "speed": 10.113,
+      "route_completion": 0.813,
+      "path_eff": 0.688,
+      "no_wp": 221.469
+     }
+    },
+    "medium": {
+     "veh": {
+      "n": 300,
+      "sr": 42.33,
+      "route_short": 0.0,
+      "stuck": 17.67,
+      "timeout": 2.0,
+      "st": 19.67,
+      "coll": 24.67,
+      "off": 13.33,
+      "speed": 17.634,
+      "route_completion": 0.787,
+      "path_eff": 0.742,
+      "no_wp": 235.2
+     },
+     "ped": {
+      "n": 300,
+      "sr": 53.67,
+      "route_short": 0.0,
+      "stuck": 38.33,
+      "timeout": 8.0,
+      "st": 46.33,
+      "coll": 0.0,
+      "off": 0.0,
+      "speed": 8.368,
+      "route_completion": 0.713,
+      "path_eff": 0.573,
+      "no_wp": 338.097
+     }
+    },
+    "hard": {
+     "veh": {
+      "n": 300,
+      "sr": 36.0,
+      "route_short": 0.0,
+      "stuck": 20.33,
+      "timeout": 5.0,
+      "st": 25.33,
+      "coll": 25.67,
+      "off": 13.0,
+      "speed": 15.494,
+      "route_completion": 0.749,
+      "path_eff": 0.736,
+      "no_wp": 241.807
+     },
+     "ped": {
+      "n": 300,
+      "sr": 39.67,
+      "route_short": 0.67,
+      "stuck": 49.67,
+      "timeout": 10.0,
+      "st": 59.67,
+      "coll": 0.0,
+      "off": 0.0,
+      "speed": 7.839,
+      "route_completion": 0.602,
+      "path_eff": 0.482,
+      "no_wp": 438.727
+     }
+    },
+    "test": {
+     "veh": {
+      "n": 300,
+      "sr": 35.67,
+      "route_short": 0.0,
+      "stuck": 28.67,
+      "timeout": 4.67,
+      "st": 33.33,
+      "coll": 28.0,
+      "off": 3.0,
+      "speed": 11.332,
+      "route_completion": 0.709,
+      "path_eff": 0.645,
+      "no_wp": 331.8
+     },
+     "ped": {
+      "n": 300,
+      "sr": 70.67,
+      "route_short": 0.0,
+      "stuck": 22.0,
+      "timeout": 7.0,
+      "st": 29.0,
+      "coll": 0.33,
+      "off": 0.0,
+      "speed": 10.3,
+      "route_completion": 0.827,
+      "path_eff": 0.751,
+      "no_wp": 190.527
+     }
+    }
+   },
+   "overall": {
+    "veh": {
+     "n": 1203,
+     "sr": 41.65,
+     "route_short": 0.0,
+     "stuck": 21.78,
+     "timeout": 3.33,
+     "st": 25.1,
+     "coll": 22.94,
+     "off": 10.31,
+     "speed": 15.327,
+     "route_completion": 0.767,
+     "path_eff": 0.705,
+     "no_wp": 266.811
+    },
+    "ped": {
+     "n": 1203,
+     "sr": 59.02,
+     "route_short": 0.5,
+     "stuck": 33.25,
+     "timeout": 7.07,
+     "st": 40.32,
+     "coll": 0.17,
+     "off": 0.0,
+     "speed": 9.157,
+     "route_completion": 0.739,
+     "path_eff": 0.624,
+     "no_wp": 297.016
+    }
+   }
+  }
+ },
+ "GNN-B": {
+  "run_id": "20260714_155209",
+  "arch": "GNN",
+  "regime": "batch",
+  "timesteps_total": 3008307,
+  "training": {
+   "episodes": 3168,
+   "records": 19008,
+   "bad_lines": 0,
+   "nonfinite_values": 0,
+   "episodes_not_6": 0,
+   "veh": {
+    "cumulative": {
+     "n": 9504,
+     "sr": 49.41,
+     "route_short": 0.0,
+     "stuck": 20.61,
+     "timeout": 2.14,
+     "st": 22.75,
+     "coll": 17.56,
+     "off": 10.28,
+     "speed": 26.64,
+     "route_completion": 0.748,
+     "path_eff": 0.715,
+     "no_wp": 227.058
+    },
+    "per_level": {
+     "easy": {
+      "n": 3369,
+      "sr": 57.61,
+      "route_short": 0.0,
+      "stuck": 20.63,
+      "timeout": 1.96,
+      "st": 22.59,
+      "coll": 12.05,
+      "off": 7.75,
+      "speed": 25.432,
+      "route_completion": 0.785,
+      "path_eff": 0.711,
+      "no_wp": 230.084
+     },
+     "medium": {
+      "n": 3114,
+      "sr": 49.33,
+      "route_short": 0.0,
+      "stuck": 20.36,
+      "timeout": 2.22,
+      "st": 22.58,
+      "coll": 17.63,
+      "off": 10.47,
+      "speed": 28.446,
+      "route_completion": 0.758,
+      "path_eff": 0.719,
+      "no_wp": 223.971
+     },
+     "hard": {
+      "n": 3021,
+      "sr": 40.35,
+      "route_short": 0.0,
+      "stuck": 20.85,
+      "timeout": 2.25,
+      "st": 23.1,
+      "coll": 23.63,
+      "off": 12.91,
+      "speed": 26.126,
+      "route_completion": 0.697,
+      "path_eff": 0.715,
+      "no_wp": 226.864
+     }
+    },
+    "quartiles": {
+     "Q1": {
+      "sr": 50.51,
+      "st": 29.04,
+      "coll": 13.8,
+      "off": 6.65,
+      "speed": 19.588
+     },
+     "Q2": {
+      "sr": 54.59,
+      "st": 20.33,
+      "coll": 16.08,
+      "off": 9.01,
+      "speed": 28.769
+     },
+     "Q3": {
+      "sr": 47.47,
+      "st": 20.5,
+      "coll": 19.07,
+      "off": 12.96,
+      "speed": 28.939
+     },
+     "Q4": {
+      "sr": 45.08,
+      "st": 21.13,
+      "coll": 21.3,
+      "off": 12.5,
+      "speed": 29.264
+     }
+    }
+   },
+   "ped": {
+    "cumulative": {
+     "n": 9504,
+     "sr": 58.03,
+     "route_short": 0.58,
+     "stuck": 30.65,
+     "timeout": 10.46,
+     "st": 41.11,
+     "coll": 0.28,
+     "off": 0.0,
+     "speed": 5.214,
+     "route_completion": 0.725,
+     "path_eff": 0.631,
+     "no_wp": 271.079
+    },
+    "per_level": {
+     "easy": {
+      "n": 3369,
+      "sr": 73.23,
+      "route_short": 0.71,
+      "stuck": 21.58,
+      "timeout": 4.27,
+      "st": 25.85,
+      "coll": 0.21,
+      "off": 0.0,
+      "speed": 5.605,
+      "route_completion": 0.812,
+      "path_eff": 0.699,
+      "no_wp": 198.394
+     },
+     "medium": {
+      "n": 3114,
+      "sr": 56.97,
+      "route_short": 0.51,
+      "stuck": 32.85,
+      "timeout": 9.44,
+      "st": 42.29,
+      "coll": 0.22,
+      "off": 0.0,
+      "speed": 5.101,
+      "route_completion": 0.716,
+      "path_eff": 0.615,
+      "no_wp": 288.549
+     },
+     "hard": {
+      "n": 3021,
+      "sr": 42.17,
+      "route_short": 0.5,
+      "stuck": 38.5,
+      "timeout": 18.4,
+      "st": 56.9,
+      "coll": 0.43,
+      "off": 0.0,
+      "speed": 4.896,
+      "route_completion": 0.638,
+      "path_eff": 0.571,
+      "no_wp": 334.13
+     }
+    },
+    "quartiles": {
+     "Q1": {
+      "sr": 65.74,
+      "st": 33.29,
+      "coll": 0.25,
+      "off": 0.0,
+      "speed": 6.007
+     },
+     "Q2": {
+      "sr": 61.41,
+      "st": 37.84,
+      "coll": 0.21,
+      "off": 0.0,
+      "speed": 4.909
+     },
+     "Q3": {
+      "sr": 53.37,
+      "st": 45.96,
+      "coll": 0.34,
+      "off": 0.0,
+      "speed": 4.992
+     },
+     "Q4": {
+      "sr": 51.6,
+      "st": 47.35,
+      "coll": 0.34,
+      "off": 0.0,
+      "speed": 4.949
+     }
+    }
+   },
+   "level_mix": {
+    "medium": 1038,
+    "easy": 1123,
+    "hard": 1007
+   },
+   "first_episode_per_level": {
+    "medium": {
+     "episode": 1,
+     "pct_episodes": 0.0
+    },
+    "easy": {
+     "episode": 9,
+     "pct_episodes": 0.3
+    },
+    "hard": {
+     "episode": 17,
+     "pct_episodes": 0.5
+    }
+   },
+   "threshold_crossings": {
+    "veh_win_sr>=30%": {
+     "episode": 147,
+     "approx_env_steps": 141745
+    },
+    "veh_win_sr>=50%": {
+     "episode": 187,
+     "approx_env_steps": 174599
+    }
+   },
+   "approx_total_env_steps_from_logs": 3008307,
+   "ped_route_diag": {
+    "route_source": {
+     "sidewalk_crosswalk": 40.3,
+     "respawn": 13.8,
+     "sidewalk_distance": 45.9
+    },
+    "under_target_pct": 55.67,
+    "too_short_pct": 8.87
+   },
+   "veh_route_source": {
+    "grp": 90.11,
+    "legacy_fallback": 9.89
+   }
+  },
+  "eval": {
+   "records": 2400,
+   "bad_lines": 0,
+   "nonfinite_values": 0,
+   "scenarios": {
+    "easy": {
+     "veh": {
+      "n": 300,
+      "sr": 55.67,
+      "route_short": 0.0,
+      "stuck": 20.0,
+      "timeout": 2.67,
+      "st": 22.67,
+      "coll": 14.0,
+      "off": 7.67,
+      "speed": 26.558,
+      "route_completion": 0.804,
+      "path_eff": 0.709,
+      "no_wp": 238.35
+     },
+     "ped": {
+      "n": 300,
+      "sr": 63.0,
+      "route_short": 1.67,
+      "stuck": 32.33,
+      "timeout": 2.67,
+      "st": 35.0,
+      "coll": 0.33,
+      "off": 0.0,
+      "speed": 4.883,
+      "route_completion": 0.745,
+      "path_eff": 0.592,
+      "no_wp": 290.293
+     }
+    },
+    "medium": {
+     "veh": {
+      "n": 300,
+      "sr": 42.0,
+      "route_short": 0.0,
+      "stuck": 16.67,
+      "timeout": 2.0,
+      "st": 18.67,
+      "coll": 28.33,
+      "off": 11.0,
+      "speed": 29.359,
+      "route_completion": 0.763,
+      "path_eff": 0.737,
+      "no_wp": 195.14
+     },
+     "ped": {
+      "n": 300,
+      "sr": 46.33,
+      "route_short": 0.0,
+      "stuck": 43.67,
+      "timeout": 10.0,
+      "st": 53.67,
+      "coll": 0.0,
+      "off": 0.0,
+      "speed": 4.007,
+      "route_completion": 0.654,
+      "path_eff": 0.512,
+      "no_wp": 383.583
+     }
+    },
+    "hard": {
+     "veh": {
+      "n": 300,
+      "sr": 33.33,
+      "route_short": 0.0,
+      "stuck": 20.0,
+      "timeout": 2.67,
+      "st": 22.67,
+      "coll": 28.33,
+      "off": 15.67,
+      "speed": 30.364,
+      "route_completion": 0.703,
+      "path_eff": 0.716,
+      "no_wp": 229.533
+     },
+     "ped": {
+      "n": 300,
+      "sr": 31.33,
+      "route_short": 0.33,
+      "stuck": 51.67,
+      "timeout": 16.33,
+      "st": 68.0,
+      "coll": 0.33,
+      "off": 0.0,
+      "speed": 4.332,
+      "route_completion": 0.552,
+      "path_eff": 0.454,
+      "no_wp": 443.183
+     }
+    },
+    "test": {
+     "veh": {
+      "n": 300,
+      "sr": 25.67,
+      "route_short": 0.0,
+      "stuck": 27.67,
+      "timeout": 3.67,
+      "st": 31.33,
+      "coll": 37.0,
+      "off": 6.0,
+      "speed": 20.825,
+      "route_completion": 0.636,
+      "path_eff": 0.625,
+      "no_wp": 318.597
+     },
+     "ped": {
+      "n": 300,
+      "sr": 54.0,
+      "route_short": 0.0,
+      "stuck": 33.0,
+      "timeout": 12.33,
+      "st": 45.33,
+      "coll": 0.67,
+      "off": 0.0,
+      "speed": 5.332,
+      "route_completion": 0.705,
+      "path_eff": 0.639,
+      "no_wp": 281.517
+     }
+    }
+   },
+   "overall": {
+    "veh": {
+     "n": 1200,
+     "sr": 39.17,
+     "route_short": 0.0,
+     "stuck": 21.08,
+     "timeout": 2.75,
+     "st": 23.83,
+     "coll": 26.92,
+     "off": 10.08,
+     "speed": 26.777,
+     "route_completion": 0.727,
+     "path_eff": 0.697,
+     "no_wp": 245.405
+    },
+    "ped": {
+     "n": 1200,
+     "sr": 48.67,
+     "route_short": 0.5,
+     "stuck": 40.17,
+     "timeout": 10.33,
+     "st": 50.5,
+     "coll": 0.33,
+     "off": 0.0,
+     "speed": 4.639,
+     "route_completion": 0.664,
+     "path_eff": 0.549,
+     "no_wp": 349.644
+    }
+   }
+  }
  }
 }

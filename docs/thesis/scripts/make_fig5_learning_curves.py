@@ -20,7 +20,7 @@ RUNS = {
     "MLP-curriculum": (EXP / "curriculum/EVAL_DONE_comparison_3M_MLP/carla_mappo_20260622_171626/episodes.jsonl", "tab:blue", "-"),
     "MLP-batch": (EXP / "batch/EVAL_DONE_comparison_3M_MLP/carla_mappo_20260623_171855/episodes.jsonl", "tab:orange", "--"),
     "GNN-curriculum": (EXP / "curriculum/GNN/carla_mappo_20260630_181143/episodes.jsonl", "tab:green", "-"),
-    # "GNN-batch": (EXP / "batch/carla_mappo_20260714_155209/episodes.jsonl", "tab:red", "--"),
+    "GNN-batch": (EXP / "batch/carla_mappo_20260714_155209/episodes.jsonl", "tab:red", "--"),
 }
 WINDOW = 100
 OUT = REPO / "docs/thesis/latex/figures/learning_curves.pdf"

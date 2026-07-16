@@ -82,9 +82,99 @@ verify that campaign cells differ only in the two experimental flags
 
 \chapter{Per-Run Results}
 \label{app:per-seed}
-\todo{Complete per-run tables for the four campaign runs (populate once
-the $2\times2$ matrix is closed: full metric catalogue per cell, per
-class, per level, training $+$ final evaluation).}
+
+Complete metric tables for the four campaign runs (Ch.~5 reports the
+analytical views; this appendix reports the full catalogue of
+\cref{sec:metrics}). All values recomputed from
+\texttt{episodes.jsonl}; per-scenario evaluation breakdowns are in
+\cref{tab:eval-mlp,tab:eval-gnn}.
+
+\begin{table}[h]
+  \centering\small
+  \caption{Training, vehicles: full cumulative metrics (\%, speed km/h,
+  no-progress steps in steps, route completion and path efficiency in
+  $[0,1]$).}
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    Metric & MLP-curr.\ & MLP-batch & GNN-curr.\ & GNN-batch \\
+    \midrule
+    Success rate & 57.28 & 46.31 & 56.55 & 49.41 \\
+    Stuck rate & 24.55 & 19.94 & 17.51 & 20.61 \\
+    Timeout rate & 5.92 & 3.67 & 3.33 & 2.14 \\
+    Stuck$+$timeout & 30.48 & 23.61 & 20.84 & 22.75 \\
+    Collision rate & 8.84 & 17.33 & 13.37 & 17.56 \\
+    Offroad rate & 3.41 & 12.76 & 9.23 & 10.28 \\
+    Mean speed & 10.15 & 18.67 & 18.04 & 26.64 \\
+    Route completion & 0.789 & 0.710 & 0.795 & 0.748 \\
+    Path efficiency & 0.711 & 0.699 & 0.755 & 0.715 \\
+    No-progress steps & 239 & 253 & 216 & 227 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering\small
+  \caption{Training, pedestrians: full cumulative metrics (\%, speed
+  m/s).}
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    Metric & MLP-curr.\ & MLP-batch & GNN-curr.\ & GNN-batch \\
+    \midrule
+    Success rate & 56.59 & 57.06 & 60.50 & 58.03 \\
+    Route-short rate & 0.63 & 0.65 & 0.61 & 0.58 \\
+    Stuck rate & 36.10 & 33.70 & 28.97 & 30.65 \\
+    Timeout rate & 6.46 & 8.33 & 9.61 & 10.46 \\
+    Stuck$+$timeout & 42.56 & 42.03 & 38.58 & 41.11 \\
+    Collision rate & 0.22 & 0.25 & 0.31 & 0.28 \\
+    Mean speed & 1.96 & 1.61 & 1.90 & 1.45 \\
+    Route completion & 0.695 & 0.721 & 0.792 & 0.725 \\
+    Path efficiency & 0.576 & 0.594 & 0.651 & 0.631 \\
+    No-progress steps & 328 & 303 & 262 & 271 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering\small
+  \caption{Per-level training success rates (\%).}
+  \begin{tabular}{@{}llrrrr@{}}
+    \toprule
+    Class & Level & MLP-curr.\ & MLP-batch & GNN-curr.\ & GNN-batch \\
+    \midrule
+    Vehicles & easy & 67.30 & 52.92 & 65.32 & 57.61 \\
+             & medium & 56.48 & 46.40 & 58.91 & 49.33 \\
+             & hard & 43.90 & 38.89 & 44.19 & 40.35 \\
+    \addlinespace
+    Pedestrians & easy & 79.40 & 70.14 & 83.21 & 73.23 \\
+             & medium & 53.23 & 55.86 & 59.50 & 56.97 \\
+             & hard & 29.46 & 43.82 & 37.30 & 42.17 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering\small
+  \caption{Final evaluation, overall (400 episodes; 401 for
+  GNN-curriculum, \cref{sec:integrity}). Speeds: vehicles km/h,
+  pedestrians m/s.}
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    Metric & MLP-curr.\ & MLP-batch & GNN-curr.\ & GNN-batch \\
+    \midrule
+    Veh.\ success rate & 48.33 & 29.83 & 41.65 & 39.17 \\
+    Veh.\ stuck / timeout & 29.58 / 8.67 & 25.17 / 6.00 & 21.78 / 3.33 & 21.08 / 2.75 \\
+    Veh.\ collision & 10.42 & 26.00 & 22.94 & 26.92 \\
+    Veh.\ offroad & 3.00 & 13.00 & 10.31 & 10.08 \\
+    Veh.\ mean speed & 8.77 & 14.65 & 15.33 & 26.78 \\
+    Veh.\ route completion & 0.793 & 0.665 & 0.767 & 0.727 \\
+    Veh.\ path efficiency & 0.664 & 0.636 & 0.705 & 0.697 \\
+    \addlinespace
+    Ped.\ success rate & 47.00 & 48.92 & 59.02 & 48.67 \\
+    Ped.\ stuck$+$timeout & 52.42 & 50.58 & 40.32 & 50.50 \\
+    Ped.\ mean speed & 2.36 & 1.66 & 2.54 & 1.29 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 \chapter{Reproducibility}
 \label{app:repro}

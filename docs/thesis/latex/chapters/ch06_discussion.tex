@@ -4,14 +4,127 @@
 \chapter{Discussion}
 \label{ch:discussion}
 
-\todo{Chapter not started. Skeleton below per the outline.}
+This chapter interprets the findings of \cref{ch:results}: what task
+ordering changed and what it did not (\cref{sec:ordering}), what the
+shared-world frame contributed (\cref{sec:ptc-revisited}), and the
+threats and scope limits under which every claim holds
+(\cref{sec:threats}, \cref{sec:scope}).
 
-\section{What Task Ordering Changes (and What It Does Not)}\label{sec:ordering}
-% Interpretation of the 4 comparison axes.
+% --- §6.1–6.2 drafted 2026-07-16 (full-matrix interpretation). ---
+\section{What Task Ordering Changes (and What It Does Not)}
+\label{sec:ordering}
 
-\section{Parallel Task Coverage Revisited}\label{sec:ptc-revisited}
-% What the evidence says about interactions, correlated samples,
-% non-stationarity.
+Reading the four comparison axes of \cref{ch:results} together, task
+ordering did something different from what the curriculum literature
+usually promises and the mixed-training intuition usually fears.
+
+\paragraph{Not learning speed.}
+The axis where curricula are classically expected to pay --- early
+sample efficiency --- showed nothing: all four cells crossed the same
+windowed-SR thresholds within a few percent of the same step count
+(\cref{sec:sample-efficiency}). A plausible reading is that this
+platform's reward design already solves the problem curricula are
+usually hired for: with dense per-waypoint bonuses and distance shaping
+(\cref{sec:rewards}), even \SI{100}{m} routes provide learning signal
+from the first episodes, so easy tasks are not needed to bootstrap.
+Curricula built for sparse-reward exploration should not be expected to
+show their signature advantage where the reward is dense --- a scope
+condition on H1 rather than a refutation of curriculum learning at
+large.
+
+\paragraph{Equilibrium selection.}
+What ordering did change is \emph{which policy the same learner became}.
+The mechanics are visible in the constraints: completing a \SI{100}{m}
+route within the 1{,}000-step horizon requires a healthy average speed,
+so a policy exposed to hard routes from step~0 must drive fast to
+succeed at all --- and pays in collisions (26\% at evaluation for
+MLP-batch). A policy that spends its first quarter of training on
+\SI{30}{m} routes can succeed slowly, and locks in caution (10.2~km/h,
+failures dominated by stalling). Task ordering, in this reading, acts as
+an \emph{equilibrium selector} over the speed--safety trade-off rather
+than as an accelerator. The GNN cells support the selection reading from
+the other side: with a different value estimator, the same curriculum
+selected a different (faster) equilibrium
+(\cref{sec:defensive-case}) --- the regime biases the choice of basin,
+but does not determine it alone.
+
+\paragraph{Not a shield against degradation.}
+The within-run erosion of \cref{tab:quartiles} is platform-wide: it
+affects both regimes, at fixed task level, in both classes. Whatever its
+mechanism --- cross-class co-adaptation and entropy annealing being the
+candidates on record --- ordering neither causes nor prevents it. The
+practical implication for anyone reusing this platform is that
+\emph{final} cumulative numbers understate mid-training peaks in every
+configuration, and checkpoint selection during training would change
+conclusions --- a reporting choice this thesis deliberately avoided in
+favour of fixed-budget endpoints.
+
+\paragraph{Generalization: the portable benefit.}
+The one curriculum advantage that replicated across both critic
+architectures is the Town05 margin ($+19.0$ and $+10.0$\,pp,
+\cref{tab:interaction}) --- obtained despite batch's broader in-domain
+coverage, and against H2's coverage-implies-robustness intuition. A
+tentative mechanism consistent with both pairs: the batch policy
+co-adapts for the whole budget to a single stationary distribution
+(one map, all lengths), while the curriculum policy must stay competent
+across a \emph{shifting} sequence of distributions --- a mild form of
+implicit regularization through non-stationarity. At $n{=}1$ per cell
+this remains a hypothesis; what the data establish is the direction and
+its replication across architectures.
+
+\paragraph{And the pedestrians.}
+For the weaker, structurally constrained class
+(\cref{sec:ped-limits}), ordering was irrelevant in three cells out of
+four; the exception (GNN-curriculum, $+12$\,pp at evaluation) suggests
+that pedestrians only benefit when the critic can represent cross-agent
+structure \emph{and} exposure is staged. As a design lesson: regime
+choices tuned on the strong class should not be assumed to transfer to
+the weak one.
+
+% ------------------------------------------------------------
+\section{Parallel Task Coverage Revisited}
+\label{sec:ptc-revisited}
+
+The shared-world frame (\cref{sec:parallel-coverage}) was adopted for
+throughput --- six task instances per episode --- with correlated
+samples and mutual non-stationarity accepted as costs. In hindsight, the
+campaign shows those "costs" doing first-order scientific work.
+
+\paragraph{Interactions were load-bearing.}
+The defensive equilibrium --- the single most consequential behavioural
+phenomenon in the development record and in the MLP-curriculum cell ---
+exists \emph{only} because vehicle rewards are gated on a hazard channel
+fed by pedestrian behaviour (\cref{sec:rewards}). The mirrored
+architecture finding points the same way: replacing a flat critic with
+one that models agents as interacting nodes changed outcomes in every
+cell (\cref{sec:arch-axis}), which it could not have done if
+cross-agent structure were negligible. In a single-agent-per-world
+design, none of this would have been visible.
+
+\paragraph{Correlation is real and was treated as such.}
+Six records per episode share one world state; treating them as
+independent would overstate evidence. The thesis therefore never leans
+on record counts for inference (\cref{sec:threats}), and the
+evaluation-pipeline failure of \cref{sec:bugs} --- where collapsing
+world seeds made all episodes near-identical and produced a flat,
+too-clean success rate --- is the cautionary limit case of the same
+correlation pushed to degeneracy.
+
+\paragraph{Non-stationarity has a visible signature.}
+Each agent trains against five moving co-players. The level-controlled
+within-run erosion of \cref{tab:quartiles}, strongest exactly where
+value estimation is weakest (MLP cells) and halved under the
+relational critic, is the pattern co-adaptation drift would produce ---
+though the design cannot isolate it from other late-training effects
+(\cref{sec:threats}).
+
+\paragraph{What the frame cannot claim.}
+Without a one-agent-per-world control (\cref{sec:scope}), the
+throughput benefit of parallel task coverage is a design argument, not a
+measured one; and every finding above is conditional on this
+interaction-rich regime. The frame should be read as the environment
+\emph{within which} the regime comparison holds, not as an
+independently validated technique.
 
 % --- §6.3–6.4 drafted 2026-07-14 (results-independent; re-read after
 %     Ch. 5 is final to update the n-per-cell statement). ---

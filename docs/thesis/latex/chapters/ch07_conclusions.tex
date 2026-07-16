@@ -1,15 +1,102 @@
 % ============================================================
 % Chapter 7 — Conclusions & Future Work (target 2–3 pp)
+% Status: FULL DRAFT 2026-07-16.
 % ============================================================
 \chapter{Conclusions and Future Work}
 \label{ch:conclusions}
 
-\todo{Chapter not started.}
+\section{Conclusions}
+\label{sec:conclusions}
 
-\section{Conclusions}\label{sec:conclusions}
-% Answer to the research question + contributions.
+This thesis asked whether ordering training tasks from easy to hard
+produces measurably different multi-agent driving behaviour than
+presenting all difficulties at once, at equal budget, in a shared-world
+CARLA environment trained with MAPPO. The answer is yes --- but not
+along the axis where curricula are usually sold.
 
-\section{Future Work}\label{sec:future}
-% Architectural extensions (GAT = GNN+attention, PopArt — flags already in
-% the infrastructure), scaling to 100+ agents (application vision),
-% adaptive/automatic curricula, pedestrian route-generation fix.
+\begin{itemize}
+  \item \textbf{Ordering did not accelerate learning.} All four campaign
+        cells reached the same early competence thresholds at the same
+        step counts, plausibly because dense reward shaping already
+        provides learning signal on hard tasks
+        (\cref{sec:sample-efficiency}, \cref{sec:ordering}).
+  \item \textbf{Ordering selected what the policy became.} Under the MLP
+        critic, curriculum produced a cautious, stalling-prone driver
+        and batch a fast, collision-prone one; on the strict success
+        criterion the trade resolved for curriculum by $+18.5$\,pp at
+        evaluation, consistently across all scenarios
+        (\cref{sec:final-performance}).
+  \item \textbf{The effect is conditional on value estimation.} Under a
+        GNN critic the in-domain regime effect vanished
+        ($-0.1$\,pp) while the architecture rescued the batch cell and
+        reshaped the curriculum cell --- a strong
+        architecture$\times$regime interaction
+        (\cref{sec:arch-axis}).
+  \item \textbf{The portable benefit is generalization.} The only
+        component of the curriculum advantage that replicated across
+        both architectures is the margin on a town never seen in
+        training ($+19.0$ and $+10.0$\,pp on Town05), against the
+        coverage-implies-robustness intuition
+        (\cref{sec:generalization}).
+  \item \textbf{Class specificity and platform limits.} Pedestrians were
+        largely insensitive to the regime, bounded by route feasibility
+        rather than policy quality (\cref{sec:ped-limits}); and every
+        cell showed late within-run erosion at fixed task level,
+        independent of regime (\cref{sec:behavior}).
+\end{itemize}
+
+Beyond the findings, the thesis contributes the apparatus that made them
+measurable: an equal-budget comparison framework with seed-paired,
+byte-identical configurations; a gate-driven development protocol with an
+explicit registry of promoted, rejected and knowingly-retained changes;
+a documented account of how environment-validity defects can masquerade
+as policy effects, with their detection signatures; and a variance
+yardstick from same-seed replicates against which every claim is read.
+In a setting where a single simulator bug moved the headline metric by
+fifty percentage points, this measurement discipline --- not any single
+number --- is what makes the comparison meaningful.
+
+\section{Future Work}
+\label{sec:future}
+
+In order of how directly each item extends this thesis:
+
+\begin{enumerate}
+  \item \textbf{Seed replication.} The design was cut from three paired
+        seeds per cell to one for compute reasons
+        (\cref{sec:campaign}). Re-running the $2\times2$ matrix at
+        $n{=}3$ would turn the paired case study into distribution
+        estimates and test the interaction's magnitude directly.
+  \item \textbf{Explaining the erosion.} The level-controlled
+        within-run degradation (\cref{tab:quartiles}) invites targeted
+        ablations: freezing one class mid-training to isolate
+        co-adaptation, and varying the entropy-annealing anchor to
+        isolate the exploration schedule.
+  \item \textbf{Pedestrian route generation.} With more than half of
+        pedestrian routes under target on Town03
+        (\cref{sec:ped-limits}), a feasibility-aware planner (deeper
+        branch exploration, adaptive targets per spawn region) is the
+        highest-leverage environment fix, and would sharpen every
+        pedestrian-side comparison.
+  \item \textbf{Architecture extensions on the critic.} The
+        infrastructure already exposes attention-based encoders (GAT)
+        and PopArt value normalization behind flags
+        (\cref{sec:critic-encoders}); given the strength of the
+        critic-encoder interaction, these are natural next cells rather
+        than exotic additions.
+  \item \textbf{Adaptive curricula.} The competence gate is a fixed
+        two-threshold sequencer; performance-based curricula that adapt
+        level shares continuously (e.g.\ sampling proportional to
+        learning progress) would test whether the equilibrium-selection
+        effect survives finer-grained ordering.
+  \item \textbf{Reward--curriculum co-design.} The gate-driven reward
+        tuning ran mostly on easy-locked configurations
+        (\cref{sec:threats}); re-tuning key shaping terms on the full
+        mix would quantify how much of the regime effect is mediated by
+        reward calibration.
+  \item \textbf{Scaling the frame.} Parallel task coverage was fixed at
+        $3{+}3$ agents; scaling the shared world toward tens of agents
+        --- where the GNN critic's relational structure should matter
+        most --- turns the coexistence frame itself into an experimental
+        variable.
+\end{enumerate}

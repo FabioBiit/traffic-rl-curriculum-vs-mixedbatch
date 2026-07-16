@@ -58,11 +58,36 @@
   {\large Academic year \todo{2025/2026}\par}
 \end{titlepage}
 
-% ----------------- Abstract (written last) ------------------
+% ----------------- Abstract ---------------------------------
 \begin{abstract}
-\todo{$\sim$250 words: research question, method (CARLA 0.9.16, MAPPO/CTDE,
-6 agents, $2\times2$ seed-paired campaign), 2--3 headline numbers,
-conclusion. Written after Chapter 5 is final.}
+The order in which training tasks are presented is a design decision in
+reinforcement learning whose effects are rarely isolated in multi-agent
+settings. This thesis compares curriculum learning (easy-to-hard
+progression gated on measured competence) against mixed-batch training
+(uniform interleaving of all difficulties) for urban driving in CARLA,
+with six agents --- three vehicles and three pedestrians --- learning
+simultaneously in one shared world under MAPPO with centralized critics.
+A $2\times2$ seed-paired campaign crosses the two regimes with two
+critic encoders (MLP and GNN) at three million steps per run, on a
+platform hardened by a gate-driven development protocol, measured under
+a strict success criterion, with same-seed replicates providing an
+explicit noise band.
+
+Task ordering did not accelerate early learning: all cells crossed the
+same competence thresholds at the same step counts. It instead selected
+what the policy became. Under the MLP critic, the curriculum produced a
+cautious, stalling-prone driver and batch a fast, colliding one; the
+curriculum led by $+18.5$ percentage points of vehicle success at
+evaluation, consistently across scenarios. Under the GNN critic the
+in-domain effect vanished ($-0.1$\,pp) --- a strong
+architecture$\times$regime interaction --- while the same encoder
+markedly improved the batch cell. The only component that replicated
+across both architectures is the curriculum's advantage on a town never
+seen in training ($+19.0$ and $+10.0$\,pp), against the intuition that
+broader coverage buys robustness. Pedestrians were bounded by route
+feasibility rather than by regime. Task ordering, in this setting, is an
+equilibrium selector whose in-domain payoff depends on value estimation
+--- and whose portable benefit is generalization.
 \end{abstract}
 
 \tableofcontents
