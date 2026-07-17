@@ -56,7 +56,7 @@ Prefer targeted commands and avoid full raw logs unless necessary.
 
 # Project Operating Brief
 
-**Last updated:** 2026-06-22
+**Last updated:** 2026-07-17
 
 ---
 
@@ -150,6 +150,11 @@ low average speed, weak early route progress. Pedestrians are comparatively stro
   `route_source=legacy_fallback` on vehicle routes — diagnose before the long run.
 - **R1 re-check caveat**: R1 removed the `route_completion < 0.3` guard, which interacts with route
   length; its single-knob verdict is most exposed to re-check on the corrected route distribution.
+- **Curriculum-vs-batch record (final 2×2 campaign, evals completed 2026-07-16)**: runs
+  `20260622_171626` (MLP-C) / `20260623_171855` (MLP-B) / `20260630_181143` (GNN-C) /
+  `20260714_155209` (GNN-B) on trunk `7defb03` — see the campaign entry in the Candidate
+  Registry. These four runs are the thesis's comparison of record; do not claim curriculum/batch
+  effects for new candidates without re-running against this paired design.
 
 ---
 
@@ -175,6 +180,21 @@ low average speed, weak early route progress. Pedestrians are comparatively stro
 ---
 
 ## Next Planned Step
+
+**Update 2026-07-17 — Final 2×2 curriculum-vs-batch campaign COMPLETED, EVALUATED and CONSOLIDATED (comparison of record).**
+Four runs × 3M on trunk `7defb03` ({MLP, GNN critic} × {curriculum, batch}, seed 999 paired,
+`--difficulty path`, curriculum_lock disabled; run_configs byte-identical except `mode`/`use_gnn`),
+each with its 400-episode final eval (4 scenarios × 100 incl. Town05; stochastic, post-EvalBugfix
+pipeline). Full numbers and caveats in the "Final 2×2 campaign" row of the Candidate Registry.
+Headline: Δ(C−B) vehicle eval SR = +18.50 pp under the MLP critic (same sign in all 4 scenarios)
+vs +2.48 pp under the GNN critic (in-domain −0.06) — arch×regime interaction; only the Town05
+advantage replicates across critics (+19.0/+10.0 pp). The previously pending "Step 5 stochastic
+eval relaunch" (run `20260525_205912`, pre-crosswalk trunk) is SUPERSEDED by this campaign and
+will not be run. The S2/S3 seed-replicate axis was dropped on 2026-07-14 (user decision, compute
+budget): every campaign contrast is n=1 per cell, read against the 52.2–62.4% same-seed replicate
+band. Analysis, figures and tables live in the thesis (`docs/thesis/latex/`, Ch. 5; consolidation
+`docs/thesis/scripts/consolidate_campaign.py` → `docs/thesis/data/campaign_consolidation.json`).
+NOT yet updated with the campaign: `reports/carla_finetuning_maggio_2026.docx` (pending).
 
 **Update 2026-06-12 — post-revert confirmation run COMPLETED, PASS (run `20260610_192146`, r0610).**
 First full 3M run on the post-revert trunk `23a0342` (`--difficulty path`, seed 999,
@@ -297,16 +317,17 @@ If step 5 shows any of these regressions, contingency knobs ready:
   `[1.2,2.6]→2.28 m/s`, `[1.5,2.2]→2.64 m/s`. V1 with band `[1.2, 2.6]` converged at 2.14 m/s
   (best), but the asymmetry remains a latent risk.
 
-**Candidate queue (updated 2026-06-22)**:
+**Candidate queue (updated 2026-07-17)**:
 `EvoEntropy (PASS, 20260520_133747) → Ped-route+Ped-speed bundle (PARTIAL, 20260525_091300)
 → V3 retune (REJECTED gate2 FAIL, 20260525_125127, reverted) → V1 (PROMOTED, 20260525_162428)
 → Step 5 training 3M COMPLETED (20260525_205912)
-→ EvalBugfix (commit d0731ca + Patch B uncommitted; eval-tooling only, no training change)
-→ Step 5 stochastic eval RELAUNCH PENDING
+→ EvalBugfix (commit d0731ca + Patch B, since committed at evaluate_carla_mappo.py:900; eval-tooling only, no training change)
+→ Step 5 stochastic eval relaunch SUPERSEDED by the final 2×2 campaign (pre-crosswalk trunk; never run)
 → f51ac88 (route_short-count + ped-dist recalibration) REJECTED/REVERTED 23a0342 (r0529 20260529_122522 vehicle-SR regression)
 → post-revert confirmation run COMPLETED/PASS (r0610 20260610_192146; r0529 regression not reproduced)
 → Fix-SR-Pedoni proposal (PROPOSED_PLAN.md, commit 226adb4) PENDING user decision
 → P1-Crosswalk + max_cross 8→3 + crossing telemetry (PROMOTED/trunk, GATE PASS 20260622_132848 vs 20260617_103301; veh SR +9.2pp, coll −2.3, off −2.2, ped SR flat) — GO 3M curriculum-vs-batch
+→ Final 2×2 campaign COMPLETED+EVALUATED+CONSOLIDATED (MLP-C 20260622_171626 / MLP-B 20260623_171855 / GNN-C 20260630_181143 / GNN-B 20260714_155209; Δ(C−B) veh eval SR +18.5pp MLP vs +2.5pp GNN → arch×regime interaction, Town05-only component replicates +19/+10) — thesis Ch. 5
 → [V2/V4/V5 contingent on evidence]
 → R-norm v2 (gated on Block 4 evidence)`.
 File-overlap ordering enforced: V1/V2 share `carla_multi_agent_env.py` (apply sequentially,
@@ -346,6 +367,7 @@ never in parallel); P1/P2 share `curriculum_batch_manager.py`.
 | f51ac88 episode (route_short-as-success + ped-distance recalibration) | rejected / reverted (`23a0342`, 2026-05-30) | 20260529_122522 (r0529) | Two coupled changes in one commit (`f51ac88`, 2026-05-29): (1) `route_short` counted as success in the cumulative tracker (`train_carla_mappo.py`), the curriculum unlock metric (`mappo_runtime.py`), and the per-policy metric (`centralized_critic.py`); (2) pedestrian route distances recalibrated 30/60/100 → 15/25/40 m in `levels.yaml` (vehicle distances unchanged). Run r0529 (3M target, `--difficulty path`, seed 999, curriculum_lock disabled) analyzed LIVE at ~1.0M/3.0M (easy+medium unlocked, hard not reached): vehicle EASY-band SR regressed to ~61–63% vs pre-commit replicates step5 `20260525_205912` (~77–78%) and r0528 `20260528_112250` (~74–75%) on matched easy step-bands, with stuck + no_wp_steps up (defensive zero-speed-freeze signature). Attribution NOT isolated (halves confounded in one commit): the `route_short`-counting half is RL-loss-inert (feeds only the curriculum manager + TensorBoard, never reward/value/advantage; did NOT speed unlock — medium appeared LATER, 909K vs 625/742K), so it cannot explain a vehicle regression; the ped-distance half is the plausible coupling culprit via the shared hazard channel (ped_ttc/ped_occ → hazard_risk → safe_to_push gate) but was never A/B-isolated. `route_short`-as-success also contradicted the Measurement Rules (route_complete only). Noise-vs-real not resolved (n=1 post-commit, live); user chose the robust path — **full revert of both functional halves** (commit `23a0342`) restoring ped distances to match vehicle (path 30/60/100, test ped 80) and `route_complete`-only counting = the exact pre-f51ac88 step5 trunk. Non-code files of f51ac88 (`.claude/settings.local.json`, `docs/plans/PROPOSED_PLAN.md`) kept; f51ac88 stays in history (ped distances reintroducible later). |
 | Post-revert confirmation (r0610) | completed / PASS — revert confirmed healthy | 20260610_192146 | Full 3M run on post-revert trunk `23a0342` (`--difficulty path`, seed 999, curriculum_lock disabled, veh+ped distances 30/60/100; functionally identical code to r0528; vs step5 differs only by `d84fa3a` source-side `route_short` classification, loss-inert). Static eval: 3297 ep × 6 = 19,782 records, integrity OK, no NaN/inf; timesteps_total 3,000,615. Vehicles: SR 62.38%, stuck+timeout 23.60%, collision 9.86%, offroad 4.17%, speed 13.12 km/h, no_wp_steps 209.6; per-level SR easy 67.25 / medium 62.48 / hard 54.39. **r0529's easy regression NOT reproduced** (easy replicate band: step5 67.76, r0528 67.18, r0529 61.07). Best vehicle replicate of the three on medium/hard (hard +20 pp vs step5/r0528; hard coll 10.75%, hard off 4.76%) — unreplicated run-to-run variance, NOT a policy gain (no code change; n=3 cumulative veh SR range 52.2–62.4%; same-seed CARLA non-determinism). Vehicle speed lowest of the three (13.12 vs 19.83/15.68 km/h) — more cautious profile; hard timeout 9.67% worth watching. Pedestrians (raw=corr, source-side demotion): SR 37.92% (r0528 37.93; step5 corr 40.24), route_short 21.57%, stuck+timeout 40.16%, speed 1.544 m/s; per-level SR 64.20 / 31.36 / 11.00. Ped medium/hard collapse structural: routes under_target 92.06%, too_short 47.38%, `sidewalk_fallback` 35.73% (vs ~36% in both 3M replicates); Q4 ped stuck 51.7%; last-50 (all hard) ped SR 8.00%, ped speed 0.72 m/s → motivates Fix-SR-Pedoni proposal (`226adb4`). Vehicle `legacy_fallback` 9.77% (in line with 3M replicates ~10%). Unlocks: first medium ep 838 (25.4%), first hard ep 2392 (72.6%); level mix easy 32.8% / medium 46.7% / hard 20.6%. Q1→Q4 veh SR 66.10/68.20/60.48/54.73 (best late-training hold; level-mix confounded, see last-50 all-hard veh SR 59.33%). No final eval launched (training-only consolidation). |
 | P1-Crosswalk + max_cross 8→3 + crossing telemetry | PROMOTED (trunk) — GATE PASS | 20260622_132848 | `max_cross` 8→3 (`route_planner.py:261`) on committed P1-Crosswalk routing (`f462780`) + `route_n_crossings` per-record telemetry (measurement-only): the env emit at `carla_multi_agent_env.py:594` was NOT reaching the training logger; forwarded via `centralized_critic.py` agent_outcomes (both info sources) + `mappo_runtime.py` `_append_episode_json` — plumbing-gap fix, no policy effect. 300K hard-locked, seed 999. Clean single-knob A/B vs baseline `20260617_103301` (max_cross=8): run_config diff=0, seed-paired (byte-identical route_source counts); cap bit deterministically (ped optimal_len 111.6→106.3m, under_target 43.2→49.7%). Integrity 6/6 (1890=315×6), no NaN/inf. **Vehicle gate PASS 4/4**: SR 31.96→41.16 (+9.20pp), stuck+timeout 44.87→40.21 (−4.66pp), collision 14.50→12.17 (−2.33pp, improved), offroad 8.68→6.46 (−2.22pp, improved); Q-monotonic (Q2/Q3/Q4 validation > baseline). **Pedestrian (must-not-collapse) PASS**: SR 51.75→52.17 (+0.42pp, flat), s+t flat, collision flat 0.11%, speed 2.525→2.152 m/s (back inside band [1.5,2.2]); respawn share identical (feared crossing→respawn conversion did NOT occur). Mechanism CONFIRMED (P1×V1): max_cross=3 shortens ped crossing chains → less on-roadway exposure → veh collision/offroad down toward medium regime. Caveat: n=1 vs n=1 at 300K; veh-SR magnitude carries same-seed CARLA variance (~±5pp at 3M), collision/offroad direction mechanism-locked; veh speed −2.76 km/h (more cautious — watch at 3M). **GO for 3M curriculum-vs-batch.** Code-proof correction: memory's original `route_n_crossings`-in-episodes.jsonl check was a wrong assumption (field never reached the training logger pre-fix); real proof = file-mtime ordering + 0 config diffs + deterministic cap signature in ped route geometry. |
+| Final 2×2 campaign (curriculum-vs-batch × MLP/GNN critic) | completed / evaluated / consolidated — thesis comparison of record | 20260622_171626 (MLP-C), 20260623_171855 (MLP-B), 20260630_181143 (GNN-C), 20260714_155209 (GNN-B) | Thesis campaign on trunk `7defb03`: 4 runs × 3M (`--difficulty path`, seed 999 paired, curriculum_lock disabled), run_configs byte-identical except `mode`/`use_gnn`. S2/S3 replicate axis dropped (user decision 2026-07-14) → n=1 per cell, paired-case-study framing, effects read against the ±10 pp same-seed band (52.2–62.4% replicate range). All 4 final evals complete (post-EvalBugfix pipeline, Patch B committed at `evaluate_carla_mappo.py:900`; 400 ep = easy/medium/hard Town03 + test Town05 80 m, stochastic). Eval notes: GNN-C retained 401 ep post-dedup (one benign extra easy episode); GNN-C `final_eval_job.json` had 3 stale paths after the run dir was moved into `GNN\` — patched, `.bak` kept. Integrity: 6 rec/ep, 0 bad lines, 0 non-finite across all 8 logs. **Vehicle eval SR: 48.33 (MLP-C) / 29.83 (MLP-B) / 41.65 (GNN-C) / 39.17 (GNN-B)** → Δ(C−B) = **+18.50 pp under MLP** (same sign in all 4 scenarios: +19.0/+20.7/+15.3/+19.0) vs **+2.48 pp under GNN** (Town03 avg −0.06, Town05 +10.00) — **arch×regime interaction; only the Town05 advantage replicates across critics (+19.0/+10.0 pp)**. Training cumulative veh SR 57.28/46.31/56.55/49.41. Failure grammars: MLP-C slow/stalling (10.15 km/h; eval coll 10.42%, s+t 38.25%) vs batch cells fast/colliding (eval coll 26.0/26.9%); GNN-C escapes the defensive equilibrium at equal training SR (18.04 km/h, s+t 20.84%) but converts mobility into contact at eval (coll 22.94%, SR −6.7 pp vs MLP-C); GNN rescues batch (+9.3 pp eval vs MLP-B). Pedestrians flat across arms (training SR 56.6–60.5%) except GNN-C at eval (59.02% vs 47–49%). Level-controlled within-run erosion in ALL cells (easy-level veh SR Q1→Q4: −16.5/−18.6/−10.8/−6.4 pp) — platform-level, halved under the GNN critic; stuck-cause composition identical across cells (~46/40/10%). Unlock timing: medium ≈26.1% of episodes in both C cells; hard 58.0% (GNN, competence gate) vs 71.0% (MLP, consistent with the 70% pressure cap). Batch realized level mix within ~2 pp of uniform. Consolidation: `docs/thesis/scripts/consolidate_campaign.py` → `docs/thesis/data/campaign_consolidation.json`; full analysis in the thesis (`docs/thesis/latex/`, Ch. 5). |
 
 See `docs/EXPERIMENT_REGISTRY.md` for per-candidate implementation details.
 

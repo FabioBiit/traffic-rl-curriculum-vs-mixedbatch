@@ -1,32 +1,163 @@
 % ============================================================
 % Chapter 1 — Introduction (target 4–5 pp)
-% A full English draft exists from the 2026-07-06 planning session
-% (chat only): paste it here, then add hypothesis H3 (architecture x
-% regime interaction) to §1.2. Polished LAST per the writing order.
+% Status: FULL DRAFT 2026-07-17, written fresh against the final
+% campaign results (the 2026-07-06 chat draft was never recovered;
+% if it resurfaces, merge selectively).
 % ============================================================
 \chapter{Introduction}
 \label{ch:intro}
 
-\todo{Paste the 2026-07-06 draft (currently only in chat), then add H3 to
-\S 1.2 and align numbers with the final campaign.}
+\section{Motivation}
+\label{sec:motivation}
 
-\section{Motivation}\label{sec:motivation}
-% ~1 p: training strategy as a design decision in RL; urban driving testbed.
+Reinforcement learning trains control policies by trial and error, and
+in any non-trivial domain the designer faces a scheduling question
+before the first gradient step: when the tasks to master span a range of
+difficulty, \emph{in what order should they be presented}? Two answers
+are natural. \emph{Curriculum learning} presents tasks from easy to
+hard, echoing human pedagogy: build competence where success is
+reachable, then extend it. \emph{Mixed training} presents everything
+from the start --- the direct analogue of training on a shuffled
+dataset, which is the unquestioned default in supervised learning. Both
+strategies consume the same budget; choosing between them is, in
+principle, free. If the choice changes what the learned policy does, it
+is among the cheapest levers a designer controls --- and one of the
+least characterized, especially in multi-agent settings, where most of
+the curriculum literature's assumptions (single learner, sparse rewards,
+stationary environment) do not hold.
 
-\section{Research Question and Hypotheses}\label{sec:rq}
-% ~1 p: H1 curriculum -> better early sample efficiency, plateau/forgetting
-% risk on hard; H2 mixed -> full coverage from step 0, noisier early signal;
-% H3 (secondary) effect size/direction may depend on critic encoder
-% (architecture x regime interaction). The 4 comparison axes.
+Urban autonomous driving is a demanding place to ask the question.
+It offers a natural difficulty axis (route length), heterogeneous
+agents with different embodiments and constraints (vehicles and
+pedestrians), a built-in tension between performance and safety
+(faster policies complete more routes and hit more things), and a
+canonical out-of-distribution test (drive on a town never seen in
+training). It is also intrinsically multi-agent: policies do not just
+share a world, they shape each other's environment while learning ---
+the non-stationarity at the heart of multi-agent reinforcement
+learning. This thesis asks the ordering question there, and treats the
+training regime itself as the experimental variable.
 
-\section{Approach at a Glance}\label{sec:approach}
-% ~1 p: CARLA 0.9.16, MAPPO/CTDE, 6 agents shared world, parallel task
-% coverage, 2x2 seed-paired campaign at 3M steps, Town03 -> Town05.
+\section{Research Question and Hypotheses}
+\label{sec:rq}
 
-\section{Contributions}\label{sec:contributions}
-% ~0.5 p: (a) equal-budget comparison framework; (b) gate-driven methodology
-% with experiment registry; (c) empirical characterization on 4 axes;
-% (d) MLP/GNN critic architectural axis.
+\begin{quote}
+  \emph{Does curriculum learning from easy to medium to hard produce
+  measurably different multi-agent driving behaviour than mixed-batch
+  training, at equal training budget?}
+\end{quote}
 
-\section{Thesis Outline}\label{sec:outline}
-% ~0.5 p.
+The question is deliberately about \emph{behaviour}, not about a single
+success-rate leaderboard: the comparison is evaluated along four axes
+--- sample efficiency, final performance with its failure composition,
+within-run training dynamics, and map generalization --- always
+separately for vehicles and pedestrians. Three falsifiable hypotheses
+structure the analysis:
+
+\begin{itemize}
+  \item \textbf{H1 (curriculum).} Staged exposure yields better early
+        sample efficiency --- easy tasks provide reachable success to
+        bootstrap from --- with a known risk of plateauing on, or
+        forgetting, harder tasks introduced late.
+  \item \textbf{H2 (mixed).} Uniform exposure covers the full task
+        distribution from step zero, at the cost of a noisier early
+        signal dominated by failures on hard tasks; its expected payoff
+        is robustness --- what is seen during training does not shift.
+  \item \textbf{H3 (interaction, secondary).} The size --- possibly the
+        direction --- of the regime effect may depend on how value is
+        estimated. In centralized-training architectures the critic is
+        the component that digests multi-agent structure; replacing its
+        encoder (flat MLP vs.\ graph-based message passing over agents)
+        may change what task ordering does.
+\end{itemize}
+
+The campaign's short answers, developed in \cref{ch:results}: H1's
+efficiency clause fails (all cells learn equally fast early --- dense
+reward shaping already provides the signal curricula usually supply)
+while ordering instead selects \emph{which} policy emerges, cautious
+versus fast-and-colliding; H2's robustness clause fails (broader
+coverage bought no transfer advantage); and H3 holds in strong form ---
+under a GNN critic the in-domain regime effect vanishes entirely, and
+only the generalization advantage of the curriculum survives across both
+architectures.
+
+\section{Approach at a Glance}
+\label{sec:approach}
+
+All experiments run in CARLA 0.9.16 on the urban map Town03, with
+Town05 reserved for the generalization test. Six agents learn
+simultaneously in one shared world: three vehicles and three
+pedestrians, each assigned its own route per episode --- a design we
+call \emph{parallel task coverage}, which multiplies experience per
+episode and makes agent interaction a first-class phenomenon rather
+than a nuisance. It is the fixed frame of both experimental arms, not a
+variable. Policies are trained with MAPPO under centralized training
+with decentralized execution: one shared policy per class, and a
+centralized critic that sees all agents' observations during training
+only. Difficulty is the target route length (30/60/\SI{100}{m});
+success is strict route completion.
+
+The two regimes share every component except the level-selection rule.
+The \emph{curriculum} arm starts easy and unlocks harder levels through
+a windowed competence gate (with budget-based pressure caps that
+guarantee progression); the \emph{batch} arm interleaves all levels
+uniformly from the first episode. The final campaign is a $2 \times 2$
+factorial --- \{MLP, GNN critic\} $\times$ \{curriculum, batch\} ---
+of four 3-million-step runs sharing one seed, paired across cells, each
+followed by a 400-episode evaluation including Town05. With one run per
+cell, every contrast is a seed-paired case study: effects are read
+against a same-seed variance band measured on identical replicates, and
+the primary contrast is observed twice, once per critic architecture.
+The campaign sits on top of a longer gate-driven development phase ---
+documented in full, including its failures and the environment bugs it
+uncovered --- which is part of the thesis's methodological content
+(\cref{ch:methodology}).
+
+\section{Contributions}
+\label{sec:contributions}
+
+\begin{enumerate}
+  \item \textbf{A controlled equal-budget comparison framework} for
+        training regimes in multi-agent driving: seed-paired runs with
+        byte-identical configurations up to the experimental flags,
+        strict per-agent measurement rules, and a three-layer
+        evaluation (training stream, static recomputation, final
+        checkpoint evaluation with map transfer).
+  \item \textbf{A gate-driven development methodology with an honest
+        registry}: single-knob candidates promoted or reverted against
+        predeclared quantitative gates, mechanism and outcome recorded
+        separately, and environment-validity defects --- including one
+        that moved the headline metric by $\approx 50$ percentage
+        points with no policy change --- documented with their
+        detection signatures.
+  \item \textbf{An empirical characterization of what task ordering
+        does} in this setting: no early-efficiency effect, but
+        selection between qualitatively different driving equilibria;
+        a curriculum advantage on the strict success criterion under
+        the MLP critic; regime-insensitive pedestrians; and a
+        platform-wide late-training erosion measured at fixed task
+        level.
+  \item \textbf{Evidence that regime effects are conditional on value
+        estimation} (H3): swapping the critic encoder from MLP to GNN
+        erases the in-domain curriculum advantage, rescues the batch
+        cell, and leaves map generalization as the only component that
+        replicates across architectures.
+\end{enumerate}
+
+\section{Thesis Outline}
+\label{sec:outline}
+
+\Cref{ch:background} introduces the necessary background: reinforcement
+learning and PPO, multi-agent learning with centralized critics,
+curriculum learning and its mixed-training control, and the CARLA
+simulator. \Cref{ch:system} describes the experimental platform ---
+environment, observation and action spaces, reward design, route
+generation, the two training regimes, and the critic variants.
+\Cref{ch:methodology} defines the measurement rules and the gate-driven
+protocol, documents the environment-validity episodes, and specifies
+the campaign design. \Cref{ch:results} reports the results along the
+four comparison axes, closing with the verdicts on H1--H3.
+\Cref{ch:discussion} interprets the findings and states threats to
+validity and scope limits; \cref{ch:conclusions} concludes and lists
+future work. Appendices provide the condensed experiment registry, full
+configurations, per-run result tables, and reproducibility details.

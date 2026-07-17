@@ -6,12 +6,21 @@ Master plan: `../THESIS_OUTLINE.md` (chapter budgets, campaign tracker, open ite
 
 ## Build
 
-```bash
-latexmk -pdf -interaction=nonstopmode main.tex   # requires biber for the bibliography
+Local toolchain: **MiKTeX 25.12** (installed 2026-07-17, per-user, AutoInstall
+on). From this folder (`$bin = %LOCALAPPDATA%\Programs\MiKTeX\miktex\bin\x64`,
+or plain `pdflatex`/`biber` in any shell opened after the install):
+
+```powershell
+pdflatex -interaction=nonstopmode main.tex
+biber main
+pdflatex -interaction=nonstopmode main.tex
+pdflatex -interaction=nonstopmode main.tex
 ```
 
-No local TeX installation? Zip this folder and upload it to Overleaf
-(compiler: pdfLaTeX; biber is supported out of the box).
+First full build 2026-07-17: **68 pages, no unresolved references**; only
+cosmetic warning is the bold small-caps substitution on the title page
+(disappears once the `\todo` placeholders are replaced). Overleaf remains an
+option (upload `../thesis_overleaf_*.zip`), no longer required.
 
 ## Conventions
 
@@ -40,8 +49,11 @@ No local TeX installation? Zip this folder and upload it to Overleaf
 - Sanity checks pass on all sources (env/brace balance, cross-refs, cite
   keys) — NOT YET COMPILED (no local TeX): first Overleaf compile is the
   main outstanding validation.
-- Remaining: Ch. 1 (paste user's 2026-07-06 draft, then polish + add H3);
+- Ch. 1: FULL DRAFT (2026-07-17, written fresh; merge the old 06-07 chat
+  draft selectively if it ever resurfaces). Figures failure_modes.pdf +
+  town05_bars.pdf generated and wired into §5.4/§5.6.
+- Remaining: FIRST OVERLEAF COMPILE (main outstanding validation);
   Fig. 2 (Town03 screenshot, user); Fig. 3 (run ../scripts/
-  make_fig3_route_examples.py with live CARLA, user); optional extra
-  figures (failure-mode stacked bars, Town05 bars); final \todo sweep;
-  title-page fields; page-count check (~60 pp target).
+  make_fig3_route_examples.py with live CARLA, user); title-page fields
+  (4 \todo in main.tex); page-count check (~60 pp target); language
+  polish pass.

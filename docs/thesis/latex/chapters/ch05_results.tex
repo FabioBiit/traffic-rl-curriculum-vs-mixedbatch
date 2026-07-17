@@ -289,7 +289,8 @@ paired design can offer in place of seed replication
 (\cref{sec:campaign}).
 
 \paragraph{Two different ways to fail.}
-The regimes produce recognizably different driving. The batch policy is
+The regimes produce recognizably different driving
+(\cref{fig:failure-modes}). The batch policy is
 nearly twice as fast (18.7 vs.\ 10.2 km/h in training) but converts that
 mobility into contact: collision 17.3\% vs.\ 8.8\% and offroad 12.8\%
 vs.\ 3.4\% in training, widening to collision 26.0\% vs.\ 10.4\% at
@@ -298,6 +299,17 @@ evaluation. The curriculum policy fails mostly by stalling
 dominates the other on every axis --- the curriculum trades speed for
 safety --- but on the strict success criterion the trade resolves
 clearly in its favour.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{failure_modes}
+  \caption{Vehicle termination composition per cell, in training
+  (cumulative) and at final evaluation. The two failure grammars are
+  visible at a glance: stalling-dominated (yellow) in MLP-curriculum,
+  contact-dominated (red/purple) in the batch cells, with the GNN cells
+  intermediate.}
+  \label{fig:failure-modes}
+\end{figure}
 
 \paragraph{Pedestrians: no regime effect.}
 Pedestrian success is flat between arms everywhere: 56.6 vs.\ 57.1\% in
@@ -416,7 +428,18 @@ The test scenario places the same policies on Town05 --- a squared-grid,
 multi-lane layout structurally unlike Town03 (\cref{sec:carla-bg}) ---
 for 100 episodes at \SI{80}{m} targets, with traffic as in training.
 Three observations from the MLP pair (\cref{tab:eval-mlp}), and a fourth
-from the GNN pair (\cref{tab:eval-gnn}).
+from the GNN pair (\cref{tab:eval-gnn}); \cref{fig:town05} summarizes
+the transfer picture.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.8\textwidth]{town05_bars}
+  \caption{Vehicle SR: Town03 scenario average vs.\ Town05 test, per
+  cell. The curriculum cells drop least; the GNN pair is
+  indistinguishable in-domain (43.6 vs.\ 43.7\%) and separates by
+  10\,pp on the unseen map.}
+  \label{fig:town05}
+\end{figure}
 
 \paragraph{The ordering survives the map change.}
 Curriculum completes 37.0\% of Town05 routes against batch's 18.0\%
