@@ -10,11 +10,17 @@ Local toolchain: **MiKTeX 25.12** (installed 2026-07-17, per-user, AutoInstall
 on). From this folder (`$bin = %LOCALAPPDATA%\Programs\MiKTeX\miktex\bin\x64`,
 or plain `pdflatex`/`biber` in any shell opened after the install):
 
+Two documents share `figures/`, `configs/` and `bibliography.bib`:
+`main_en.tex` (English, `chapters/`) and `main_it.tex` (Italian
+translation, `chapters_it/`; keeps identical labels, numbers and
+structure).
+
 ```powershell
-pdflatex -interaction=nonstopmode main.tex
-biber main
-pdflatex -interaction=nonstopmode main.tex
-pdflatex -interaction=nonstopmode main.tex
+pdflatex -interaction=nonstopmode main_en.tex
+biber main_en
+pdflatex -interaction=nonstopmode main_en.tex
+pdflatex -interaction=nonstopmode main_en.tex
+# same sequence for the Italian version: main_it
 ```
 
 First full build 2026-07-17: **68 pages, no unresolved references**; only
@@ -52,8 +58,21 @@ option (upload `../thesis_overleaf_*.zip`), no longer required.
 - Ch. 1: FULL DRAFT (2026-07-17, written fresh; merge the old 06-07 chat
   draft selectively if it ever resurfaces). Figures failure_modes.pdf +
   town05_bars.pdf generated and wired into §5.4/§5.6.
-- Remaining: FIRST OVERLEAF COMPILE (main outstanding validation);
-  Fig. 2 (Town03 screenshot, user); Fig. 3 (run ../scripts/
-  make_fig3_route_examples.py with live CARLA, user); title-page fields
-  (4 \todo in main.tex); page-count check (~60 pp target); language
-  polish pass.
+- 2026-07-19: post-review pass. Corrections applied (stale §5.3
+  take-off numbers updated with GNN-B, Appendix B/D overfull lines
+  fixed, config-snapshot comments re-wrapped/translated, MLP-curriculum
+  caption attribution, roman-numbered front matter). `main.tex` renamed
+  to `main_en.tex` (68 pp); full Italian translation added as
+  `main_it.tex` + `chapters_it/` (71 pp; cleveref Italian names defined
+  manually via \AtBeginDocument). Both compile clean with MiKTeX: no
+  errors, no unresolved references, no overfull > 20pt.
+- 2026-07-19 (bis): generic title page replaced in both documents with
+  the official UniMarconi template (from Downloads/Frontespizio.doc via
+  LibreOffice conversion): logo extracted to figures/logo_unimarconi.jpg,
+  university heading, DIPARTIMENTO/CORSO lines, quoted italic title,
+  Relatore/Candidato two-column block, ANNO ACCADEMICO.
+- Remaining: Fig. 2 (Town03 screenshot, user); Fig. 3 (run ../scripts/
+  make_fig3_route_examples.py with live CARLA, user); title-page blank
+  fields (5 \todo each in main_en.tex and main_it.tex: dipartimento,
+  corso di laurea, relatore, candidato, anno accademico); page-count
+  check; language polish pass.

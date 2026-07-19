@@ -1,0 +1,175 @@
+% ============================================================
+% Capitolo 1 — Introduzione (traduzione italiana di
+% chapters/ch01_introduction.tex; label invariati)
+% ============================================================
+\chapter{Introduzione}
+\label{ch:intro}
+
+\section{Motivazione}
+\label{sec:motivation}
+
+L'apprendimento per rinforzo (\emph{reinforcement learning}, RL) addestra
+politiche di controllo per tentativi ed errori e, in qualunque dominio non
+banale, il progettista affronta una questione di scheduling prima ancora
+del primo passo di gradiente: quando i task da padroneggiare coprono un
+intervallo di difficoltà, \emph{in quale ordine vanno presentati}? Due
+risposte sono naturali. Il \emph{curriculum learning} presenta i task dal
+facile al difficile, sulla falsariga della pedagogia umana: costruire
+competenza dove il successo è raggiungibile, poi estenderla.
+L'\emph{addestramento misto} presenta tutto fin dall'inizio --- l'analogo
+diretto dell'addestramento su un dataset mescolato, che è il default
+indiscusso nell'apprendimento supervisionato. Entrambe le strategie
+consumano lo stesso budget; scegliere tra le due è, in linea di principio,
+gratis. Se la scelta cambia ciò che la policy appresa fa, essa è tra le
+leve più economiche a disposizione del progettista --- e tra le meno
+caratterizzate, specialmente nei contesti multi-agente, dove la maggior
+parte delle assunzioni della letteratura sui curricula (apprendista
+singolo, reward sparse, ambiente stazionario) non vale.
+
+La guida autonoma urbana è un banco di prova esigente per porre la
+domanda. Offre un asse di difficoltà naturale (la lunghezza del
+percorso), agenti eterogenei con embodiment e vincoli diversi (veicoli e
+pedoni), una tensione intrinseca tra prestazione e sicurezza (policy più
+veloci completano più percorsi e urtano più cose) e un test
+out-of-distribution canonico (guidare su una città mai vista in
+addestramento). È inoltre intrinsecamente multi-agente: le policy non si
+limitano a condividere un mondo, ma plasmano l'ambiente l'una dell'altra
+mentre apprendono --- la non-stazionarietà al cuore dell'apprendimento
+per rinforzo multi-agente. Questa tesi pone lì la domanda
+sull'ordinamento, e tratta il regime di addestramento stesso come
+variabile sperimentale.
+
+\section{Domanda di ricerca e ipotesi}
+\label{sec:rq}
+
+\begin{quote}
+  \emph{Il curriculum learning da facile a medio a difficile produce un
+  comportamento di guida multi-agente misurabilmente diverso rispetto
+  all'addestramento mixed-batch, a parità di budget di addestramento?}
+\end{quote}
+
+La domanda riguarda deliberatamente il \emph{comportamento}, non una
+singola classifica di tassi di successo: il confronto è valutato lungo
+quattro assi --- efficienza campionaria, prestazione finale con la sua
+composizione dei fallimenti, dinamica di addestramento entro la run e
+generalizzazione di mappa --- sempre separatamente per veicoli e pedoni.
+Tre ipotesi falsificabili strutturano l'analisi:
+
+\begin{itemize}
+  \item \textbf{H1 (curriculum).} L'esposizione graduale produce una
+        migliore efficienza campionaria iniziale --- i task facili
+        offrono successi raggiungibili da cui partire --- con il rischio
+        noto di plateau sui task difficili introdotti tardi, o del loro
+        oblio.
+  \item \textbf{H2 (misto).} L'esposizione uniforme copre l'intera
+        distribuzione dei task dal passo zero, al costo di un segnale
+        iniziale più rumoroso dominato dai fallimenti sui task
+        difficili; il suo payoff atteso è la robustezza --- ciò che si
+        vede in addestramento non cambia nel tempo.
+  \item \textbf{H3 (interazione, secondaria).} L'entità --- forse la
+        direzione --- dell'effetto di regime può dipendere da come viene
+        stimato il valore. Nelle architetture con addestramento
+        centralizzato il critic è la componente che digerisce la
+        struttura multi-agente; sostituirne l'encoder (MLP piatto vs.\
+        message passing su grafo tra agenti) può cambiare ciò che
+        l'ordinamento dei task produce.
+\end{itemize}
+
+Le risposte in breve della campagna, sviluppate nel \cref{ch:results}:
+la clausola di efficienza di H1 fallisce (tutte le celle apprendono
+ugualmente in fretta all'inizio --- il reward shaping denso fornisce già
+il segnale che i curricula di solito procurano) mentre l'ordinamento
+seleziona invece \emph{quale} policy emerge, cauta oppure veloce e
+incline alle collisioni; la clausola di robustezza di H2 fallisce (la
+copertura più ampia non ha comprato alcun vantaggio di trasferimento); e
+H3 regge in forma forte --- con un critic GNN l'effetto di regime
+in-domain svanisce del tutto, e solo il vantaggio di generalizzazione
+del curriculum sopravvive in entrambe le architetture.
+
+\section{L'approccio in sintesi}
+\label{sec:approach}
+
+Tutti gli esperimenti girano in CARLA 0.9.16 sulla mappa urbana Town03,
+con Town05 riservata al test di generalizzazione. Sei agenti apprendono
+simultaneamente in un unico mondo condiviso: tre veicoli e tre pedoni,
+ciascuno con un proprio percorso assegnato a ogni episodio --- un design
+che chiamiamo \emph{copertura parallela dei task} (parallel task
+coverage), che moltiplica l'esperienza per episodio e rende
+l'interazione tra agenti un fenomeno di prim'ordine anziché un
+disturbo. È la cornice fissa di entrambi i bracci sperimentali, non una
+variabile. Le policy sono addestrate con MAPPO in regime di
+addestramento centralizzato con esecuzione decentralizzata: una policy
+condivisa per classe e un critic centralizzato che vede le osservazioni
+di tutti gli agenti solo durante l'addestramento. La difficoltà è la
+lunghezza target del percorso (30/60/\SI{100}{m}); il successo è il
+completamento rigoroso del percorso.
+
+I due regimi condividono ogni componente tranne la regola di selezione
+del livello. Il braccio \emph{curriculum} parte dal facile e sblocca i
+livelli più difficili attraverso un gate di competenza a finestra (con
+cap di pressione basati sul budget che garantiscono la progressione); il
+braccio \emph{batch} alterna uniformemente tutti i livelli fin dal primo
+episodio. La campagna finale è un fattoriale $2 \times 2$ --- \{critic
+MLP, GNN\} $\times$ \{curriculum, batch\} --- di quattro run da 3 milioni
+di passi con un unico seed, appaiate tra le celle, ognuna seguita da una
+valutazione di 400 episodi che include Town05. Con una run per cella,
+ogni contrasto è un caso di studio appaiato per seed: gli effetti sono
+letti contro una banda di varianza a seed identico misurata su repliche
+identiche, e il contrasto primario è osservato due volte, una per
+architettura del critic. La campagna poggia su una più lunga fase di
+sviluppo guidata da gate --- documentata per intero, inclusi i suoi
+fallimenti e i bug d'ambiente che ha scoperto --- che è parte del
+contenuto metodologico della tesi (\cref{ch:methodology}).
+
+\section{Contributi}
+\label{sec:contributions}
+
+\begin{enumerate}
+  \item \textbf{Un framework di confronto controllato a parità di
+        budget} per i regimi di addestramento nella guida multi-agente:
+        run appaiate per seed con configurazioni byte-identiche a meno
+        dei flag sperimentali, regole di misura rigorose per agente e
+        una valutazione a tre livelli (flusso di addestramento, ricalcolo
+        statico, valutazione finale del checkpoint con trasferimento di
+        mappa).
+  \item \textbf{Una metodologia di sviluppo guidata da gate con un
+        registro onesto}: candidati a manopola singola promossi o
+        revertiti contro gate quantitativi predefiniti, meccanismo ed
+        esito registrati separatamente, e difetti di validità
+        dell'ambiente --- incluso uno che ha spostato la metrica
+        principale di $\approx 50$ punti percentuali senza alcun
+        cambiamento di policy --- documentati con le loro firme di
+        rilevamento.
+  \item \textbf{Una caratterizzazione empirica di che cosa fa
+        l'ordinamento dei task} in questo contesto: nessun effetto di
+        efficienza iniziale, ma selezione tra equilibri di guida
+        qualitativamente diversi; un vantaggio del curriculum sul
+        criterio di successo rigoroso con il critic MLP; pedoni
+        insensibili al regime; e un'erosione tardiva di piattaforma
+        misurata a livello di task fissato.
+  \item \textbf{Evidenza che gli effetti di regime sono condizionati
+        dalla stima del valore} (H3): sostituire l'encoder del critic da
+        MLP a GNN cancella il vantaggio in-domain del curriculum,
+        recupera la cella batch e lascia la generalizzazione di mappa
+        come unica componente che si replica tra le architetture.
+\end{enumerate}
+
+\section{Struttura della tesi}
+\label{sec:outline}
+
+Il \cref{ch:background} introduce il background necessario:
+apprendimento per rinforzo e PPO, apprendimento multi-agente con critic
+centralizzati, curriculum learning e il suo controllo ad addestramento
+misto, e il simulatore CARLA. Il \cref{ch:system} descrive la
+piattaforma sperimentale --- ambiente, spazi di osservazione e azione,
+design della reward, generazione dei percorsi, i due regimi di
+addestramento e le varianti del critic. Il \cref{ch:methodology}
+definisce le regole di misura e il protocollo guidato da gate, documenta
+gli episodi di validità dell'ambiente e specifica il design della
+campagna. Il \cref{ch:results} riporta i risultati lungo i quattro assi
+di confronto, chiudendo con i verdetti su H1--H3. Il
+\cref{ch:discussion} interpreta i risultati ed enuncia minacce alla
+validità e limiti di scope; il \cref{ch:conclusions} conclude ed elenca
+il lavoro futuro. Le appendici forniscono il registro condensato degli
+esperimenti, le configurazioni complete, le tabelle di risultato per run
+e i dettagli di riproducibilità.

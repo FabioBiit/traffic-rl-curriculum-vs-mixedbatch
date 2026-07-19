@@ -3,10 +3,10 @@
 % Written LAST among the big chapters, once the 2x2 campaign (n=1 seed,
 % decided 2026-07-14: S2/S3 dropped for compute budget) is consolidated.
 % Every number recomputed from episodes.jsonl on disk.
-% Data status (2026-07-14 evening): MLP-C 20260622_171626 train+eval OK;
-% MLP-B 20260623_171855 train+eval OK; GNN-C 20260630_181143 train only;
-% GNN-B 20260714_155209 training in flight; final evals remain for the
-% two GNN runs only.
+% Data status (2026-07-16): all four cells train+eval complete and
+% consolidated (MLP-C 20260622_171626, MLP-B 20260623_171855,
+% GNN-C 20260630_181143, GNN-B 20260714_155209); numbers from
+% docs/thesis/data/campaign_consolidation.json.
 % ============================================================
 \chapter{Results}
 \label{ch:results}
@@ -176,11 +176,11 @@ shares of 21.6\% (MLP) and 30.1\% (GNN).
 \end{figure}
 
 \paragraph{Early phase: indistinguishable take-off.}
-All three completed cells climb at the same speed: the 100-episode
-windowed vehicle SR first crosses 30\% after 137--140K steps and 50\%
-after 162--167K steps in every cell --- a spread of a few percent,
+All four cells climb at the same speed: the 100-episode
+windowed vehicle SR first crosses 30\% after 137--142K steps and 50\%
+after 162--175K steps in every cell --- a spread below 8\%,
 far inside noise. The notable part is \emph{what} each policy crossed it
-on: the curriculum cells on easy-only exposure, the batch cell on the
+on: the curriculum cells on easy-only exposure, the batch cells on the
 full uniform mix including \SI{100}{m} routes. At equal budget, early
 success-rate take-off was not the discriminating factor between regimes
 in this campaign.
@@ -197,8 +197,9 @@ hard gate on competence. The result is visible in the exposure shares of
 hard episodes than its MLP counterpart.
 
 \paragraph{After the take-off.}
-From $\approx 0.5$M steps the MLP-batch curve settles visibly below the
-two curriculum curves (\cref{fig:learning-curves}), which track each
+From $\approx 0.5$M steps the batch curves settle below the two
+curriculum curves --- MLP-batch most visibly
+(\cref{fig:learning-curves}) --- which track each
 other closely; all curves drift downward late in training as the
 curriculum mixes harden (curriculum cells) and as pedestrian windowed
 success declines --- the within-run dynamics are analysed in

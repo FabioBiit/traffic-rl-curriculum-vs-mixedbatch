@@ -1,0 +1,236 @@
+% ============================================================
+% Appendici A–D (traduzione italiana di chapters/appendices.tex;
+% label invariati; include le correzioni post-review: comandi a capo,
+% nota sui commenti dei config, riduzione a singolo seed)
+% ============================================================
+
+\chapter{Registro degli esperimenti (condensato)}
+\label{app:registry}
+
+La \cref{tab:registry} elenca ogni candidato valutato con il suo
+identificatore di run, il verdetto e l'esito di sintesi. Le run A/B
+della fase di sviluppo sono da $3\times10^{5}$ passi, seed 999,
+bloccate su easy salvo diversa indicazione; i delta sono rispetto alla
+baseline appaiata della loro era (\cref{sec:gate}) e non sono
+confrontabili tra versioni dell'ambiente (\cref{sec:bugs}). Il registro
+completo, con meccanismi e pseudocodice per candidato, è mantenuto nel
+repository (\texttt{docs/EXPERIMENT\_REGISTRY.md}).
+
+\begin{small}
+\begin{longtable}{@{}p{3.1cm}p{2.8cm}p{2.0cm}p{5.6cm}@{}}
+  \caption{Registro condensato degli esperimenti. SR = tasso di
+  successo dei veicoli, s$+$t = stuck$+$timeout, EV = varianza spiegata
+  del critic.}
+  \label{tab:registry}\\
+  \toprule
+  Candidato & Run ID & Verdetto & Esito \\
+  \midrule
+  \endfirsthead
+  \toprule
+  Candidato & Run ID & Verdetto & Esito \\
+  \midrule
+  \endhead
+  C0 diagnostica & --- & adottato & strumentazione dei log di episodio; solo misura \\
+  C1 obs route-aware & --- & adottato & feature geometriche di percorso (era 44D) \\
+  C2v2-A reward di movimento & 20260514\_001215 & non promosso & SR su ma s$+$t peggiorato \\
+  D1 obs/reward & 20260514\_073353 & rigettato & SR giù, s$+$t su \\
+  D2 reward shaping & 20260514\_095921 & promosso & blocco anti-stallo della \cref{sec:rewards} \\
+  D1$+$D2 & 20260514\_133823 & rigettato & peggio di D2 da solo \\
+  D2-Safety & 20260514\_155151 & rigettato & SR giù, nessun guadagno di sicurezza \\
+  D3 terminazione precoce da stuck & 20260514\_190424 & rigettato & SR $-2.9$\,pp, s$+$t $+7.1$\,pp \\
+  Lock easy-only path & 20260514\_211642 & solo evidenza & esplorativo, nessun gate \\
+  H1$+$H1.1 riparazione value loss & 20260515\_175921 & mantenuto (gate fallito) & EV $0 \to 0.87$; collisione $+3.3$\,pp \\
+  H2 sconto $0.99 \to 0.997$ & 20260515\_211055 & mantenuto (falsificato) & collisione $+5.2$\,pp, timeout$\to$collisione $\approx$1:1 \\
+  H3 schedule di entropia (a passi) & 20260516\_144007 & gate fallito & meccanismo confermato (entropia $4.78 \to 3.25$); delta entro il rumore \\
+  R3 penalità di collisione $\times 10$ & 20260516\_200545 & mantenuto (falsificato) & collisione piatta ($-0.2$\,pp): limite di percezione, non di peso della reward \\
+  R1 rimozione guardia di progresso & 20260517\_134652 & promosso & SR $+4.7$\,pp, s$+$t $-3.5$\,pp, coll.\ $-1.5$\,pp \\
+  R2 bonus di sterzo gated & 20260517\_164707 & non promosso & SR $-1.9$\,pp, offroad $+3.2$\,pp \\
+  Bugfix lunghezza percorsi & 20260517\_212109 & adottato (bug fix) & $\approx +50$\,pp SR: cambio di distribuzione dei task (\cref{sec:bugs}) \\
+  Fix seed percorsi & --- & adottato (bug fix) & ripristina l'appaiamento A/B dei percorsi (\cref{sec:bugs}) \\
+  O1$+$O2 osservabilità (47D) & 20260518\_195947 & adottato & baseline sana: SR easy-locked $\approx 79$\%, EV 0.983 \\
+  Schedule di entropia (a frazione) & 20260520\_133747 & promosso & meccanismo stabile; baseline per i gate successivi \\
+  Bundle percorso$+$passo pedoni & 20260525\_091300 & parziale & SR ped.\ piatto ma passo fuori banda; riflesso sui veicoli (stuck $+4.7$\,pp) \\
+  V3 retuning banda di passo & 20260525\_125127 & rigettato & overshoot peggiore (2.64\,m/s); declino SR in Q4 \\
+  V1 gate di hazard $0.75 \to 0.85$ & 20260525\_162428 & promosso & 5/5: SR $+2.3$\,pp, s$+$t $-3.0$\,pp, coll./off.\ migliorati \\
+  Addestramento unlock-path a 3M & 20260525\_205912 & completato & prima run curriculum a orizzonte pieno (stack V1$+$P1--P3) \\
+  Fix pipeline di valutazione & commit \texttt{d0731ca} & adottato (tooling) & quattro bug di valutazione accoppiati (\cref{sec:bugs}); nessun cambiamento di addestramento \\
+  \texttt{route\_short} come successo & 20260529\_122522 & revertito & violava il criterio di successo; regressione veicoli sospetta, irrisolta ($n=1$) \\
+  Conferma post-revert & 20260610\_192146 & superato & regressione non riprodotta; terzo membro della banda di repliche \\
+  Tetto attraversamenti $8 \to 3$ & 20260622\_132848 & promosso & SR $+9.2$\,pp, coll.\ $-2.3$\,pp, off.\ $-2.2$\,pp, ped.\ piatti (A/B hard-locked) \\
+  \bottomrule
+\end{longtable}
+\end{small}
+
+\chapter{Configurazione completa}
+\label{app:hyperparams}
+
+I tre file di configurazione qui sotto sono snapshot (2026-07-14) del
+trunk di campagna, con le righe di commento mandate a capo e tradotte
+in inglese per la presentazione --- tutte le chiavi e i valori sono
+invariati; il \texttt{run\_config.json} per run scritto al lancio è il
+riferimento autorevole per ogni singola run ed è stato usato per
+verificare che le celle di campagna differiscano solo nei due flag
+sperimentali (\cref{sec:campaign}). Le famiglie di livelli traffic e
+mixed in \texttt{levels.yaml} sono definite ma inutilizzate in questa
+tesi.
+
+\section*{\texttt{train\_mappo.yaml}}
+{\scriptsize\verbatiminput{configs/train_mappo.yaml}}
+
+\section*{\texttt{curriculum\_batch.yaml}}
+{\scriptsize\verbatiminput{configs/curriculum_batch.yaml}}
+
+\section*{\texttt{levels.yaml}}
+{\scriptsize\verbatiminput{configs/levels.yaml}}
+
+\chapter{Risultati per run}
+\label{app:per-seed}
+
+Tabelle metriche complete per le quattro run di campagna (il Cap.~5
+riporta le viste analitiche; questa appendice riporta il catalogo
+completo della \cref{sec:metrics}). Tutti i valori sono ricalcolati da
+\texttt{episodes.jsonl}; le scomposizioni di valutazione per scenario
+sono nelle \cref{tab:eval-mlp,tab:eval-gnn}.
+
+\begin{table}[h]
+  \centering\small
+  \caption{Addestramento, veicoli: metriche cumulative complete (\%,
+  velocità in km/h, passi di non-progresso in passi, completamento del
+  percorso ed efficienza di percorso in $[0,1]$).}
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    Metrica & MLP-curr.\ & MLP-batch & GNN-curr.\ & GNN-batch \\
+    \midrule
+    Tasso di successo & 57.28 & 46.31 & 56.55 & 49.41 \\
+    Tasso di stuck & 24.55 & 19.94 & 17.51 & 20.61 \\
+    Tasso di timeout & 5.92 & 3.67 & 3.33 & 2.14 \\
+    Stuck$+$timeout & 30.48 & 23.61 & 20.84 & 22.75 \\
+    Tasso di collisione & 8.84 & 17.33 & 13.37 & 17.56 \\
+    Tasso di offroad & 3.41 & 12.76 & 9.23 & 10.28 \\
+    Velocità media & 10.15 & 18.67 & 18.04 & 26.64 \\
+    Completamento del percorso & 0.789 & 0.710 & 0.795 & 0.748 \\
+    Efficienza di percorso & 0.711 & 0.699 & 0.755 & 0.715 \\
+    Passi di non-progresso & 239 & 253 & 216 & 227 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering\small
+  \caption{Addestramento, pedoni: metriche cumulative complete (\%,
+  velocità in m/s).}
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    Metrica & MLP-curr.\ & MLP-batch & GNN-curr.\ & GNN-batch \\
+    \midrule
+    Tasso di successo & 56.59 & 57.06 & 60.50 & 58.03 \\
+    Tasso di route-short & 0.63 & 0.65 & 0.61 & 0.58 \\
+    Tasso di stuck & 36.10 & 33.70 & 28.97 & 30.65 \\
+    Tasso di timeout & 6.46 & 8.33 & 9.61 & 10.46 \\
+    Stuck$+$timeout & 42.56 & 42.03 & 38.58 & 41.11 \\
+    Tasso di collisione & 0.22 & 0.25 & 0.31 & 0.28 \\
+    Velocità media & 1.96 & 1.61 & 1.90 & 1.45 \\
+    Completamento del percorso & 0.695 & 0.721 & 0.792 & 0.725 \\
+    Efficienza di percorso & 0.576 & 0.594 & 0.651 & 0.631 \\
+    Passi di non-progresso & 328 & 303 & 262 & 271 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering\small
+  \caption{Tassi di successo di addestramento per livello (\%).}
+  \begin{tabular}{@{}llrrrr@{}}
+    \toprule
+    Classe & Livello & MLP-curr.\ & MLP-batch & GNN-curr.\ & GNN-batch \\
+    \midrule
+    Veicoli & easy & 67.30 & 52.92 & 65.32 & 57.61 \\
+             & medium & 56.48 & 46.40 & 58.91 & 49.33 \\
+             & hard & 43.90 & 38.89 & 44.19 & 40.35 \\
+    \addlinespace
+    Pedoni & easy & 79.40 & 70.14 & 83.21 & 73.23 \\
+             & medium & 53.23 & 55.86 & 59.50 & 56.97 \\
+             & hard & 29.46 & 43.82 & 37.30 & 42.17 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering\small
+  \caption{Valutazione finale, complessiva (400 episodi; 401 per
+  GNN-curriculum, \cref{sec:integrity}). Velocità: veicoli km/h, pedoni
+  m/s.}
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    Metrica & MLP-curr.\ & MLP-batch & GNN-curr.\ & GNN-batch \\
+    \midrule
+    SR veicoli & 48.33 & 29.83 & 41.65 & 39.17 \\
+    Stuck / timeout veicoli & 29.58 / 8.67 & 25.17 / 6.00 & 21.78 / 3.33 & 21.08 / 2.75 \\
+    Collisione veicoli & 10.42 & 26.00 & 22.94 & 26.92 \\
+    Offroad veicoli & 3.00 & 13.00 & 10.31 & 10.08 \\
+    Velocità media veicoli & 8.77 & 14.65 & 15.33 & 26.78 \\
+    Completamento percorso veicoli & 0.793 & 0.665 & 0.767 & 0.727 \\
+    Efficienza di percorso veicoli & 0.664 & 0.636 & 0.705 & 0.697 \\
+    \addlinespace
+    SR pedoni & 47.00 & 48.92 & 59.02 & 48.67 \\
+    Stuck$+$timeout pedoni & 52.42 & 50.58 & 40.32 & 50.50 \\
+    Velocità media pedoni & 2.36 & 1.66 & 2.54 & 1.29 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\chapter{Riproducibilità}
+\label{app:repro}
+
+\paragraph{Stack software.}
+CARLA 0.9.16 (server e API Python); Python 3.11.9; PyTorch 2.7
+(CUDA 12.6); Ray/RLlib 2.10.0. Addestramento e simulatore girano sulla
+stessa macchina.
+
+\paragraph{Hardware.}
+Tutte le run sono state eseguite su una singola macchina di classe
+laptop: Intel Core i7-10870H (8 core / 16 thread), \SI{16}{GB} di RAM,
+NVIDIA GeForce RTX 3080 Laptop GPU (\SI{8}{GB}), Windows 11.
+L'inviluppo di risorse è parte dei vincoli di design dello studio:
+motiva il budget diagnostico da $3\times10^{5}$ passi del protocollo di
+gate (\cref{sec:gate}) e la riduzione della campagna a un singolo seed
+per cella (\cref{sec:campaign}).
+
+\paragraph{Versione del codice.}
+Il trunk di campagna è il commit \texttt{7defb03} (merge del branch del
+tetto agli attraversamenti, 2026-06-22); i commit successivi fino alla
+stesura di questa tesi toccano solo documentazione e tooling di
+visualizzazione. Ogni directory di run conserva il proprio
+\texttt{run\_config.json} (configurazione esatta), i checkpoint e
+\texttt{episodes.jsonl} (record grezzi a livello di agente) da cui ogni
+numero di questa tesi è ricalcolato.
+
+\paragraph{Comandi.}
+Addestramento (uno per cella di campagna; le quattro celle variano solo
+\texttt{--mode} e \texttt{--use-gnn}):
+\begin{quote}\small\ttfamily
+python -m carla\_core.training.train\_carla\_mappo --mode curriculum\\
+\hspace*{2em}--difficulty path --timesteps 3000000 --seed 999 [--use-gnn]
+\end{quote}
+L'addestramento scrive un \texttt{final\_eval\_job.json} nella directory
+della run; la valutazione finale a 400 episodi
+(\cref{sec:eval-pipeline}) si lancia con:
+\begin{quote}\small\ttfamily
+python -m carla\_core.training.evaluate\_carla\_mappo\\
+\hspace*{2em}--job <run\_dir>/final\_eval\_job.json
+\end{quote}
+Ricalcolo statico dai log e figure della tesi:
+\begin{quote}\small\ttfamily
+python carla\_core/scripts/verify-check-test/evaluate\_run\_static.py \\
+python docs/thesis/scripts/make\_pilot\_collapse\_fig.py \\
+python docs/thesis/scripts/make\_fig3\_route\_examples.py
+\end{quote}
+
+\paragraph{Seed.}
+Campagna: un unico seed di esperimento (999), appaiato tra le quattro
+celle. Era del pilota di aprile: seed 42. I seed dei percorsi per
+agente derivano deterministicamente dal seed di esperimento
+(\cref{sec:seeding}). Si noti che il seeding non rende identiche le run
+CARLA (\cref{sec:threats}); riproducibilità qui significa riprodurre la
+\emph{distribuzione} degli esiti e ogni aggregato riportato a partire
+dai log archiviati.

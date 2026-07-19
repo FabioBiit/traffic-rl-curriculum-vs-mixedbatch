@@ -1,0 +1,260 @@
+% ============================================================
+% Capitolo 6 — Discussione (traduzione italiana di
+% chapters/ch06_discussion.tex; label invariati)
+% ============================================================
+\chapter{Discussione}
+\label{ch:discussion}
+
+Questo capitolo interpreta i risultati del \cref{ch:results}: che cosa
+l'ordinamento dei task ha cambiato e che cosa no (\cref{sec:ordering}),
+che cosa ha contribuito la cornice a mondo condiviso
+(\cref{sec:ptc-revisited}), e le minacce e i limiti di scope sotto i
+quali ogni affermazione vale (\cref{sec:threats}, \cref{sec:scope}).
+
+% --- §6.1–6.2: interpretazione della matrice completa. ---
+\section{Che cosa cambia l'ordinamento dei task (e che cosa no)}
+\label{sec:ordering}
+
+Leggendo insieme i quattro assi di confronto del \cref{ch:results},
+l'ordinamento dei task ha fatto qualcosa di diverso da ciò che la
+letteratura sui curricula di solito promette e da ciò che l'intuizione
+sull'addestramento misto di solito teme.
+
+\paragraph{Non la velocità di apprendimento.}
+L'asse su cui i curricula sono classicamente attesi ripagare ---
+l'efficienza campionaria iniziale --- non ha mostrato nulla: tutte e
+quattro le celle hanno superato le stesse soglie di SR a finestra entro
+pochi percento dello stesso conteggio di passi
+(\cref{sec:sample-efficiency}). Una lettura plausibile è che il design
+della reward di questa piattaforma risolva già il problema per cui i
+curricula vengono di solito ingaggiati: con bonus densi per waypoint e
+shaping sulla distanza (\cref{sec:rewards}), anche i percorsi da
+\SI{100}{m} forniscono segnale di apprendimento fin dai primi episodi,
+quindi i task facili non servono per l'avvio. Da curricula costruiti
+per l'esplorazione a reward sparse non ci si dovrebbe aspettare il loro
+vantaggio caratteristico dove la reward è densa --- una condizione di
+scope su H1 più che una confutazione del curriculum learning in
+generale.
+
+\paragraph{Selezione dell'equilibrio.}
+Ciò che l'ordinamento ha cambiato è \emph{quale policy lo stesso
+apprendista è diventato}. La meccanica è visibile nei vincoli:
+completare un percorso da \SI{100}{m} entro l'orizzonte di 1{.}000
+passi richiede una velocità media sana, quindi una policy esposta ai
+percorsi hard dal passo~0 deve guidare veloce per riuscire del tutto
+--- e paga in collisioni (26\% in valutazione per MLP-batch). Una
+policy che spende il suo primo quarto di addestramento su percorsi da
+\SI{30}{m} può riuscire lentamente, e cementa la cautela (10.2~km/h,
+fallimenti dominati dallo stallo). L'ordinamento dei task, in questa
+lettura, agisce da \emph{selettore di equilibri} sul trade-off
+velocità--sicurezza più che da acceleratore. Le celle GNN sostengono la
+lettura selettiva dall'altro lato: con uno stimatore di valore diverso,
+lo stesso curriculum ha selezionato un equilibrio diverso (più veloce)
+(\cref{sec:defensive-case}) --- il regime orienta la scelta del bacino,
+ma non la determina da solo.
+
+\paragraph{Non uno scudo contro la degradazione.}
+L'erosione entro la run della \cref{tab:quartiles} è di piattaforma:
+colpisce entrambi i regimi, a livello di task fissato, in entrambe le
+classi. Qualunque sia il suo meccanismo --- co-adattazione tra classi e
+annealing dell'entropia sono i candidati a registro --- l'ordinamento
+non la causa né la previene. L'implicazione pratica per chi riusa
+questa piattaforma è che i numeri cumulativi \emph{finali} sottostimano
+i picchi di metà addestramento in ogni configurazione, e la selezione
+del checkpoint durante l'addestramento cambierebbe le conclusioni ---
+una scelta di reporting che questa tesi ha deliberatamente evitato in
+favore di endpoint a budget fisso.
+
+\paragraph{Generalizzazione: il beneficio portabile.}
+L'unico vantaggio del curriculum replicato in entrambe le architetture
+del critic è il margine su Town05 ($+19.0$ e $+10.0$\,pp,
+\cref{tab:interaction}) --- ottenuto nonostante la copertura in-domain
+più ampia del batch, e contro l'intuizione
+copertura-implica-robustezza di H2. Un meccanismo provvisorio coerente
+con entrambe le coppie: la policy batch si co-adatta per l'intero
+budget a una singola distribuzione stazionaria (una mappa, tutte le
+lunghezze), mentre la policy curriculum deve restare competente
+attraverso una sequenza \emph{mutevole} di distribuzioni --- una forma
+blanda di regolarizzazione implicita per non-stazionarietà. A $n{=}1$
+per cella questa resta un'ipotesi; ciò che i dati stabiliscono è la
+direzione e la sua replicazione tra architetture.
+
+\paragraph{E i pedoni.}
+Per la classe più debole e strutturalmente vincolata
+(\cref{sec:ped-limits}), l'ordinamento è stato irrilevante in tre celle
+su quattro; l'eccezione (GNN-curriculum, $+12$\,pp in valutazione)
+suggerisce che i pedoni beneficino solo quando il critic può
+rappresentare la struttura tra agenti \emph{e} l'esposizione è
+graduale. Come lezione di design: le scelte di regime calibrate sulla
+classe forte non vanno assunte trasferibili alla debole.
+
+% ------------------------------------------------------------
+\section{La copertura parallela dei task rivisitata}
+\label{sec:ptc-revisited}
+
+La cornice a mondo condiviso (\cref{sec:parallel-coverage}) è stata
+adottata per il throughput --- sei istanze di task per episodio --- con
+campioni correlati e non-stazionarietà reciproca accettati come costi.
+Col senno di poi, la campagna mostra quei ``costi'' fare lavoro
+scientifico di prim'ordine.
+
+\paragraph{Le interazioni erano portanti.}
+L'equilibrio difensivo --- il fenomeno comportamentale più
+consequenziale del registro di sviluppo e della cella MLP-curriculum
+--- esiste \emph{solo} perché le reward dei veicoli sono condizionate a
+un canale di hazard alimentato dal comportamento dei pedoni
+(\cref{sec:rewards}). Il risultato architetturale speculare punta nella
+stessa direzione: sostituire un critic piatto con uno che modella gli
+agenti come nodi interagenti ha cambiato gli esiti in ogni cella
+(\cref{sec:arch-axis}), cosa che non avrebbe potuto fare se la
+struttura tra agenti fosse trascurabile. In un design a un agente per
+mondo, nulla di tutto ciò sarebbe stato visibile.
+
+\paragraph{La correlazione è reale ed è stata trattata come tale.}
+Sei record per episodio condividono uno stato del mondo; trattarli come
+indipendenti sovrastimerebbe l'evidenza. La tesi non si appoggia quindi
+mai ai conteggi di record per l'inferenza (\cref{sec:threats}), e il
+fallimento della pipeline di valutazione della \cref{sec:bugs} --- dove
+il collasso dei seed del mondo ha reso tutti gli episodi
+quasi identici e prodotto un tasso di successo piatto e troppo pulito
+--- è il caso limite ammonitore della stessa correlazione spinta alla
+degenerazione.
+
+\paragraph{La non-stazionarietà ha una firma visibile.}
+Ogni agente si addestra contro cinque co-giocatori in movimento.
+L'erosione entro la run controllata per livello della
+\cref{tab:quartiles}, più forte esattamente dove la stima del valore è
+più debole (celle MLP) e dimezzata sotto il critic relazionale, è il
+pattern che la deriva da co-adattazione produrrebbe --- benché il
+design non possa isolarla da altri effetti di fine addestramento
+(\cref{sec:threats}).
+
+\paragraph{Che cosa la cornice non può rivendicare.}
+Senza un controllo a un agente per mondo (\cref{sec:scope}), il
+beneficio di throughput della copertura parallela dei task è un
+argomento di design, non una misura; e ogni risultato qui sopra è
+condizionato a questo regime ricco di interazioni. La cornice va letta
+come l'ambiente \emph{entro il quale} il confronto tra regimi vale, non
+come una tecnica validata indipendentemente.
+
+% --- §6.3–6.4: indipendenti dai risultati. ---
+\section{Minacce alla validità}
+\label{sec:threats}
+
+\paragraph{Non-determinismo del simulatore in condizioni identiche.}
+La minaccia dominante, quantificata anziché assunta: tre run a
+lunghezza piena con codice, configurazione e seed byte-identici hanno
+prodotto tassi di successo cumulativi dei veicoli tra 52.2 e 62.4\%
+(\cref{sec:iterations}). CARLA sotto carico multi-agente non è
+deterministico da run a run nemmeno in modalità sincrona con tutti i
+seed fissati. Ogni effetto in questa tesi è quindi letto contro questa
+banda di $\sim$10\,pp: le differenze al suo interno non sono mai
+attribuite a un fattore sperimentale, qualunque ne sia la direzione. La
+banda è stata misurata sul trunk pre-campagna a livello di
+addestramento; la si assume rappresentativa per le run dell'era della
+campagna, il che è a sua volta un'approssimazione.
+
+\paragraph{Dimensione campionaria.}
+Ogni cella contiene una sola run: il design è stato ridotto da tre seed
+appaiati per cella a uno per ragioni di calcolo, una decisione
+dichiarata nella \cref{sec:campaign}. Ogni conclusione poggia quindi su
+contrasti appaiati, non su distribuzioni stimate. L'appaiamento dei
+seed e le configurazioni byte-identiche rendono i contrasti
+internamente puliti, e il contrasto primario porta con sé una
+replicazione incorporata --- è osservato indipendentemente sotto
+entrambe le architetture del critic --- ma nessuna inferenza statistica
+formale è possibile a questo $n$, e nessuna è rivendicata. Le
+mitigazioni sono la banda di repliche di cui sopra e le verifiche di
+coerenza --- accordo di direzione tra livelli di difficoltà, scenari di
+valutazione, classi di agenti e strati di misura --- anziché test di
+significatività.
+
+\paragraph{Rumore di valutazione.}
+La valutazione finale usa 100 episodi per scenario, cioè 300 record
+veicolo; a tassi di successo di fascia media il solo errore standard
+binomiale è $\approx$3\,pp per scenario, prima di considerare la
+correlazione entro episodio dei tre veicoli, che riduce ulteriormente
+il campione effettivo. Le differenze a livello di singolo scenario di
+pochi punti non sono quindi individualmente significative; si
+interpretano solo i pattern tra scenari.
+
+\paragraph{Accoppiamento reward--curriculum.}
+La funzione di reward è stata calibrata attraverso iterazioni di gate
+eseguite per lo più su configurazioni bloccate su easy
+(\cref{sec:gate}), quindi lo shaping del trunk può essere implicitamente
+sbilanciato verso i percorsi corti. Entrambi i regimi condividono la
+reward identica, quindi il contrasto primario resta internamente
+valido; l'avvertenza riguarda l'interpretazione della prestazione
+\emph{assoluta} sui percorsi hard, e la possibilità che una reward
+calibrata diversamente sposterebbe i due regimi in modo diverso.
+
+\paragraph{Singola coppia di mappe.}
+La generalizzazione è misurata su esattamente un trasferimento, Town03
+$\to$ Town05. I due layout differiscono in natura
+(\cref{sec:carla-bg}), il che rende il test significativo, ma le
+affermazioni sono limitate a questa coppia; non si offre evidenza che
+l'ordinamento dei regimi si trasferisca ad altre mappe, composizioni di
+traffico o condizioni meteo.
+
+\paragraph{Storia della misura.}
+La pipeline di valutazione stessa ha fallito la validità una volta
+(\cref{sec:bugs}), e il difetto di lunghezza dei percorsi ha
+ridefinito silenziosamente la distribuzione dei task per un'intera era
+di esperimenti. Entrambi sono stati colti da segnali di integrità
+(output implausibilmente regolari; log per agente mancanti). Il
+protocollo ora in vigore --- verifiche di integrità, configurazioni
+appaiate, ricalcolo dai log grezzi --- è stato costruito in risposta,
+ma la lezione generale resta come classe di minaccia: in una
+piattaforma custom, gli effetti apparenti devono prima sopravvivere
+alla domanda ``lo strumento sta misurando ciò che dichiara?''
+
+\paragraph{Fattibilità dei percorsi pedonali.}
+I risultati dei pedoni a difficoltà medium/hard sono confusi da un
+limite strutturale dell'ambiente: la topologia dei marciapiedi di
+Town03 spesso non può sostenere i target nominali dei percorsi
+(\cref{sec:routes}). La \cref{sec:ped-limits} separa il fallimento
+attribuibile all'ambiente da quello attribuibile alla policy, e le
+conclusioni di regime lato pedoni sono ristrette di conseguenza.
+
+% ------------------------------------------------------------
+\section{Limitazioni di scope}
+\label{sec:scope}
+
+Oltre alle minacce alla validità interna, il design fissa
+deliberatamente diverse dimensioni; i risultati non vanno letti oltre
+di esse.
+
+\begin{itemize}
+  \item \textbf{L'architettura degli actor è fissa.} Entrambe le classi
+        usano actor MLP ovunque; varia solo l'\emph{encoder del critic}
+        (MLP vs.\ GNN, solo lato addestramento). Questa tesi non fa
+        alcuna affermazione sull'architettura della rete di policy, e
+        l'asse GNN parla solo della stima del valore sotto CTDE.
+  \item \textbf{La cornice a mondo condiviso non è ablata.} La
+        copertura parallela dei task (\cref{sec:parallel-coverage}) è
+        la cornice fissa di entrambi i bracci, non un trattamento: non
+        c'è un controllo a 1 agente per mondo, quindi il suo contributo
+        causale all'efficienza campionaria è caratterizzato, non
+        isolato.
+  \item \textbf{Osservazioni privilegiate, niente percezione.} Gli
+        agenti osservano feature di stato curate
+        (\cref{sec:obs-actions}), non sensori. Tutti i risultati
+        riguardano la decisione sotto interazione; nulla segue per
+        pipeline basate su camera o lidar.
+  \item \textbf{Un algoritmo, una versione della piattaforma.} MAPPO su
+        RLlib~2.10.0 e CARLA~0.9.16 ovunque. Gli effetti di regime sono
+        condizionati a questo stack; altri algoritmi possono interagire
+        diversamente con l'ordinamento dei task.
+  \item \textbf{La difficoltà è solo lunghezza del percorso.} La
+        configurazione definisce famiglie di difficoltà per densità di
+        traffico e miste, ma sono inutilizzate (\cref{sec:campaign});
+        ``difficoltà'' in ogni affermazione significa lunghezza target
+        del percorso a traffico fisso.
+  \item \textbf{Popolazione fissa.} Sempre 3 veicoli $+$ 3 pedoni;
+        nessuna evidenza di scaling in nessuna direzione.
+  \item \textbf{Generazione dei percorsi pedonali.} Il planner a catene
+        di marciapiede con il suo tetto agli attraversamenti è parte
+        della piattaforma studiata; i suoi limiti noti di fattibilità
+        delimitano ciò che le policy pedonali possono esprimere,
+        indipendentemente dal regime di addestramento.
+\end{itemize}

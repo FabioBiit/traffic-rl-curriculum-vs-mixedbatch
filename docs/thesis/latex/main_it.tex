@@ -1,0 +1,193 @@
+% ============================================================
+% Curriculum vs Mixed-Batch Training in MARL for Urban Driving
+% Tesi di laurea triennale — versione italiana (traduzione di main_en.tex)
+% Build: pdflatex main_it + biber main_it + pdflatex x2
+% ============================================================
+\documentclass[12pt,a4paper,oneside]{report}
+
+% --- Encoding & language ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[english,italian]{babel}
+\usepackage{csquotes}
+
+% --- Layout ---
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{microtype}
+
+% --- Math, tables, units, figures ---
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{verbatim}
+\usepackage{siunitx}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+
+% --- Bibliography ---
+\usepackage[style=numeric-comp,sorting=none,backend=biber]{biblatex}
+\addbibresource{bibliography.bib}
+
+% --- Colors, links, cross-references (hyperref near the end) ---
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+% Le stringhe italiane di cleveref sono incomplete (niente "chapter") e
+% vengono applicate a \begin{document}, sovrascrivendo definizioni date
+% nel preambolo. Registriamo quindi le nostre DOPO il suo hook, così da
+% ottenere nomi coerenti e capitalizzati come nella versione inglese.
+\AtBeginDocument{%
+  \crefname{chapter}{Capitolo}{Capitoli}%
+  \Crefname{chapter}{Capitolo}{Capitoli}%
+  \crefname{section}{Sezione}{Sezioni}%
+  \Crefname{section}{Sezione}{Sezioni}%
+  \crefname{subsection}{Sezione}{Sezioni}%
+  \Crefname{subsection}{Sezione}{Sezioni}%
+  \crefname{subsubsection}{Sezione}{Sezioni}%
+  \Crefname{subsubsection}{Sezione}{Sezioni}%
+  \crefname{figure}{Figura}{Figure}%
+  \Crefname{figure}{Figura}{Figure}%
+  \crefname{table}{Tabella}{Tabelle}%
+  \Crefname{table}{Tabella}{Tabelle}%
+  \crefname{equation}{Equazione}{Equazioni}%
+  \Crefname{equation}{Equazione}{Equazioni}%
+  \crefname{appendix}{Appendice}{Appendici}%
+  \Crefname{appendix}{Appendice}{Appendici}%
+  \crefname{item}{punto}{punti}%
+  \Crefname{item}{Punto}{Punti}%
+}
+
+% --- Note di lavoro: marcatori TODO rossi, rimuovere prima della consegna ---
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% ============================================================
+\begin{document}
+
+% Front matter: numeri di pagina romani (il frontespizio conta come i);
+% la numerazione araba riparte dal Capitolo 1. Elimina anche il warning
+% hyperref "duplicate destination page.1".
+\pagenumbering{roman}
+
+% ----------------- Frontespizio (template ufficiale UniMarconi) --
+% Replica Frontespizio.doc (Download, convertito 2026-07-19): logo,
+% intestazione d'ateneo, righe dipartimento / corso di laurea, titolo
+% in corsivo tra virgolette, blocco Relatore/Candidato a due colonne,
+% anno accademico. I campi vuoti mantengono i marcatori \todo rossi.
+\begin{titlepage}
+  \centering
+  \includegraphics[height=2.0cm]{logo_unimarconi}\par
+  \vspace{1.5cm}
+  {\large\bfseries UNIVERSIT\`A DEGLI STUDI GUGLIELMO MARCONI\par}
+  \vspace{0.9cm}
+  {\bfseries DIPARTIMENTO DI \todo{dipartimento}\par}
+  \vspace{0.9cm}
+  {\bfseries CORSO DI LAUREA IN \todo{corso di laurea}\par}
+  \vfill
+  {\Large\itshape ``Curriculum learning e addestramento mixed-batch a
+  confronto nell'apprendimento per rinforzo multi-agente per la guida
+  autonoma urbana''\par}
+  \vfill
+  {\large
+   \begin{minipage}[t]{0.50\textwidth}
+     \raggedright
+     Relatore:\\[1.2em]
+     Prof.\ \todo{nome relatore}
+   \end{minipage}%
+   \hfill
+   \begin{minipage}[t]{0.40\textwidth}
+     \raggedright
+     Candidato:\\[1.2em]
+     \todo{nome candidato}
+   \end{minipage}\par}
+  \vfill
+  {\footnotesize ANNO ACCADEMICO \todo{20XX/20XX}\par}
+\end{titlepage}
+% l'ambiente titlepage azzera il contatore; il frontespizio conta come i
+\setcounter{page}{2}
+
+% ----------------- Sommario ---------------------------------
+% Pagina di sommario manuale: l'ambiente abstract della classe report
+% incapsula una titlepage e azzera il contatore di pagina, rompendo la
+% numerazione del front matter.
+\clearpage
+\null\vfil
+\begin{center}%
+  \bfseries \abstractname
+\end{center}
+L'ordine in cui i task di addestramento vengono presentati è una
+decisione di progetto nell'apprendimento per rinforzo i cui effetti sono
+raramente isolati nei contesti multi-agente. Questa tesi confronta il
+\emph{curriculum learning} (progressione da facile a difficile,
+condizionata dalla competenza misurata) con l'addestramento
+\emph{mixed-batch} (alternanza uniforme di tutte le difficoltà) per la
+guida urbana in CARLA, con sei agenti --- tre veicoli e tre pedoni ---
+che apprendono simultaneamente in un unico mondo condiviso con MAPPO e
+critic centralizzati. Una campagna $2\times2$ appaiata per seed incrocia
+i due regimi con due encoder del critic (MLP e GNN) a tre milioni di
+passi per run, su una piattaforma irrobustita da un protocollo di
+sviluppo guidato da gate, misurata con un criterio di successo rigoroso,
+con repliche a seed identico a fornire una banda di rumore esplicita.
+
+L'ordinamento dei task non ha accelerato l'apprendimento iniziale: tutte
+le celle hanno superato le stesse soglie di competenza agli stessi
+conteggi di passi. Ha invece selezionato \emph{che cosa} la policy è
+diventata. Con il critic MLP il curriculum ha prodotto un guidatore
+cauto e incline allo stallo, il batch uno veloce e incline alle
+collisioni; sul criterio di successo il curriculum ha prevalso di
+$+18.5$ punti percentuali di successo dei veicoli in valutazione, con lo
+stesso segno in tutti gli scenari. Con il critic GNN l'effetto in-domain
+è svanito ($-0.1$\,pp) --- una forte interazione
+architettura$\times$regime --- mentre lo stesso encoder ha migliorato
+nettamente la cella batch. L'unica componente che si replica in entrambe
+le architetture è il vantaggio del curriculum su una città mai vista in
+addestramento ($+19.0$ e $+10.0$\,pp), contro l'intuizione che una
+copertura più ampia compri robustezza. I pedoni sono risultati vincolati
+dalla fattibilità dei percorsi più che dal regime. L'ordinamento dei
+task, in questo contesto, è un selettore di equilibri il cui beneficio
+in-domain dipende dalla stima del valore --- e il cui beneficio
+portabile è la generalizzazione.
+\par\vfil\null
+
+\tableofcontents
+
+% ----------------- Acronimi ---------------------------------
+\chapter*{Acronimi}
+\addcontentsline{toc}{chapter}{Acronimi}
+\begin{tabular}{ll}
+CTDE  & Centralized Training with Decentralized Execution \\
+GAE   & Generalized Advantage Estimation \\
+GNN   & Graph Neural Network \\
+MAPPO & Multi-Agent Proximal Policy Optimization \\
+MARL  & Multi-Agent Reinforcement Learning \\
+MLP   & Multi-Layer Perceptron \\
+NPC   & Non-Player Character (partecipante al traffico con comportamento scriptato) \\
+PPO   & Proximal Policy Optimization \\
+RL    & Reinforcement Learning \\
+SR    & Success Rate (tasso di successo) \\
+TM    & (CARLA) Traffic Manager \\
+\end{tabular}
+
+% ----------------- Capitoli ---------------------------------
+\clearpage
+\pagenumbering{arabic}
+\input{chapters_it/ch01_introduction}
+\input{chapters_it/ch02_background}
+\input{chapters_it/ch03_system_design}
+\input{chapters_it/ch04_methodology}
+\input{chapters_it/ch05_results}
+\input{chapters_it/ch06_discussion}
+\input{chapters_it/ch07_conclusions}
+
+% ----------------- Appendici --------------------------------
+\appendix
+\input{chapters_it/appendices}
+
+% ----------------- Bibliografia -----------------------------
+\printbibliography[heading=bibintoc]
+
+\end{document}

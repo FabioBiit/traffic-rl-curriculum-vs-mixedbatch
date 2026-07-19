@@ -1,0 +1,643 @@
+% ============================================================
+% Capitolo 3 — Design del sistema (traduzione italiana di
+% chapters/ch03_system_design.tex; label invariati)
+% ============================================================
+\chapter{Design del sistema}
+\label{ch:system}
+
+Questo capitolo descrive la piattaforma sperimentale: un ambiente di
+apprendimento per rinforzo multi-agente costruito sul simulatore CARLA,
+in cui tre veicoli e tre pedoni sono addestrati congiuntamente con MAPPO
+sotto due regimi di addestramento alternativi --- curriculum e
+mixed-batch --- che condividono ogni altro componente dello stack.
+L'obiettivo di design è che il regime di addestramento sia l'\emph{unica}
+variabile indipendente dell'esperimento principale; tutto ciò che è
+documentato in questo capitolo è comune a entrambi i bracci.
+
+% ------------------------------------------------------------
+\section{Panoramica dell'architettura}
+\label{sec:architecture}
+
+La piattaforma consiste di quattro strati (\cref{fig:architecture}): il
+server CARLA, un ambiente multi-agente custom, lo stack di addestramento
+RLlib e una pipeline di logging/valutazione.
+
+\paragraph{Simulatore.}
+CARLA 0.9.16~\cite{dosovitskiy2017carla}, costruito su Unreal Engine~4,
+gira come server autonomo. L'ambiente lo pilota in \emph{modalità
+sincrona} con un passo di fisica fisso di \SI{0.05}{s} (\SI{20}{Hz}): il
+simulatore avanza solo quando l'ambiente emette un tick, il che rende la
+raccolta di esperienza deterministica rispetto allo scheduling e
+indipendente dalla velocità di orologio. Il traffico scriptato (non
+apprendente) --- 15 veicoli NPC e 30 pedoni NPC in ogni livello di
+addestramento --- è gestito dal Traffic Manager di CARLA, anch'esso in
+modalità sincrona. L'addestramento usa la mappa urbana \emph{Town03};
+\emph{Town05} è riservata esclusivamente al test di generalizzazione e
+non viene mai vista durante l'addestramento.
+
+\paragraph{Ambiente multi-agente.}
+Un ambiente custom (\texttt{CarlaMultiAgentEnv}) espone la simulazione a
+RLlib come interfaccia multi-agente con sei agenti apprendenti: tre
+veicoli e tre pedoni (walker). A ogni reset l'ambiente spawna gli
+agenti, assegna a ciascuno un percorso individuale (\cref{sec:routes}) e
+configura lo scenario secondo il livello di difficoltà selezionato dal
+manager curriculum/batch (\cref{sec:regimes}). Un episodio dura al più
+1{.}000 passi di controllo (\SI{50}{s} di tempo simulato a \SI{20}{Hz}).
+
+\paragraph{Stack di apprendimento.}
+L'addestramento usa MAPPO~\cite{yu2022surprising} come implementato su
+Ray/RLlib~2.10.0 con PyTorch~2.7 (Python 3.11.9), nel paradigma di
+\emph{addestramento centralizzato con esecuzione decentralizzata}
+(CTDE). Vengono apprese due policy: una \emph{policy veicolo} condivisa
+dai tre veicoli e una \emph{policy pedone} condivisa dai tre pedoni
+(condivisione di parametri entro ciascuna classe, nessuna condivisione
+tra classi, poiché le due classi hanno spazi di osservazione e azione
+diversi). Ogni actor è un percettrone multistrato con due strati nascosti
+da 256 unità. Un critic centralizzato riceve un'osservazione globale a
+225 dimensioni che concatena informazione per agente
+(\cref{sec:obs-actions}); l'encoder del critic è un MLP di default, con
+una variante GNN usata come asse sperimentale secondario
+(\cref{sec:critic-variants}).
+
+\paragraph{Logging e valutazione.}
+Alla fine di ogni episodio il processo di addestramento accoda un record
+JSON \emph{per agente} (sei per episodio) a un file
+\texttt{episodes.jsonl}: ragione di terminazione, completamento del
+percorso, efficienza di percorso, velocità e diagnostica di generazione
+del percorso. Tutti i risultati del \cref{ch:results} sono calcolati da
+questi record --- o dal flusso di addestramento (metriche cumulative,
+on-policy) o dai record prodotti da una pipeline di valutazione
+separata, che ricarica un checkpoint addestrato ed esegue quattro
+scenari fissi (easy, medium, hard su Town03; test su Town05) da 100
+episodi ciascuno (\cref{sec:critic-variants}).
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+      node distance=7mm and 12mm,
+      box/.style={draw, rounded corners=2pt, align=center,
+                  minimum width=52mm, minimum height=11mm, font=\small},
+      lbl/.style={font=\scriptsize, midway},
+      >={Stealth[length=2.5mm]}]
+    \node[box] (carla) {Server CARLA 0.9.16\\ \scriptsize Town03 (train) / Town05 (test), TM};
+    \node[box, below=of carla] (env) {\texttt{CarlaMultiAgentEnv}\\ \scriptsize 3 veicoli + 3 walker, route planner};
+    \node[box, right=of env] (mgr) {Manager curriculum\\ / batch \scriptsize (livello per episodio)};
+    \node[box, below=of env] (rllib) {Ray/RLlib 2.10 --- MAPPO (CTDE)\\ \scriptsize policy veicolo, policy pedone, critic centralizzato};
+    \node[box, below=of rllib] (log) {\texttt{episodes.jsonl}\\ \scriptsize 6 record/episodio};
+    \node[box, right=of log] (eval) {Pipeline di valutazione\\ \scriptsize $4$ scenari $\times$ 100 ep};
+    \draw[->] (env) -- node[lbl, right] {tick / controllo} (carla);
+    \draw[<-] ([xshift=-8mm]env.north) -- node[lbl, left] {sensori, stato} ([xshift=-8mm]carla.south);
+    \draw[->] (mgr) -- node[lbl, above] {livello} (env);
+    \draw[->] (env) -- node[lbl, right] {oss., reward} (rllib);
+    \draw[<-] ([xshift=-8mm]env.south) -- node[lbl, left] {azioni} ([xshift=-8mm]rllib.north);
+    \draw[->] (rllib) -- (log);
+    \draw[->] (rllib) -| node[lbl, above, pos=0.25] {checkpoint} (eval);
+  \end{tikzpicture}
+  \caption{Architettura a componenti. Il manager curriculum/batch è
+  l'unico componente che differisce tra i due bracci sperimentali, e
+  solo nella regola di selezione del livello (\cref{sec:regimes}).}
+  \label{fig:architecture}
+\end{figure}
+
+% ------------------------------------------------------------
+\section{Un ambiente multi-agente a mondo condiviso}
+\label{sec:shared-world}
+
+\subsection{Copertura parallela dei task}
+\label{sec:parallel-coverage}
+
+I sei agenti apprendenti non cooperano verso un obiettivo congiunto: a
+ogni agente è assegnato il \emph{proprio} percorso e ciascuno è valutato
+individualmente sul suo completamento. Poiché tutti e sei i percorsi
+sono collocati nello stesso mondo vivo, un singolo episodio esercita
+simultaneamente sei micro-task diversi --- geometrie stradali diverse,
+interazioni diverse con il traffico scriptato e, soprattutto,
+interazioni reciproche tra agenti apprendenti (per es.\ un veicolo
+apprendente che dà la precedenza a un pedone apprendente). Chiamiamo
+questo design \emph{copertura parallela dei task} (parallel task
+coverage): per episodio di orologio, il sistema raccoglie esperienza su
+sei istanze di task anziché una.
+
+Questo inquadramento porta con sé due avvertenze che l'analisi deve
+rispettare. Primo, i sei campioni per episodio sono \emph{correlati} ---
+gli agenti condividono lo stato del mondo, quindi un ingorgo o un
+attraversamento bloccato influenza più record alla volta. Secondo, dal
+punto di vista di ogni singolo agente l'ambiente è
+\emph{non-stazionario} durante l'addestramento, perché le policy degli
+altri cinque agenti cambiano nel tempo; è la motivazione standard del
+critic CTDE (\cref{ch:background}). La copertura parallela dei task è
+una proprietà della piattaforma, presente in modo identico in entrambi i
+regimi di addestramento: è parte della cornice sperimentale, non una
+variabile sperimentale.
+
+\subsection{Percorsi per agente e seeding}
+\label{sec:seeding}
+
+A ogni reset, ciascun agente riceve un percorso indipendente la cui
+lunghezza target è fissata dal livello di difficoltà attivo
+(30/60/\SI{100}{m}; \cref{sec:routes}). La generazione dei percorsi è
+seedata deterministicamente per agente con una sequenza di seed
+costruita da
+$\langle\text{seed traffico},\ \text{contatore di reset},\ \mathrm{crc32}(\text{id
+agente})\rangle$, cosicché (i) due run di addestramento lanciate con lo
+stesso seed di esperimento sullo stesso codice vedono la stessa sequenza
+di estrazioni di generazione dei percorsi, e (ii) le estrazioni sono
+disaccoppiate tra agenti. Questo rende i confronti A/B appaiati
+accoppiati per percorso per costruzione, una proprietà su cui il
+protocollo sperimentale fa affidamento (\cref{ch:methodology}).
+
+\subsection{Tassonomia delle terminazioni e record per agente}
+\label{sec:termination}
+
+Ogni agente termina il proprio episodio in modo indipendente con
+esattamente una di sei ragioni, classificate da una regola indipendente
+dal simulatore (\texttt{episode\_classification.py}):
+
+\begin{itemize}
+  \item \texttt{route\_complete} --- l'agente ha raggiunto la fine del
+        suo percorso. È l'\emph{unico} esito contato come successo.
+  \item \texttt{route\_short} --- l'agente ha raggiunto la fine di un
+        percorso la cui lunghezza ottima è risultata più corta del
+        target di livello oltre un fattore di tolleranza (fallback
+        degenere della generazione dei percorsi). Raggiungerla
+        \emph{non} è contato come successo: questa guardia previene
+        l'inflazione del tasso di successo tramite percorsi banalmente
+        corti.
+  \item \texttt{collision} --- contatto con qualunque attore o geometria
+        statica.
+  \item \texttt{offroad} --- il veicolo si è spostato più di \SI{5}{m}
+        dal centro della corsia di guida più vicina (solo veicoli).
+  \item \texttt{stuck} --- mancanza prolungata di progresso lungo il
+        percorso.
+  \item \texttt{timeout} --- è scaduto prima il tetto di 1{.}000 passi
+        dell'episodio.
+\end{itemize}
+
+Ogni episodio produce quindi esattamente sei record a livello di agente
+(tre veicolo, tre pedone) in \texttt{episodes.jsonl}. Tutte le metriche
+aggregate di questa tesi sono calcolate a livello di agente su questi
+record, sempre riportate separatamente per veicoli e pedoni; le regole
+di misura, inclusa la deduplica e il criterio di successo rigoroso, sono
+specificate nel \cref{ch:methodology}.
+
+% ------------------------------------------------------------
+% Fonti (verificate 2026-07-14): carla_multi_agent_env.py
+%   _get_vehicle_obs L1291-1381, _get_pedestrian_obs L1383-1445,
+%   _fill_nearby L1740-1764, costanti L84-88; layout obs globale
+%   centralized_critic.py (compute_global_obs_dim_with_mask, L115).
+\section{Spazi di osservazione e azione}
+\label{sec:obs-actions}
+
+Ogni agente riceve un vettore di osservazione compatto e specifico per
+classe, con tutte le componenti normalizzate in $[-1, 1]$ e sanificate
+contro valori non finiti prima di essere restituite all'apprendista. I
+veicoli osservano 47 dimensioni e i pedoni 26; la \cref{tab:obs} elenca
+entrambi i layout. Tre scelte di design meritano un commento.
+
+\paragraph{Feature consapevoli del percorso.}
+Oltre alle classiche feature di cinematica dell'ego e dei vicini più
+prossimi, entrambe le classi osservano una breve \emph{anteprima} del
+proprio percorso (offset relativi dei waypoint successivi nel sistema di
+riferimento dell'ego) insieme all'errore di heading e, per i veicoli,
+all'angolo della curva imminente e all'errore laterale con segno. Queste
+feature danno alla policy la geometria locale del task assegnato senza
+rivelare nulla degli obiettivi degli altri agenti.
+
+\paragraph{Canale di anteprima dell'hazard.}
+Una routine condivisa stima, lungo il corridoio frontale dell'agente, un
+rischio di time-to-collision e una frazione di occupazione del
+corridoio, calcolati separatamente contro i veicoli (corridoio largo
+\SI{3.5}{m}, \SI{40}{m} in avanti, orizzonte \SI{5}{s}) e contro i
+pedoni (\SI{3.0}{m}, \SI{30}{m}, \SI{4}{s}); i pedoni osservano solo il
+canale veicoli (\SI{4.0}{m}, \SI{30}{m}, \SI{4}{s}). Gli stessi quattro
+valori di rischio lato veicolo sono riusati dalla funzione di reward
+come gate di sicurezza (\cref{sec:rewards}), così che la quantità che
+modula la reward sia sempre visibile alla policy.
+
+\paragraph{Feature di consistenza markoviana.}
+Le ultime tre dimensioni del veicolo espongono stato interno
+dell'ambiente da cui la reward dipende: il numero di passi senza
+progresso sui waypoint (normalizzato per 300), lo stato della penalità
+anti-loop e il tempo normalizzato rimanente prima del troncamento
+dell'episodio. Senza di esse, le penalità della \cref{sec:rewards} e
+l'orizzonte fisso agirebbero su informazione che l'agente non può
+osservare --- un difetto di aliasing di stato identificato e corretto
+durante lo sviluppo (\cref{ch:methodology}).
+
+\begin{table}[t]
+  \centering\small
+  \caption{Layout delle osservazioni. Le barre indicano costanti di
+  normalizzazione; le feature dei vicini sono espresse nel sistema di
+  riferimento dell'ego.}
+  \label{tab:obs}
+  \begin{tabular}{@{}llp{8.0cm}@{}}
+    \toprule
+    Dim. & Gruppo & Contenuto \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Veicolo (47D)}} \\
+    0--8   & Cinematica ego   & velocità (/30), accelerazione (/10), modulo velocità (/120 km/h), heading planare \\
+    9--12  & Tracking percorso & distanza (/\SI{50}{m}) e bearing (/$\pi$) al waypoint successivo; offset laterale in corsia con segno (larghezze di corsia); progresso continuo sul percorso \\
+    13--14 & Semaforo         & flag di presenza; stato (rosso 1.0, giallo 0.5, verde 0.0) \\
+    15--23 & Veicoli vicini   & 3 più prossimi entro \SI{50}{m}: offset longitudinale e laterale (/50), velocità relativa (/30) \\
+    24     & Memoria controllo & comando di sterzo precedente \\
+    25--30 & Anteprima percorso & waypoint $+1/+3/+5$: offset longitudinale e laterale (/50) \\
+    31--33 & Geometria percorso & errore di heading; angolo curva imminente; errore laterale con segno rispetto al percorso \\
+    34--39 & Pedoni vicini    & 2 più prossimi entro \SI{50}{m}, stesse 3 feature \\
+    40--43 & Anteprima hazard & rischio time-to-collision e occupazione del corridoio, vs.\ veicoli e vs.\ pedoni \\
+    44--46 & Progresso/tempo  & passi senza progresso (/300); flag penalità anti-loop; tempo rimanente \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Pedone (26D)}} \\
+    0--2   & Posizione        & posizione nel mondo ($x, y$ /500; $z$ /50) \\
+    3--6   & Cinematica       & velocità (/5), modulo velocità (/5 m/s) \\
+    7--8   & Heading          & vettore frontale planare \\
+    9--10  & Waypoint         & distanza (/\SI{100}{m}) e bearing al waypoint corrente \\
+    11     & Superficie       & flag marciapiede \\
+    12--17 & Veicoli vicini   & 2 più prossimi entro \SI{50}{m}: stesse 3 feature \\
+    18     & Progresso        & frazione di completamento del percorso \\
+    19--22 & Anteprima percorso & waypoint $+1/+3$: offset longitudinale e laterale (/100) \\
+    23     & Geometria percorso & errore di heading \\
+    24--25 & Anteprima hazard & rischio time-to-collision e occupazione del corridoio, vs.\ veicoli \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Spazi di azione.}
+Entrambe le classi usano azioni continue bidimensionali. L'azione del
+veicolo è $[a_{\mathrm{tb}}, a_{\mathrm{steer}}] \in [-1,1]^2$, dove
+$a_{\mathrm{tb}}$ positivo mappa sull'acceleratore e negativo sul freno
+(la retromarcia è disabilitata), e $a_{\mathrm{steer}}$ è il comando di
+sterzo. L'azione del pedone è
+$[a_{\mathrm{speed}}, a_{\Delta\mathrm{h}}]$ con
+$a_{\mathrm{speed}} \in [0,1]$ che scala una velocità massima di
+camminata di \SI{5.0}{m/s} e $a_{\Delta\mathrm{h}} \in [-1,1]$ che
+comanda un cambio di heading fino a $\pm 45^{\circ}$ per passo.
+
+\paragraph{Osservazione globale per il critic centralizzato.}
+Durante il solo addestramento, il critic riceve una concatenazione a
+slot fissi delle osservazioni di tutti gli agenti seguita da una
+maschera di vitalità per agente:
+$[\,v_0\,|\,v_1\,|\,v_2\,|\,p_0\,|\,p_1\,|\,p_2\,|\,\text{alive}_{6}\,]$,
+cioè $3 \times 47 + 3 \times 26 + 6 = 225$ dimensioni. La maschera di
+vitalità è necessaria perché gli agenti terminano in modo indipendente
+(\cref{sec:termination}): gli slot degli agenti terminati vengono
+mascherati anziché riusati silenziosamente. Gli actor non vedono mai
+questo vettore, preservando l'esecuzione decentralizzata.
+
+% ------------------------------------------------------------
+% Fonti (verificate 2026-07-14): carla_multi_agent_env.py
+%   _vehicle_reward L1866-1960 ("Vehicle Reward v5"),
+%   _pedestrian_reward L1962-2010 ("Pedestrian Reward v5").
+\section{Design della reward}
+\label{sec:rewards}
+
+Le reward sono per agente e identiche nei due regimi di addestramento.
+La \cref{tab:rewards} elenca ogni componente con trigger e ampiezza;
+questa sezione ne spiega la struttura. La forma finale è l'esito delle
+iterazioni guidate da gate documentate nella \cref{sec:iterations};
+nessuna pretesa di ottimalità è attribuita ai singoli coefficienti.
+
+\paragraph{Nucleo di progresso.}
+Per entrambe le classi il segnale dominante è un bonus sparso per
+waypoint del percorso raggiunto ($+100$ per i veicoli, $+50$ per i
+pedoni), completato da un termine di shaping denso proporzionale alla
+riduzione per passo della distanza dal waypoint successivo. I waypoint
+saltati tagliando il percorso sono penalizzati, quindi il progresso non
+può essere manipolato con scorciatoie.
+
+\paragraph{Termini di sicurezza.}
+Una collisione costa ai veicoli $-500$, applicata una volta al passo del
+primo contatto (l'episodio poi termina). Due ulteriori termini per i
+veicoli penalizzano l'uscita dalla corsia (lineare oltre \SI{2}{m} dal
+centro corsia; la terminazione dell'episodio avviene a \SI{5}{m},
+\cref{sec:termination}) e il superamento dei 50~km/h. Le collisioni dei
+pedoni costano $-50$, e i pedoni ricevono un piccolo incentivo per passo
+a restare sui marciapiedi anziché sulle corsie di guida.
+
+\paragraph{Shaping anti-stallo condizionato all'hazard (veicoli).}
+Il blocco empiricamente più delicato contrasta l'\emph{equilibrio
+difensivo} in cui un veicolo si ferma indefinitamente per evitare
+qualunque rischio. Tutti i suoi termini sono sospesi mentre il veicolo
+attende legittimamente a un semaforo rosso o giallo. Lo scalare
+$\mathit{hazard} =
+\max(\text{TTC}_{\mathrm{veh}}, \text{occ}_{\mathrm{veh}},
+\text{TTC}_{\mathrm{ped}}, \text{occ}_{\mathrm{ped}})$ riassume il
+canale di anteprima dell'hazard della \cref{sec:obs-actions}, e un
+booleano $\mathit{safe\_to\_push} = (\mathit{hazard} < 0.85)$ fa da gate
+ai termini di spinta: una penalità di inattività sotto 2.5~km/h; un
+bonus di partenza proporzionale ad acceleratore, allineamento al
+percorso e a un fattore di urgenza che cresce con il tempo trascorso
+senza progresso; e uno shaping di velocità minima attorno a un target di
+8~km/h, attivo solo quando il veicolo è allineato al suo percorso
+(allineamento $> 0.25$). Sopra la soglia di hazard ogni incentivo di
+spinta scompare, quindi la policy non è mai premiata per accelerare in
+un corridoio rischioso. Indipendentemente dal gate, una rampa di
+non-progresso (dopo 100 passi senza raggiungere un waypoint) e una
+penalità anti-loop rendono lo stallo prolungato e il girare in tondo
+strettamente non redditizi, e una coppia di termini sulla fluidità dello
+sterzo scoraggia il controllo a strattoni.
+
+\paragraph{Banda di passo dei pedoni.}
+I pedoni guadagnano un bonus per passo mentre camminano entro una banda
+di comfort di $[1.2, 2.6]$~m/s, con una penalità di inattività sotto
+0.15~m/s e una penalità di corsa sopra 3.0~m/s. La banda è
+intenzionalmente ampia: a 2.0~m/s un pedone copre \SI{100}{m} --- il
+target del livello hard --- entro l'orizzonte di \SI{50}{s}. Il design
+asimmetrico (solo bonus) di questa banda e la sua interazione con il
+gate di hazard dei veicoli sono analizzati empiricamente nel
+\cref{ch:results}.
+
+\begin{table}[t]
+  \centering\small
+  \caption{Componenti della reward. Le righe veicolo ``gated'' sono
+  sospese durante l'attesa a un semaforo rosso/giallo; le righe marcate
+  $^{\dagger}$ richiedono inoltre $\mathit{safe\_to\_push}$
+  ($\mathit{hazard} < 0.85$) e allineamento al percorso $> 0.25$.}
+  \label{tab:rewards}
+  \begin{tabular}{@{}p{3.4cm}p{5.6cm}p{4.6cm}@{}}
+    \toprule
+    Componente & Trigger & Valore \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Veicolo}} \\
+    Waypoint raggiunto    & per waypoint avanzato & $+100$ \\
+    Waypoint saltato      & per waypoint saltato & $-10$ \\
+    Progresso denso       & variazione della distanza dal waypoint successivo & $+4.0$ per metro guadagnato \\
+    Collisione            & primo contatto (terminale) & $-500$ \\
+    Fuori corsia          & $>$ \SI{2}{m} dal centro corsia & $-0.5$ per metro \\
+    Eccesso di velocità   & velocità $> 50$ km/h & $-0.10$ per km/h oltre \\
+    Inattività (gated)    & velocità $< 2.5$ km/h & $-0.15$ \\
+    Bonus di partenza (gated$^{\dagger}$) & acceleratore da fermo & $(0.20 + 0.30\,u)\cdot\text{thr}\cdot\text{align}$, freno simmetrico; $u = \min(\text{no-progress}/200, 1)$ \\
+    Shaping velocità minima (gated$^{\dagger}$) & velocità sotto / sopra 8 km/h & $-0.04\,(8 - v)\cdot\text{align}$ / $+0.15\cdot\text{align}$ \\
+    Rampa di non-progresso (gated) & $>$ 100 passi senza waypoint & $-0.004$ per passo, tetto $-1.0$ \\
+    Sterzo fluido         & $|\Delta \text{steer}| < 0.1$ a $> 5$ km/h & $+0.1$ \\
+    Strattone di sterzo   & $|\Delta \text{steer}| > 0.5$ & $-0.3$ \\
+    Anti-loop             & rilevatore di loop attivo & $-1.0$ \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Pedone}} \\
+    Waypoint raggiunto    & per waypoint avanzato & $+50$ \\
+    Waypoint saltato      & per waypoint saltato & $-10$ \\
+    Progresso denso       & variazione della distanza dal waypoint & $+2.0$ per metro guadagnato \\
+    Collisione            & primo contatto (terminale) & $-50$ \\
+    Marciapiede / carreggiata & per passo su marciapiede / corsia di guida & $+0.2$ / $-0.3$ \\
+    Passo di camminata    & velocità $\in [1.2, 2.6]$ m/s & $+0.3$ \\
+    Inattività            & velocità $< 0.15$ m/s & $-0.15$ \\
+    Corsa                 & velocità $> 3.0$ m/s & $-0.7$ per m/s oltre \\
+    Anti-loop             & rilevatore di loop attivo & $-1.0$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ------------------------------------------------------------
+% Fonti (verificate 2026-07-14): route_planner.py (min_route_ratio=0.5,
+%   max_route_ratio=2.0 L145-146/206-207, max_cross=3 L261/329, rigetto
+%   catene corte L368-369); levels.yaml (levels_path 30/60/100, test
+%   Town05 80); etichette route_source carla_multi_agent_env.py L1040-1159.
+\section{Generazione dei percorsi e livelli di difficoltà}
+\label{sec:routes}
+
+La difficoltà è definita dalla \emph{lunghezza target} dei percorsi per
+agente, con tutti gli altri parametri di scenario tenuti costanti: i tre
+livelli di addestramento (easy, medium, hard) collocano i target di
+veicoli e pedoni a 30, 60 e \SI{100}{m} rispettivamente, sempre su
+Town03 e sempre con lo stesso traffico scriptato (15 veicoli NPC, 30
+pedoni NPC). Un quarto livello di sola valutazione (\emph{test}) usa
+Town05 con target di \SI{80}{m} e gli stessi conteggi di traffico. La
+configurazione definisce anche famiglie di livelli in cui la difficoltà
+varia per densità di traffico anziché per lunghezza del percorso; in
+questa tesi non sono usate (\cref{sec:campaign}).
+
+\paragraph{Percorsi dei veicoli.}
+I percorsi dei veicoli sono pianificati sulla topologia stradale con il
+global route planner di CARLA: le destinazioni candidate sono campionate
+attorno alla distanza target e una candidata è accettata solo se la
+lunghezza del suo cammino ottimo ricade in $[0.5, 2.0] \times$ il
+target, con fino a 32 tentativi per reset. Se nessuna candidata
+sopravvive, l'ambiente ripiega su un generatore legacy a catena di
+waypoint. Il generatore applicato è registrato per record
+(\texttt{route\_source} $\in$ \{\texttt{grp},
+\texttt{legacy\_fallback}\}), quindi la quota di percorsi di fallback è
+sempre misurabile.
+
+\paragraph{Percorsi dei pedoni.}
+I percorsi dei pedoni sono catene di segmenti di marciapiede connesse
+attraverso attraversamenti pedonali. Due vincoli le plasmano: le catene
+la cui lunghezza cumulativa scende sotto $0.5 \times$ il target vengono
+rigettate (la stessa guardia inferiore che sostiene la retrocessione
+\texttt{route\_short} della \cref{sec:termination}), e il numero di
+attraversamenti per percorso è limitato a tre --- un tetto
+all'esposizione dei pedoni sulla carreggiata il cui valore è stato
+fissato empiricamente (\cref{sec:iterations}). Il generatore registra il
+proprio esito per record (\texttt{sidewalk\_crosswalk},
+\texttt{sidewalk\_distance}, \texttt{respawn}, \texttt{legacy\_chain}),
+insieme a diagnostiche di fattibilità (lunghezza ottima, errore rispetto
+al target, flag under-target e too-short, tentativi per candidata). La
+fattibilità dei percorsi pedonali su Town03 è una limitazione
+strutturale della piattaforma --- la topologia dei marciapiedi spesso
+non può sostenere i target nominali medium/hard --- ed è analizzata
+separatamente nella \cref{sec:ped-limits}, dove i limiti d'ambiente sono
+esplicitamente distinti dai limiti di policy.
+
+\todo{Fig.~3: percorsi di esempio per livello. Script generatore pronto
+in \texttt{docs/thesis/scripts/make\_fig3\_route\_examples.py} (richiede
+un server CARLA attivo; lo esegue l'utente); includere poi qui
+\texttt{figures/route\_examples.pdf}.}
+
+% ------------------------------------------------------------
+% Fonti (verificate 2026-07-14): curriculum_batch.yaml (tutte le soglie);
+%   curriculum_batch_manager.py (_balanced_policy_success_details L391-423:
+%   minimo sulle policy; window_full L129/382; BatchLevelSampler L902-940).
+\section{Regimi di addestramento curriculum e mixed-batch}
+\label{sec:regimes}
+
+Il regime di addestramento è la variabile indipendente dell'esperimento
+principale. Entrambi i regimi sono implementati dallo stesso componente
+manager, consultato una volta per reset di episodio per selezionare il
+livello di difficoltà; condividono le definizioni di livello della
+\cref{sec:routes}, il budget totale di $3 \times 10^6$ passi d'ambiente
+e ogni altro componente descritto in questo capitolo. Differiscono
+\emph{solo} nella regola di selezione del livello.
+
+\subsection{Braccio curriculum: progressione condizionata alla competenza}
+\label{sec:curriculum-arm}
+
+L'addestramento parte con il solo livello easy sbloccato. I livelli
+superiori si sbloccano attraverso un gate di competenza valutato su una
+finestra scorrevole degli ultimi 50 episodi: il tasso di successo a
+finestra è calcolato separatamente per la policy veicolo e la policy
+pedone, e il gate vincola sul \emph{minimo} dei due --- la progressione
+richiede che la classe più debole sia competente, non la media. Medium
+si sblocca a un tasso di successo a finestra di almeno il 70\%, hard al
+60\%; la finestra deve essere piena, e una quota minima del budget
+totale deve già essere stata spesa ai livelli precedenti (20\% su easy
+prima di medium; 28\% su medium prima di hard). Due decisioni di design
+meritano giustificazione:
+
+\begin{itemize}
+  \item \textbf{A finestra, non cumulativo.} Il tasso di successo
+        cumulativo è un integratore in ritardo trascinato verso il basso
+        dai fallimenti di avvio a freddo: una policy può essere
+        competente \emph{adesso} mentre la sua media dalla nascita è
+        ancora ben sotto soglia. Il gating su finestra scorrevole misura
+        la competenza corrente.
+  \item \textbf{Cap di pressione.} Se una soglia non viene mai
+        raggiunta, il livello si sblocca comunque forzatamente una volta
+        consumata una quota fissa del budget totale (30\% per medium,
+        70\% per hard). Questo garantisce che ogni livello sia visitato
+        entro il budget, quindi il braccio curriculum non può mai
+        stallare terminalmente su easy --- al peggio degrada verso
+        un'esposizione mista ritardata.
+\end{itemize}
+
+Una volta sbloccati, i livelli sono campionati con pesi che normalizzano
+a $0.30/0.35/0.35$ (easy/medium/hard) sotto vincoli di budget (easy al
+più 30\% del budget una volta disponibile medium, medium al più 35\%,
+hard almeno 35\%). I livelli appena sbloccati passano per una breve fase
+di \emph{probation} con pressione di campionamento ridotta (hard è
+temporaneamente de-enfatizzato a peso 0.85), rendendo la transizione
+graduale anziché brusca.
+
+\subsection{Braccio batch: alternanza stratificata}
+\label{sec:batch-arm}
+
+Il braccio mixed-batch è il \emph{controllo senza ordinamento}: tutti e
+tre i livelli sono disponibili dal primo episodio. I livelli sono
+campionati per mescolamento stratificato senza reinserimento con
+finestra tre: ogni finestra consecutiva di tre episodi estratta da
+un'istanza del campionatore è una permutazione uniformemente casuale di
+\{easy, medium, hard\}, dando esposizione uniforme $1/3$ con uno
+sbilanciamento massimo di un episodio per campionatore --- evitando sia
+la deriva del campionamento i.i.d.\ sia qualunque ordinamento
+deterministico fisso entro la finestra. Nei log della campagna
+realizzata, dove gli episodi dei rollout worker paralleli si alternano,
+le quote globali di livello restano entro $\approx 2$ punti percentuali
+dall'uniforme e tutti e tre i livelli compaiono entro i primi venti
+episodi (\cref{sec:integrity}).
+
+\subsection{Che cosa isola il confronto}
+\label{sec:isolation}
+
+Sotto questa costruzione, i due bracci consumano lo stesso budget sulla
+stessa distribuzione di task in attesa; ciò che differisce è
+\emph{quando} ogni parte di quella distribuzione viene presentata e se
+la presentazione è condizionata alla competenza misurata. Qualunque
+differenza comportamentale tra i bracci è quindi attribuibile alla
+politica di ordinamento, a meno della varianza da run a run --- che è
+quantificata separatamente nel \cref{ch:results} e discussa nella
+\cref{sec:threats}.
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+      state/.style={draw, rounded corners=2pt, align=center,
+                    minimum width=34mm, minimum height=13mm, font=\small},
+      gate/.style={font=\scriptsize, align=center},
+      >={Stealth[length=2.5mm]}, node distance=17mm]
+    \node[state] (s1) {solo easy\\ \scriptsize campionamento: easy 1.0};
+    \node[state, right=of s1] (s2) {easy $+$ medium\\ \scriptsize probation, poi\\ \scriptsize $\propto 0.30/0.35$};
+    \node[state, right=of s2] (s3) {easy $+$ medium $+$ hard\\ \scriptsize probation (hard $\times$0.85), poi\\ \scriptsize $\propto 0.30/0.35/0.35$};
+    \draw[->] (s1.north east) to[bend left=28]
+      node[gate, above] {SR fin.\ $\geq 0.70$\\ $\wedge$ quota easy $\geq 0.20$} (s2.north west);
+    \draw[->, dashed] (s1.south east) to[bend right=28]
+      node[gate, below] {cap: 30\% budget} (s2.south west);
+    \draw[->] (s2.north east) to[bend left=28]
+      node[gate, above] {SR fin.\ $\geq 0.60$\\ $\wedge$ quota med.\ $\geq 0.28$} (s3.north west);
+    \draw[->, dashed] (s2.south east) to[bend right=28]
+      node[gate, below] {cap: 70\% budget} (s3.south west);
+  \end{tikzpicture}
+  \caption{Progressione del curriculum. Archi pieni: gate di competenza
+  sul tasso di successo a finestra (minimo sulle due policy, finestra di
+  50 episodi, finestra piena) con soglie minime di quota di budget.
+  Archi tratteggiati: cap di pressione che garantiscono la progressione
+  entro il budget. Nella run MLP-curriculum della campagna (seed 999),
+  medium si è sbloccato all'episodio 842 di 3{.}220 (26.1\%) e hard
+  all'episodio 2{.}286 (71.0\%), per un mix finale di livelli di 32.5\%
+  easy / 45.8\% medium / 21.6\% hard --- tempistiche coerenti con le
+  repliche del trunk pre-campagna.}
+  \label{fig:curriculum-fsm}
+\end{figure}
+
+% ------------------------------------------------------------
+% Fonti (verificate 2026-07-14): centralized_critic.py (GraphConvLayer
+%   L336-356, GNNCriticEncoder L414-497, critic MLP 225->256->256->1);
+%   run_config.json delle run di campagna (tutti i valori
+%   dell'ottimizzatore, byte-identici tra i bracci salvo mode/use_gnn).
+\section{Varianti dell'encoder del critic e pipeline di addestramento}
+\label{sec:critic-variants}
+
+\subsection{Encoder del critic}
+\label{sec:critic-encoders}
+
+Nella configurazione di default il critic centralizzato è un MLP che
+mappa l'osservazione globale a 225 dimensioni attraverso due strati
+nascosti da 256 unità verso un valore scalare. L'asse sperimentale
+secondario (\cref{sec:campaign}) sostituisce questo encoder con uno su
+grafo, mentre \emph{entrambi gli actor restano gli identici MLP} della
+\cref{sec:architecture}: qualunque differenza comportamentale tra le due
+varianti è quindi attribuibile alla stima del valore durante
+l'addestramento, non alla capacità della policy, e a tempo di esecuzione
+le due varianti sono indistinguibili in architettura.
+
+L'encoder GNN riseziona l'osservazione globale nei sei slot per agente,
+proietta ciascuno attraverso uno strato lineare per classe in un
+embedding di nodo a 64 dimensioni e applica due round di message passing
+con aggregazione a media in stile
+GraphSAGE~\cite{hamilton2017graphsage}: ogni nodo combina il proprio
+embedding con la media degli embedding degli altri agenti \emph{vivi}
+attraverso pesi appresi separati, seguita da un'attivazione ELU. Un
+mean-pool mascherato sui nodi vivi produce l'input della testa di
+valore. La maschera di vitalità dell'osservazione globale guida sia
+l'aggregazione sia il pooling, così che gli agenti terminati escano dal
+riassunto del critic invece di contribuire slot stantii. (La codebase
+fornisce anche un encoder del critic basato su attenzione e la
+normalizzazione del valore PopArt dietro flag di configurazione;
+entrambi restano disabilitati in tutta questa tesi.)
+
+\subsection{Impostazioni di ottimizzazione}
+\label{sec:optimization}
+
+Tutte le run della campagna condividono la stessa configurazione
+dell'ottimizzatore, byte-identica tra i bracci salvo i flag di regime ed
+encoder: learning rate $5\times10^{-4}$; sconto $\gamma = 0.997$; GAE
+$\lambda = 0.95$; clip PPO 0.2 con penalità KL aggiuntiva (target 0.02);
+gradient clipping a 0.5; coefficiente della value loss 0.05 con il clip
+del valore di fatto disabilitato ($10^6$); batch di addestramento
+8{.}000 passi, minibatch 256, 15 epoche SGD per batch, frammenti di
+rollout da 200 passi. Il coefficiente di entropia segue uno schedule da
+0.03 a 0.005 con la transizione ancorata all'83\% del budget totale
+(passo 2.49M di 3M) --- espresso come frazione del budget così che run
+diagnostiche brevi e run complete attraversino lo stesso profilo di
+esplorazione. I file di configurazione completi sono riprodotti
+nell'\cref{app:hyperparams}; la giustificazione empirica dei valori non
+di default (in particolare $\gamma$, le impostazioni della value loss e
+lo schedule di entropia) è parte del registro iterativo del
+\cref{ch:methodology}.
+
+\subsection{Pipeline di valutazione}
+\label{sec:eval-pipeline}
+
+I risultati sono misurati a tre livelli, tutti calcolati dai record a
+livello di agente (\cref{sec:termination}):
+
+\begin{enumerate}
+  \item \textbf{Flusso di addestramento}: le metriche cumulative su
+        tutti gli episodi di addestramento. Sono on-policy e, nel
+        braccio curriculum, calcolate su un mix di livelli che cambia
+        nel tempo --- caratterizzano il processo di addestramento, non
+        l'abilità finale.
+  \item \textbf{Ricalcolo statico}: un passaggio offline sui log di
+        addestramento che ricalcola tutti gli aggregati da disco,
+        deduplica i record e verifica l'integrità (esattamente sei
+        record per episodio, nessun valore non finito).
+  \item \textbf{Valutazione finale del checkpoint}: il checkpoint
+        addestrato viene ricaricato ed eseguito su quattro scenari
+        fissi da 100 episodi ciascuno --- easy, medium e hard su
+        Town03, più il livello test su Town05 (\cref{sec:routes}),
+        quest'ultimo a misurare la generalizzazione su strade mai viste
+        in addestramento. Gli episodi sono valutati con la policy
+        stocastica (campionando dalla gaussiana appresa) e re-seeding
+        per episodio sia dello scenario sia del campionatore di azioni.
+        Valutare la media deterministica della policy è stato
+        deliberatamente rigettato: per una policy gaussiana continua
+        collassa il comportamento su una singola traiettoria per
+        scenario, un modo di fallimento analizzato nella
+        \cref{sec:bugs}.
+\end{enumerate}

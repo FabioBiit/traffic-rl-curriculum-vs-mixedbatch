@@ -1,0 +1,353 @@
+% ============================================================
+% Capitolo 4 — Metodologia sperimentale (traduzione italiana di
+% chapters/ch04_methodology.tex; label invariati)
+% ============================================================
+\chapter{Metodologia sperimentale}
+\label{ch:methodology}
+
+La piattaforma del \cref{ch:system} non è stata progettata in un solo
+passaggio: è il prodotto di una campagna iterativa in cui ogni modifica
+doveva superare un gate quantitativo predefinito prima di entrare nel
+trunk. Questo capitolo documenta le regole di misura
+(\cref{sec:metrics}), il protocollo di gate (\cref{sec:gate}), i difetti
+di validità trovati e corretti lungo il percorso (\cref{sec:bugs}), una
+sintesi delle iterazioni stesse (\cref{sec:iterations}) e il design
+della campagna di confronto finale (\cref{sec:campaign}).
+
+% ------------------------------------------------------------
+\section{Metriche e regole di misura}
+\label{sec:metrics}
+
+\paragraph{Unità di misura.}
+L'unità di analisi è il \emph{record a livello di agente}: una voce JSON
+per agente per episodio (sei per episodio, \cref{sec:termination}).
+Tutti gli aggregati sono calcolati sui record dopo deduplica per
+identificatore di episodio e di agente (in valutazione, lo scenario fa
+parte della chiave, poiché gli identificatori di episodio possono
+ripetersi tra scenari). Due condizioni di integrità sono imposte prima
+che qualunque numero venga riportato: esattamente sei record per
+episodio, e nessun valore non finito in alcun campo. Una run che fallisce
+una delle due condizioni non viene analizzata oltre.
+
+\paragraph{Criterio di successo rigoroso.}
+Un agente ha successo se e solo se la sua ragione di terminazione è
+\texttt{route\_complete}. In particolare, \texttt{route\_short} ---
+raggiungere la fine di un percorso degenere troppo corto --- \emph{non}
+è successo (\cref{sec:termination}). Questa regola è stata messa alla
+prova durante lo sviluppo: una modifica che contava \texttt{route\_short}
+come successo è stata introdotta e successivamente revertita
+(\cref{sec:iterations}), mantenendo il criterio rigoroso al costo di
+numeri assoluti più bassi. Il \cref{ch:discussion} discute perché tassi
+di successo assoluti di fascia media siano un pregio, non un difetto,
+della misura risultante: lontano dal pavimento e dal soffitto, la
+metrica conserva spazio per muoversi in entrambe le direzioni, che è
+esattamente ciò di cui uno studio comparativo ha bisogno.
+
+\paragraph{Tre viste di reporting.}
+Ogni risultato è riportato per veicoli e pedoni separatamente, più una
+vista combinata; le due classi hanno task diversi, spazi di azione
+diversi e limiti strutturali diversi (\cref{sec:ped-limits}), e il
+registro sperimentale mostra effetti di regime che esistono per una sola
+classe. Il successo congiunto a livello di episodio (``tutti e sei gli
+agenti riescono'') non è mai usato: con agenti correlati in un mondo
+condiviso compone i fallimenti in modo moltiplicativo e nasconde la
+struttura specifica di classe.
+
+\paragraph{Catalogo delle metriche.}
+La \cref{tab:metrics} definisce le metriche usate in tutto il
+\cref{ch:results}. I valori cumulativi su tutti gli episodi di
+addestramento sono l'aggregazione primaria; il successo a finestra
+scorrevole (finestra 50) è usato solo dal gate del curriculum
+(\cref{sec:regimes}); la dinamica entro la run è mostrata dividendo
+l'addestramento in quartili (Q1--Q4).
+
+\begin{table}[t]
+  \centering\small
+  \caption{Catalogo delle metriche. Tutti i tassi sono quote dei record
+  a livello di agente.}
+  \label{tab:metrics}
+  \begin{tabular}{@{}p{3.6cm}p{9.6cm}@{}}
+    \toprule
+    Metrica & Definizione \\
+    \midrule
+    Tasso di successo (SR) & record con \texttt{route\_complete} \\
+    Tasso di collisione & record con \texttt{collision} \\
+    Tasso di offroad & record con \texttt{offroad} (veicoli) \\
+    Tasso di stuck & record troncati con completamento $< 0.3$ o rilevatore di loop attivo \\
+    Tasso di timeout & record troncati con completamento $\geq 0.3$ \\
+    Stuck$+$timeout & somma dei due precedenti; target primario anti-stallo \\
+    Completamento del percorso & frazione di waypoint del percorso consumati, $[0,1]$ \\
+    Efficienza di percorso & lunghezza ottima completata / distanza effettivamente percorsa, con tetto a 1; definita 0 per i record stuck \\
+    Velocità media & km/h per i veicoli, m/s per i pedoni \\
+    Passi di non-progresso & passi dall'ultimo avanzamento di waypoint, a fine episodio \\
+    Diagnostica dei percorsi & quote di \texttt{route\_source}, flag under-target e too-short, conteggi di attraversamenti (\cref{sec:routes}) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ------------------------------------------------------------
+\section{Protocollo di sviluppo guidato da gate}
+\label{sec:gate}
+
+La varianza da run a run in questo ambiente è grande (quantificata più
+avanti in $\sim$10 punti percentuali di SR veicoli tra repliche
+identiche), e il budget di calcolo disponibile non permetteva di
+replicare ogni modifica candidata. Il protocollo adottato in risposta ha
+quattro regole.
+
+\paragraph{1. Una manopola alla volta.}
+Ogni candidato è un diff stretto e isolato comportamentalmente --- un
+singolo termine di reward, una singola soglia, un singolo gruppo di
+osservazioni. I candidati che toccano lo stesso file sono valutati in
+sequenza, mai impilati. Quando una modifica in bundle ha fallito il suo
+gate, l'attribuzione tra le sue metà è stata trattata come irrisolta
+anziché indovinata.
+
+\paragraph{2. A/B appaiato a budget diagnostico fisso.}
+Ogni candidato gira per $3\times10^{5}$ passi contro la baseline
+corrente del trunk, con lo stesso seed di esperimento e, grazie al
+seeding deterministico dei percorsi della \cref{sec:seeding}, una
+sequenza di percorsi appaiata alla baseline per costruzione. Le run
+della fase di sviluppo erano bloccate sul livello easy salvo quando il
+candidato riguardava il curriculum stesso, così che il mescolamento dei
+livelli non potesse confondere il confronto. Quando si confrontano run
+di lunghezza diversa, i record sono troncati a conteggi di episodi
+uguali.
+
+\paragraph{3. Un gate quantitativo predefinito.}
+Per le modifiche orientate ai veicoli il candidato è promosso solo se,
+rispetto alla baseline appaiata: l'SR veicoli migliora di almeno
+$+2.0$\,pp; stuck$+$timeout migliora di almeno $-2.0$\,pp; collisione e
+offroad peggiorano ciascuno di non più di $+1.0$\,pp; ed entrambe le
+condizioni di integrità della \cref{sec:metrics} valgono. Le modifiche
+che toccano macchinari condivisi portano una condizione laterale
+\emph{must-not-collapse} sull'altra classe (SR pedoni entro $-2$\,pp).
+Un gate fallito significa che il candidato viene revertito; il trunk non
+è mai lasciato in uno stato parzialmente valutato.
+
+\paragraph{4. Meccanismo ed esito sono registrati separatamente.}
+Per ogni candidato il registro annota se il \emph{meccanismo} inteso si
+è verificato (per es.\ la varianza spiegata del critic che sale da
+$\approx 0$ a $0.87$ dopo una riparazione della value loss) e se il
+\emph{gate comportamentale} è passato --- i due spesso dissentono. Un
+piccolo numero di manopole che hanno fallito il gate è stato
+consapevolmente mantenuto con l'ipotesi registrata come falsificata
+(per es.\ una penalità di collisione decuplicata che ha lasciato piatto
+il tasso di collisione), perché revertirle avrebbe ripristinato un
+difetto o perché il fallimento stesso era informativo. Queste eccezioni
+sono esplicite nel registro (\cref{app:registry}); nulla è stato
+mantenuto silenziosamente.
+
+Le traiettorie per quartile entro la run completano il gate: un
+candidato i cui numeri cumulativi passano ma il cui Q4 declina (una
+firma osservata per un retuning del passo dei pedoni) è trattato come
+rigettato.
+
+% ------------------------------------------------------------
+\section{Validità dell'ambiente: bug trovati e corretti}
+\label{sec:bugs}
+
+In una piattaforma multi-agente custom l'apparato di misura è parte
+dell'esperimento. Tre episodi durante lo sviluppo hanno prodotto
+apparenti effetti di policy che erano in realtà artefatti; sono
+riportati qui sia perché hanno plasmato il protocollo finale sia perché
+le loro firme di rilevamento possono essere utili ad altri.
+
+\paragraph{Bug della lunghezza dei percorsi (distribuzione dei task).}
+Il route planner poteva emettere percorsi molto più lunghi del target di
+livello, quindi episodi nominalmente ``easy'' spesso non erano facili.
+Imporre i limiti $[0.5, 2.0]\times$ il target (\cref{sec:routes}) ha
+spostato l'SR cumulativo di addestramento dei veicoli di $\approx
++50$\,pp \emph{senza alcuna modifica alla policy o alla reward} --- un
+puro cambiamento di distribuzione dei task. Ne sono state adottate due
+conseguenze: le metriche assolute sono confrontabili solo entro la
+stessa versione dell'ambiente, e tutti i risultati precedenti sono stati
+rietichettati come specifici della loro era (il pavimento dei veicoli
+del pilota di aprile, \cref{sec:pilot}, è stato poi ricondotto a questo
+difetto). Questo episodio è l'evidenza interna più forte per una regola
+usata in tutta questa tesi: \emph{mai confrontare numeri assoluti tra
+versioni dell'ambiente; ancorare le affermazioni a contrasti appaiati
+entro una versione}.
+
+\paragraph{Bug del seeding dei percorsi (appaiamento rotto).}
+I seed dei percorsi per agente derivavano originariamente dalla
+\texttt{hash()} built-in di Python, che è salata per processo: due run
+nominalmente identiche estraevano sequenze di percorsi \emph{diverse},
+degradando silenziosamente ogni confronto A/B. La correzione deriva i
+seed da una \texttt{SeedSequence} esplicita su seed del traffico,
+contatore di reset e un digest stabile dell'identificatore dell'agente
+(\cref{sec:seeding}). La lezione: l'appaiamento va costruito e
+verificato (statistiche di generazione dei percorsi byte-identiche tra i
+bracci), non assunto.
+
+\paragraph{Bug della pipeline di valutazione (collasso della misura).}
+La prima valutazione di checkpoint ha restituito un tasso di successo
+esattamente del 33.33\% in ogni scenario --- uno dei tre veicoli a
+completare, ogni episodio. Questo pattern ``troppo pulito per essere
+vero'' ha esposto quattro difetti accoppiati: (i) il seed di scenario
+per episodio era costante, quindi ogni episodio rigiocava la stessa
+configurazione di traffico; (ii) la policy era valutata sulla sua media
+deterministica, collassando la policy gaussiana su una singola
+traiettoria per scenario; (iii) il sottoprocesso di valutazione non
+inizializzava mai il logger degli episodi, quindi nessun record a
+livello di agente veniva scritto; e (iv) il seed torch era costante tra
+i sottoprocessi degli episodi, quindi anche azioni stocastiche avrebbero
+rigiocato flussi di rumore correlati. Tutti e quattro sono stati
+corretti (seed di scenario e campionatore per episodio, valutazione
+stocastica, propagazione del logger con riavvio pulito), la valutazione
+deterministica parziale è stata scartata e il protocollo stocastico
+della \cref{sec:eval-pipeline} è diventato lo standard. Nessuna di
+queste correzioni tocca l'addestramento; per le regole stesse del
+progetto, nessuna affermazione di policy è derivata da esse.
+
+La lezione generale di questa sezione: la validità della misura va
+stabilita \emph{prima} del tuning, e risultati implausibilmente regolari
+sono un segnale di rilevamento, non una buona notizia.
+
+% ------------------------------------------------------------
+\section{Sintesi dello sviluppo iterativo}
+\label{sec:iterations}
+
+La \cref{tab:candidates} condensa il registro di sviluppo; il registro
+completo per candidato, con run ID e meccanismi, è
+nell'\cref{app:registry}. Lo sviluppo è proceduto in sei fasi:
+
+\begin{enumerate}
+  \item \textbf{Pilota architetturale (aprile 2026).} Nove run che
+        incrociano encoder del critic e regimi di addestramento,
+        nell'era dell'ambiente pre-correzioni. I dati erano integri ma i
+        veicoli sedevano a un SR di pavimento (0.2--3.8\%) in ogni
+        cella, rendendo il confronto architetturale non informativo ---
+        e reindirizzando lo sforzo verso la validità dell'ambiente
+        (\cref{sec:pilot}).
+  \item \textbf{Correttezza.} Le correzioni di lunghezza e seeding dei
+        percorsi della \cref{sec:bugs}, più strumentazione diagnostica
+        per passo (progresso, passi di non-progresso, cause di stuck,
+        provenienza dei percorsi).
+  \item \textbf{Osservabilità.} Feature veicolo consapevoli del
+        percorso, poi l'estensione a 47D che espone lo stato di
+        non-progresso, lo stato della penalità anti-loop e il tempo
+        rimanente (\cref{sec:obs-actions}), chiudendo il gap di
+        aliasing di stato tra reward e osservazione. La baseline
+        easy-locked risultante era sana (plateau SR $\approx 79$\%,
+        varianza spiegata del critic 0.983).
+  \item \textbf{Iterazioni su ottimizzatore e reward.} Una sequenza di
+        candidati a manopola singola con verdetti misti
+        (\cref{tab:candidates}); in particolare, una riparazione della
+        funzione di valore il cui meccanismo è stato confermato ma il
+        cui gate è fallito, e una penalità di collisione decuplicata che
+        ha lasciato piatte le collisioni --- l'evitamento delle
+        collisioni non era apprendibile dalle osservazioni a 44D di
+        quell'era, un limite di percezione più che un problema di peso
+        della reward.
+  \item \textbf{Accoppiamento tra classi.} Pedoni più veloci saturano il
+        canale di hazard dei veicoli e possono spingere i veicoli in un
+        equilibrio difensivo a velocità zero attraverso il gate
+        \texttt{safe\_to\_push}. La risoluzione promossa (V1) ha alzato
+        la soglia del gate da 0.75 a 0.85, mantenendo attiva l'urgenza
+        dei veicoli sotto hazard moderato; un retuning del passo dei
+        pedoni nella direzione opposta (V3) è stato rigettato per una
+        traiettoria dell'ultimo quartile in declino.
+  \item \textbf{Meccanica del curriculum e trunk finale.} Sblocco a
+        finestra con soglie di ripasso, il gate sulla policy più debole
+        e cap di pressione rialzati (\cref{sec:regimes}); infine, il
+        tetto agli attraversamenti pedonali (\texttt{max\_cross} $8 \to
+        3$), l'ultima modifica entrata nel trunk prima della campagna
+        (SR veicoli $+9.2$\,pp, collisione $-2.3$\,pp, offroad
+        $-2.2$\,pp, pedoni piatti).
+\end{enumerate}
+
+Tre repliche a lunghezza piena ($3\times10^{6}$ passi) dell'identico
+trunk pre-campagna quantificano la varianza da run a run: l'SR
+cumulativo dei veicoli ha spaziato tra 52.2 e 62.4\% sotto lo stesso
+seed --- CARLA non è deterministico sotto carico nemmeno se seedato.
+Questa banda di $\sim$10\,pp è il metro contro cui ogni effetto del
+\cref{ch:results} viene letto, e motiva sia il design appaiato sia la
+cautela attribuita ai delta a replica singola (\cref{sec:threats}).
+
+\begin{table}[t]
+  \centering\small
+  \caption{Registro condensato dei candidati (fase di sviluppo, A/B
+  appaiato a $3\times10^{5}$ passi salvo diversa indicazione). I delta
+  sono rispetto alla baseline appaiata della loro era e \emph{non} sono
+  confrontabili tra versioni dell'ambiente. Dettaglio completo
+  nell'\cref{app:registry}.}
+  \label{tab:candidates}
+  \begin{tabular}{@{}p{4.2cm}p{2.6cm}p{2.2cm}p{3.6cm}@{}}
+    \toprule
+    Candidato & Tipo & Verdetto & Sintesi \\
+    \midrule
+    Strumentazione diagnostica & misura & adottato & nessun cambiamento di policy \\
+    Obs veicolo route-aware & osservazione & adottato & --- \\
+    Blocco di reward shaping (anti-stallo, velocità minima) & reward & promosso & nucleo della \cref{sec:rewards} \\
+    Terminazione precoce da stuck & dinamica env & rigettato & SR $-2.9$\,pp, s$+$t $+7.1$\,pp \\
+    Correzione lunghezza percorsi & bug fix & adottato & $\approx +50$\,pp SR (cambio di distribuzione) \\
+    Correzione seed percorsi & bug fix & adottato & ripristina l'appaiamento A/B \\
+    Riparazione value loss & ottimizzatore & mantenuto (gate fallito) & var.\ spiegata $0 \to 0.87$; collisione $+3.3$\,pp \\
+    Sconto $0.99 \to 0.997$ & ottimizzatore & mantenuto (falsificato) & timeout $\to$ collisione $\approx$ 1:1 \\
+    Schedule di entropia (a frazione) & ottimizzatore & promosso & meccanismo stabile, nessuna instabilità \\
+    Penalità di collisione $-50 \to -500$ & reward & mantenuto (falsificato) & collisione piatta ($-0.2$\,pp) \\
+    Rimozione della guardia di progresso & reward & promosso & SR $+4.7$\,pp, s$+$t $-3.5$\,pp \\
+    Osservabilità 47D (O1$+$O2) & osservazione & adottato & baseline sana, var.\ spiegata 0.983 \\
+    Bundle percorso/passo pedoni & reward $+$ percorsi & parziale & passo fuori banda; riflesso sui veicoli \\
+    Retuning banda di passo & reward & rigettato & overshoot peggiore; declino in Q4 \\
+    Tolleranza gate di hazard $0.75 \to 0.85$ & reward & promosso & 5/5: SR $+2.3$\,pp, s$+$t $-3.0$\,pp, coll./off.\ migliorati \\
+    \texttt{route\_short} come successo & misura & revertito & violava il criterio di successo \\
+    Tetto attraversamenti $8 \to 3$ & percorsi & promosso & SR $+9.2$\,pp, coll.\ $-2.3$\,pp, off.\ $-2.2$\,pp \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ------------------------------------------------------------
+\section{Design della campagna finale}
+\label{sec:campaign}
+
+L'esperimento finale è un fattoriale $2 \times 2$:
+\{encoder del critic MLP, GNN\} $\times$ \{curriculum, mixed-batch\} ---
+quattro run da $3\times10^{6}$ passi ciascuna, tutte sullo stesso trunk
+congelato, con un unico seed di esperimento (999) appaiato tra le
+quattro celle, con la difficoltà definita dalla lunghezza del percorso
+(\cref{sec:routes}). Le configurazioni delle run sono byte-identiche tra
+le celle salvo i due flag sperimentali (regime ed encoder del critic),
+proprietà verificata con un diff diretto delle configurazioni. Il design
+era originariamente dimensionato a tre seed appaiati per cella; l'asse
+di replicazione dei seed è stato eliminato per ragioni di budget di
+calcolo (ogni run occupa l'unica macchina disponibile per circa due
+giorni, \cref{app:repro}). Questa riduzione è dichiarata qui anziché
+nascosta: con un seed per cella, ogni contrasto del \cref{ch:results} è
+un \emph{caso di studio appaiato}, non una stima di una distribuzione.
+
+\paragraph{Contrasti.}
+Il contrasto primario è curriculum contro mixed-batch \emph{entro}
+architettura. Fondamentale: è osservato \emph{due volte} --- una per
+ciascuna architettura del critic, addestrata indipendentemente ---
+quindi la replicazione tra architetture sostituisce in parte la
+replicazione dei seed sull'asse primario: un effetto di regime che
+compare con lo stesso segno e struttura comparabile in entrambe le
+coppie è molto più difficile da attribuire al rumore da run a run di
+quanto lo sarebbe un contrasto singolo. Il contrasto secondario è critic
+MLP contro GNN \emph{entro} regime; la lettura dell'interazione
+(ipotesi H3, \cref{sec:rq}) è solo direzionale a questa dimensione
+campionaria. Nessuna inferenza statistica formale è rivendicata da
+nessuna parte: gli effetti sono letti contro la banda delle repliche a
+seed identico della \cref{sec:iterations} ($\sim$10\,pp di SR veicoli),
+e corroborati dalla coerenza tra livelli di difficoltà, classi di
+agenti, scenari di valutazione e strati di misura anziché da test.
+
+\paragraph{Misura.}
+Ogni run è misurata ai tre livelli della \cref{sec:eval-pipeline}:
+metriche cumulative di addestramento, ricalcolo statico dai log e
+valutazione finale del checkpoint su 400 episodi (tre scenari Town03
+più lo scenario test Town05 per la generalizzazione di mappa), tutto
+riportato per classe.
+
+\paragraph{Scope dichiarato.}
+La campagna \emph{non} mette alla prova: famiglie di difficoltà basate
+sulla densità di traffico o su assi misti (definite in configurazione ma
+inutilizzate); l'encoder del critic ad attenzione e la normalizzazione
+PopArt (disponibili, disabilitati); architetture degli actor (sempre
+MLP); ablazioni del numero di agenti (sempre $3+3$); o coppie di mappe
+oltre Town03 $\to$ Town05.
+
+La matrice delle run realizzata, con verifiche di integrità e stato di
+completamento, è riportata nella \cref{tab:runmatrix}.

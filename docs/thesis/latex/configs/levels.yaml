@@ -1,4 +1,4 @@
-# Block 5.2 — Curriculum and Batch level definitions (map + traffic)
+# Block 5.2 - Curriculum and Batch level definitions (map + traffic)
 # Used by CurriculumManager and BatchLevelSampler in curriculum_batch_manager.py
 # Training levels: traffic + route difficulty on fixed map (Town03).
 # Map-based generalization tested in final eval (Town05).

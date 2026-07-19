@@ -1,0 +1,109 @@
+% ============================================================
+% Capitolo 7 — Conclusioni e lavoro futuro (traduzione italiana di
+% chapters/ch07_conclusions.tex; label invariati)
+% ============================================================
+\chapter{Conclusioni e lavoro futuro}
+\label{ch:conclusions}
+
+\section{Conclusioni}
+\label{sec:conclusions}
+
+Questa tesi ha chiesto se ordinare i task di addestramento dal facile
+al difficile produca un comportamento di guida multi-agente
+misurabilmente diverso rispetto al presentare tutte le difficoltà
+insieme, a parità di budget, in un ambiente CARLA a mondo condiviso
+addestrato con MAPPO. La risposta è sì --- ma non lungo l'asse su cui i
+curricula vengono di solito venduti.
+
+\begin{itemize}
+  \item \textbf{L'ordinamento non ha accelerato l'apprendimento.} Tutte
+        e quattro le celle della campagna hanno raggiunto le stesse
+        soglie iniziali di competenza agli stessi conteggi di passi,
+        plausibilmente perché il reward shaping denso fornisce già
+        segnale di apprendimento sui task difficili
+        (\cref{sec:sample-efficiency}, \cref{sec:ordering}).
+  \item \textbf{L'ordinamento ha selezionato ciò che la policy è
+        diventata.} Sotto il critic MLP, il curriculum ha prodotto un
+        guidatore cauto e incline allo stallo e il batch uno veloce e
+        incline alle collisioni; sul criterio di successo rigoroso lo
+        scambio si è risolto a favore del curriculum di $+18.5$\,pp in
+        valutazione, coerentemente in tutti gli scenari
+        (\cref{sec:final-performance}).
+  \item \textbf{L'effetto è condizionato dalla stima del valore.} Sotto
+        un critic GNN l'effetto di regime in-domain è svanito
+        ($-0.1$\,pp) mentre l'architettura ha recuperato la cella batch
+        e rimodellato la cella curriculum --- una forte interazione
+        architettura$\times$regime (\cref{sec:arch-axis}).
+  \item \textbf{Il beneficio portabile è la generalizzazione.} L'unica
+        componente del vantaggio del curriculum replicata in entrambe
+        le architetture è il margine su una città mai vista in
+        addestramento ($+19.0$ e $+10.0$\,pp su Town05), contro
+        l'intuizione copertura-implica-robustezza
+        (\cref{sec:generalization}).
+  \item \textbf{Specificità di classe e limiti della piattaforma.} I
+        pedoni sono risultati in larga parte insensibili al regime,
+        vincolati dalla fattibilità dei percorsi più che dalla qualità
+        della policy (\cref{sec:ped-limits}); e ogni cella ha mostrato
+        erosione tardiva entro la run a livello di task fissato,
+        indipendente dal regime (\cref{sec:behavior}).
+\end{itemize}
+
+Oltre ai risultati, la tesi contribuisce l'apparato che li ha resi
+misurabili: un framework di confronto a parità di budget con
+configurazioni appaiate per seed e byte-identiche; un protocollo di
+sviluppo guidato da gate con un registro esplicito di modifiche
+promosse, rigettate e consapevolmente mantenute; un resoconto
+documentato di come i difetti di validità dell'ambiente possano
+mascherarsi da effetti di policy, con le loro firme di rilevamento; e
+un metro di varianza da repliche a seed identico contro cui ogni
+affermazione viene letta. In un contesto in cui un singolo bug del
+simulatore ha spostato la metrica principale di cinquanta punti
+percentuali, questa disciplina di misura --- non un singolo numero ---
+è ciò che rende il confronto significativo.
+
+\section{Lavoro futuro}
+\label{sec:future}
+
+In ordine di quanto direttamente ogni voce estende questa tesi:
+
+\begin{enumerate}
+  \item \textbf{Replicazione dei seed.} Il design è stato tagliato da
+        tre seed appaiati per cella a uno per ragioni di calcolo
+        (\cref{sec:campaign}). Rieseguire la matrice $2\times2$ a
+        $n{=}3$ trasformerebbe il caso di studio appaiato in stime di
+        distribuzione e metterebbe alla prova direttamente l'entità
+        dell'interazione.
+  \item \textbf{Spiegare l'erosione.} La degradazione entro la run
+        controllata per livello (\cref{tab:quartiles}) invita ad
+        ablazioni mirate: congelare una classe a metà addestramento per
+        isolare la co-adattazione, e variare l'ancora dell'annealing di
+        entropia per isolare lo schedule di esplorazione.
+  \item \textbf{Generazione dei percorsi pedonali.} Con più della metà
+        dei percorsi pedonali sotto target su Town03
+        (\cref{sec:ped-limits}), un planner consapevole della
+        fattibilità (esplorazione più profonda dei rami, target
+        adattivi per regione di spawn) è la correzione d'ambiente a
+        maggior leva, e affinerebbe ogni confronto lato pedoni.
+  \item \textbf{Estensioni architetturali sul critic.}
+        L'infrastruttura espone già encoder basati su attenzione (GAT)
+        e la normalizzazione del valore PopArt dietro flag
+        (\cref{sec:critic-encoders}); vista la forza dell'interazione
+        con l'encoder del critic, queste sono celle successive naturali
+        più che aggiunte esotiche.
+  \item \textbf{Curricula adattivi.} Il gate di competenza è un
+        sequenziatore fisso a due soglie; curricula basati sulla
+        prestazione che adattano le quote di livello in continuo (per
+        es.\ campionamento proporzionale al progresso di apprendimento)
+        metterebbero alla prova se l'effetto di selezione
+        dell'equilibrio sopravviva a un ordinamento a grana più fine.
+  \item \textbf{Co-design reward--curriculum.} Il tuning della reward
+        guidato da gate è girato per lo più su configurazioni bloccate
+        su easy (\cref{sec:threats}); ricalibrare i termini chiave di
+        shaping sul mix completo quantificherebbe quanto dell'effetto
+        di regime è mediato dalla calibrazione della reward.
+  \item \textbf{Scalare la cornice.} La copertura parallela dei task è
+        stata fissata a $3{+}3$ agenti; scalare il mondo condiviso
+        verso decine di agenti --- dove la struttura relazionale del
+        critic GNN dovrebbe contare di più --- trasforma la cornice di
+        coesistenza stessa in una variabile sperimentale.
+\end{enumerate}

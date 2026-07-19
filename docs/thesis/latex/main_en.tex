@@ -1,7 +1,7 @@
 % ============================================================
 % Curriculum vs Mixed-Batch Training in MARL for Urban Driving
 % Bachelor's thesis (triennale) — ~60 pages, English
-% Build: latexmk -pdf main.tex   (requires biber)
+% Build: pdflatex main_en + biber main_en + pdflatex x2
 % ============================================================
 \documentclass[12pt,a4paper,oneside]{report}
 
@@ -44,22 +44,56 @@
 % ============================================================
 \begin{document}
 
-% ----------------- Title page (placeholder) -----------------
+% Front matter: roman page numbers (title page counts as i);
+% arabic restarts at Chapter 1. Also removes the hyperref
+% "duplicate destination page.1" warning.
+\pagenumbering{roman}
+
+% ----------------- Title page (official UniMarconi template) -----
+% Replicates Frontespizio.doc (Downloads, converted 2026-07-19): logo,
+% university heading, department / degree lines, quoted italic title,
+% Relatore/Candidato two-column block, academic year. Blank fields keep
+% red \todo markers until filled.
 \begin{titlepage}
   \centering
-  {\scshape\Large \todo{University name --- Department --- Degree programme} \par}
-  \vspace{3cm}
-  {\huge\bfseries Curriculum versus Mixed-Batch Training in Multi-Agent Reinforcement Learning for Urban Autonomous Driving\par}
-  \vspace{2cm}
-  {\Large Candidate: \todo{name}\par}
-  \vspace{0.5cm}
-  {\Large Supervisor: \todo{name}\par}
+  \includegraphics[height=2.0cm]{logo_unimarconi}\par
+  \vspace{1.5cm}
+  {\large\bfseries UNIVERSIT\`A DEGLI STUDI GUGLIELMO MARCONI\par}
+  \vspace{0.9cm}
+  {\bfseries DIPARTIMENTO DI \todo{dipartimento}\par}
+  \vspace{0.9cm}
+  {\bfseries CORSO DI LAUREA IN \todo{corso di laurea}\par}
   \vfill
-  {\large Academic year \todo{2025/2026}\par}
+  {\Large\itshape ``Curriculum versus Mixed-Batch Training in
+  Multi-Agent Reinforcement Learning for Urban Autonomous
+  Driving''\par}
+  \vfill
+  {\large
+   \begin{minipage}[t]{0.50\textwidth}
+     \raggedright
+     Relatore:\\[1.2em]
+     Prof.\ \todo{nome relatore}
+   \end{minipage}%
+   \hfill
+   \begin{minipage}[t]{0.40\textwidth}
+     \raggedright
+     Candidato:\\[1.2em]
+     \todo{nome candidato}
+   \end{minipage}\par}
+  \vfill
+  {\footnotesize ANNO ACCADEMICO \todo{20XX/20XX}\par}
 \end{titlepage}
+% titlepage resets the page counter; account for the title page as i
+\setcounter{page}{2}
 
 % ----------------- Abstract ---------------------------------
-\begin{abstract}
+% Manual abstract page: the report-class abstract environment wraps a
+% titlepage and resets the page counter, breaking front-matter numbering.
+\clearpage
+\null\vfil
+\begin{center}%
+  \bfseries \abstractname
+\end{center}
 The order in which training tasks are presented is a design decision in
 reinforcement learning whose effects are rarely isolated in multi-agent
 settings. This thesis compares curriculum learning (easy-to-hard
@@ -88,7 +122,7 @@ broader coverage buys robustness. Pedestrians were bounded by route
 feasibility rather than by regime. Task ordering, in this setting, is an
 equilibrium selector whose in-domain payoff depends on value estimation
 --- and whose portable benefit is generalization.
-\end{abstract}
+\par\vfil\null
 
 \tableofcontents
 
@@ -110,6 +144,8 @@ TM    & (CARLA) Traffic Manager \\
 \end{tabular}
 
 % ----------------- Chapters ---------------------------------
+\clearpage
+\pagenumbering{arabic}
 \input{chapters/ch01_introduction}
 \input{chapters/ch02_background}
 \input{chapters/ch03_system_design}

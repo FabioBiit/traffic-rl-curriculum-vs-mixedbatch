@@ -1,0 +1,315 @@
+% ============================================================
+% Capitolo 2 — Background (traduzione italiana di
+% chapters/ch02_background.tex; label e citazioni invariati)
+% ============================================================
+\chapter{Background}
+\label{ch:background}
+
+Questo capitolo introduce i concetti su cui il resto della tesi si
+costruisce: apprendimento per rinforzo a singolo agente e gradienti di
+policy (\cref{sec:rl-essentials}), PPO e stima del vantaggio
+(\cref{sec:ppo}), apprendimento multi-agente e MAPPO (\cref{sec:marl}),
+curriculum learning e il suo controllo ad addestramento misto
+(\cref{sec:curriculum-bg}) e il simulatore CARLA
+(\cref{sec:carla-bg}). Ogni concetto è presentato solo alla profondità
+alla quale viene usato in seguito.
+
+% ------------------------------------------------------------
+\section{Elementi di apprendimento per rinforzo}
+\label{sec:rl-essentials}
+
+L'apprendimento per rinforzo (RL) formalizza la decisione sequenziale
+come \emph{processo decisionale di Markov} (MDP): una tupla
+$(\mathcal{S}, \mathcal{A}, P, r, \gamma)$ di stati, azioni, dinamica di
+transizione $P(s' \mid s, a)$, funzione di reward $r(s, a)$ e fattore di
+sconto $\gamma \in [0, 1)$~\cite{sutton2018rl}. Un agente agisce tramite
+una \emph{policy} $\pi(a \mid s)$, e l'obiettivo di apprendimento è
+massimizzare il ritorno atteso scontato
+\begin{equation}
+  J(\pi) \;=\; \mathbb{E}_{\pi}\!\left[\sum_{t=0}^{\infty} \gamma^{t}\,
+  r(s_t, a_t)\right].
+\end{equation}
+Lo sconto fissa un orizzonte decisionale effettivo di circa
+$1/(1-\gamma)$ passi. Non è una costante cosmetica: la piattaforma del
+\cref{ch:system} usa $\gamma = 0.997$, cioè un orizzonte effettivo di
+$\approx 333$ passi, commisurato a episodi fino a 1{.}000 passi di
+controllo in cui reward sparse di progresso sul percorso possono
+distare decine di secondi l'una dall'altra.
+
+Due funzioni di valore riassumono una policy: il valore di stato
+$V^{\pi}(s) = \mathbb{E}_{\pi}[\,\text{ritorno} \mid s_0 = s\,]$ e il
+valore di azione $Q^{\pi}(s, a)$; la loro differenza
+$A^{\pi}(s, a) = Q^{\pi}(s, a) - V^{\pi}(s)$, il \emph{vantaggio},
+misura quanto un'azione sia migliore della media della policy in quello
+stato.
+
+\paragraph{Gradienti di policy e metodi actor--critic.}
+Quando la policy è una funzione differenziabile $\pi_{\theta}$ (qui, una
+rete neurale), il teorema del gradiente di policy fornisce una stima non
+distorta del gradiente dell'obiettivo:
+\begin{equation}
+  \nabla_{\theta} J \;=\;
+  \mathbb{E}_{\pi_{\theta}}\!\left[\nabla_{\theta}
+  \log \pi_{\theta}(a_t \mid s_t)\; A^{\pi}(s_t, a_t)\right].
+\end{equation}
+Stimare il vantaggio con ritorni Monte Carlo grezzi produce alta
+varianza; sottrarre una baseline appresa di valore di stato riduce la
+varianza senza introdurre bias. I metodi \emph{actor--critic} addestrano
+perciò due funzioni: l'\emph{actor} $\pi_{\theta}$ e un \emph{critic}
+$V_{\phi}$ usato per costruire le stime di vantaggio. Questa divisione
+del lavoro è l'aggancio per l'architettura multi-agente del
+\cref{sec:marl}: il critic è un dispositivo del solo addestramento, e
+può quindi ricevere informazione che l'actor non vede mai.
+
+\paragraph{Azioni continue.}
+Per il controllo continuo la policy è comunemente una gaussiana
+diagonale: la rete emette una media (e una log-deviazione standard) per
+dimensione d'azione, e le azioni sono campionate attorno a essa. Il
+campionamento non è un dettaglio implementativo ma parte dell'oggetto
+appreso --- valutare una tale policy sulla sua media deterministica ne
+scarta la struttura stocastica, un punto che diventa concreto nella
+\cref{sec:bugs}.
+
+% ------------------------------------------------------------
+\section{Proximal Policy Optimization}
+\label{sec:ppo}
+
+Gli aggiornamenti di gradiente di policy ``vanilla'' sono fragili: un
+singolo passo troppo grande può far collassare una policy funzionante, e
+i dati on-policy sono obsoleti subito dopo l'aggiornamento.
+PPO~\cite{schulman2017ppo} affronta entrambi i problemi con un
+\emph{obiettivo surrogato clippato}. Con il rapporto di importanza
+$\rho_t(\theta) = \pi_{\theta}(a_t \mid s_t) / \pi_{\theta_{\text{old}}}(a_t \mid s_t)$,
+PPO massimizza
+\begin{equation}
+  L^{\mathrm{CLIP}}(\theta) \;=\;
+  \mathbb{E}_t\!\left[\min\bigl(\rho_t A_t,\;
+  \operatorname{clip}(\rho_t,\, 1-\varepsilon,\, 1+\varepsilon)\, A_t\bigr)\right],
+\end{equation}
+che rimuove ogni incentivo a spostare il rapporto oltre
+$[1-\varepsilon, 1+\varepsilon]$, permettendo più epoche di passi di
+gradiente su minibatch per ogni batch di esperienza senza aggiornamenti
+distruttivi. Le implementazioni aggiungono spesso una penalità adattiva
+di Kullback--Leibler verso la policy pre-aggiornamento come seconda
+salvaguardia; la configurazione della \cref{sec:optimization} usa
+insieme il clip ($\varepsilon = 0.2$) e un target KL di $0.02$.
+
+\paragraph{Generalized Advantage Estimation.}
+Le stime di vantaggio $A_t$ provengono da GAE~\cite{schulman2016gae}:
+con i residui alle differenze temporali
+$\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$,
+\begin{equation}
+  A_t^{\mathrm{GAE}(\gamma,\lambda)} \;=\;
+  \sum_{l \geq 0} (\gamma\lambda)^{l}\, \delta_{t+l},
+\end{equation}
+dove $\lambda \in [0,1]$ scambia bias e varianza tra il TD a un passo
+($\lambda = 0$) e i ritorni Monte Carlo ($\lambda = 1$). La piattaforma
+usa $\lambda = 0.95$. La qualità di GAE dipende direttamente dalla
+qualità del critic --- un episodio di sviluppo documentato
+(\cref{sec:iterations}) ha coinvolto un critic la cui varianza spiegata
+era $\approx 0$, rendendo i vantaggi quasi privi di baseline finché la
+configurazione della value loss non è stata riparata.
+
+\paragraph{Regolarizzazione di entropia.}
+Un bonus di entropia aggiunto all'obiettivo sostiene l'esplorazione
+penalizzando il collasso prematuro della policy. Il suo coefficiente è
+tipicamente ricotto (annealing): alto all'inizio (esplorazione ampia),
+basso alla fine (sfruttamento e convergenza stabile). In questa tesi il
+coefficiente segue uno schedule esplicito da $0.03$ a $0.005$ ancorato a
+una \emph{frazione} fissa del budget di addestramento
+(\cref{sec:optimization}), così che run di lunghezza diversa attraversino
+lo stesso profilo di esplorazione.
+
+% ------------------------------------------------------------
+\section{Apprendimento per rinforzo multi-agente e MAPPO}
+\label{sec:marl}
+
+Con $N$ agenti che agiscono in un unico ambiente, l'MDP si generalizza a
+un \emph{gioco di Markov}: transizioni e reward dipendono dall'azione
+congiunta. Ne seguono due difficoltà strutturali.
+
+\paragraph{Non-stazionarietà.}
+Dal punto di vista di ogni singolo agente, gli altri agenti sono parte
+dell'ambiente --- e stanno apprendendo, quindi la dinamica effettiva
+dell'ambiente cambia nel tempo. Ciò rompe le assunzioni di
+stazionarietà alla base delle garanzie di convergenza a singolo agente
+e rende fuorviante l'esperienza raccolta sotto vecchie policy dei
+co-giocatori~\cite{lowe2017maddpg}. Nella piattaforma del
+\cref{ch:system} questo non è un caso limite ma il cuore del setting:
+sei agenti che apprendono condividono un mondo, e il \cref{ch:results}
+documenta un equilibrio concreto (veicoli che si bloccano in risposta al
+comportamento dei pedoni) che esiste solo a causa di questo
+accoppiamento.
+
+\paragraph{Attribuzione del merito e varianza.}
+Il ritorno di ogni agente dipende dalle azioni di tutti gli agenti,
+quindi la varianza delle stime naive di gradiente di policy cresce con
+il numero di agenti: un agente può essere premiato o punito per esiti
+che non ha causato.
+
+\paragraph{Addestramento centralizzato, esecuzione decentralizzata.}
+La risoluzione ormai standard sfrutta la divisione actor--critic:
+addestrare i \emph{critic} con accesso a informazione globale (le
+osservazioni di tutti gli agenti, o il vero stato), mantenendo gli
+\emph{actor} condizionati solo sulle osservazioni
+locali~\cite{lowe2017maddpg}. Il critic assorbe la non-stazionarietà ---
+condizionato sulla situazione di tutti, il target di valore è meglio
+determinato --- mentre l'esecuzione resta pienamente decentralizzata,
+poiché i critic vengono scartati dopo l'addestramento. È il paradigma
+CTDE usato in tutta questa tesi.
+
+\paragraph{MAPPO.}
+MAPPO istanzia il CTDE con actor PPO e una funzione di valore
+centralizzata. Yu et al.~\cite{yu2022surprising} hanno mostrato che
+questa combinazione concettualmente minimale --- a lungo ritenuta troppo
+inefficiente in termini campionari per il MARL --- eguaglia o supera i
+metodi off-policy sui benchmark cooperativi standard (particle world,
+micromanagement di StarCraft, Hanabi, football), a patto che i dettagli
+implementativi siano corretti; tra i fattori che evidenziano ci sono il
+design dell'input del critic centralizzato e la normalizzazione del
+valore. Questi due fattori ricompaiono concretamente in questa tesi come
+il layout dell'osservazione globale della \cref{sec:obs-actions} e
+l'episodio di configurazione della value loss della
+\cref{sec:iterations}.
+
+\paragraph{Condivisione di parametri e classi eterogenee.}
+Agenti omogenei possono condividere una sola rete di policy, mettendo in
+comune l'esperienza; agenti eterogenei non possono, perché i loro spazi
+di osservazione e azione differiscono. La piattaforma prende la via
+intermedia naturale per la sua popolazione: una policy condivisa per
+classe (tre veicoli; tre pedoni), due policy in totale
+(\cref{sec:architecture}).
+
+\paragraph{Encoder dell'input del critic.}
+Il critic centralizzato più semplice appiattisce le osservazioni di
+tutti gli agenti in un unico vettore per un MLP. Le alternative
+strutturate trattano gli agenti come nodi di un insieme o di un grafo:
+gli slot per agente vengono embeddati, combinati per attenzione o per
+message passing, e aggregati. La variante su grafo usata come asse
+sperimentale secondario di questa tesi applica un'aggregazione a media
+in stile GraphSAGE~\cite{hamilton2017graphsage} sui sei nodi-agente con
+una maschera di vitalità (\cref{sec:critic-encoders}). Il confronto
+critic MLP-vs-GNN chiede se la struttura relazionale nella stima del
+valore cambi ciò che gli (identici) actor apprendono.
+
+\paragraph{Coesistenza piuttosto che cooperazione.}
+A differenza dei benchmark citati, gli agenti di questa tesi non
+condividono una reward di squadra né competono: ognuno persegue il
+proprio percorso sotto una reward individuale (\cref{sec:rewards}). Il
+CTDE resta lo strumento giusto --- il critic centralizzato stabilizza
+comunque la stima del valore sotto interazione reciproca --- ma il
+setting è meglio descritto come \emph{coesistenza} di task indipendenti
+in un mondo condiviso, l'inquadramento formalizzato come copertura
+parallela dei task nella \cref{sec:parallel-coverage}.
+
+% ------------------------------------------------------------
+\section{Curriculum learning e la sua condizione di controllo}
+\label{sec:curriculum-bg}
+
+\paragraph{Origini.}
+L'idea che l'apprendimento migliori quando gli esempi sono presentati in
+un ordine sensato dal facile al difficile precede il deep learning: gli
+esperimenti ``starting small'' di Elman mostrarono reti ricorrenti che
+apprendevano una grammatica complessa solo quando la complessità
+dell'input (o la memoria effettiva della rete) cresceva
+incrementalmente~\cite{elman1993starting}. Bengio et
+al.~\cite{bengio2009curriculum} diedero alla strategia il nome di
+\emph{curriculum learning} e la inquadrarono come metodo di
+continuazione: gli esempi facili definiscono una versione più liscia
+dell'obiettivo su cui l'ottimizzazione parte, quelli difficili vengono
+introdotti mano a mano, con guadagni misurabili in velocità di
+ottimizzazione e generalizzazione su task supervisionati.
+
+\paragraph{Curriculum learning nel RL.}
+Nell'apprendimento per rinforzo il progettista controlla non solo
+l'ordine dei dati ma la distribuzione dei \emph{task}, il che rende i
+curricula al tempo stesso più potenti e più difficili da progettare.
+Narvekar et al.~\cite{narvekar2020curriculum} organizzano il campo
+attorno a tre domande: come vengono generati i task sorgente, come
+vengono \emph{sequenziati}, e come la conoscenza si trasferisce tra di
+essi. In quella tassonomia, il meccanismo della \cref{sec:regimes} è uno
+schema di sequenziamento basato sulla prestazione su un insieme fisso di
+task: tre livelli di difficoltà ordinati per lunghezza del percorso, con
+progressione condizionata a una soglia di successo a finestra e
+garantita da cap di pressione basati sul budget. La motivazione dei
+curricula nel RL riguarda in larga parte l'esplorazione: sui task
+difficili una policy debole può non sperimentare essenzialmente mai il
+successo, non ricevendo alcun segnale di apprendimento, mentre i task
+facili forniscono un successo iniziale denso da cui la competenza può
+avviarsi.
+
+\paragraph{Rischi noti.}
+Tre modi di fallimento ricorrono in letteratura e hanno plasmato il
+design della \cref{sec:regimes}. Primo, l'\emph{oblio}: le reti neurali
+addestrate su una distribuzione spostata tendono a sovrascrivere la
+competenza acquisita in precedenza~\cite{french1999catastrophic}; un
+curriculum che abbandona i task facili dopo la progressione può erodere
+proprio le abilità che ha costruito --- la piattaforma mantiene perciò
+tutti i livelli sbloccati nel mix di campionamento invece di
+sostituirli. Secondo, lo \emph{stallo}: un gate di competenza mai
+soddisfatto può intrappolare l'addestramento sui task facili
+indefinitamente --- da qui i cap di pressione che forzano la
+progressione entro il budget. Terzo, la \emph{mis-calibrazione del
+gate}: sbloccare troppo presto espone la policy a rumore da cui non può
+ancora apprendere; sbloccare troppo tardi spreca budget. Questi rischi
+sono esattamente le ipotesi che H1 mette alla prova empiricamente
+(\cref{sec:rq}).
+
+\paragraph{La condizione di controllo: addestramento misto.}
+Ogni affermazione sull'ordinamento richiede una baseline in cui
+l'ordinamento è assente. Il controllo naturale è l'addestramento
+\emph{misto} (interleaved): tutti i livelli di difficoltà presentati dal
+primo episodio, con esposizione uniforme --- l'analogo RL
+dell'addestramento su un dataset mescolato, che è il default
+nell'apprendimento supervisionato. Il campionatore stratificato della
+\cref{sec:batch-arm} implementa esattamente questo controllo
+(esposizione uniforme $1/3$ con sbilanciamento massimo di un episodio),
+così che il confronto curriculum-contro-misto isoli la variabile di
+ordinamento a parità di budget. L'addestramento misto porta con sé la
+propria firma ipotizzata (H2): piena copertura dei task fin
+dall'inizio, al prezzo di un segnale iniziale più rumoroso dominato dai
+fallimenti sui task difficili.
+
+% ------------------------------------------------------------
+\section{Il simulatore CARLA}
+\label{sec:carla-bg}
+
+CARLA~\cite{dosovitskiy2017carla} è un simulatore open-source di guida
+urbana costruito su Unreal Engine~4, sviluppato per supportare
+l'addestramento e la validazione di sistemi di guida autonoma. Gira come
+server che ospita il mondo 3D e la fisica, controllato da client
+attraverso una API Python; è distribuito con un insieme di città di
+layout vario, traffico scriptato e meteo configurabile. Tre
+caratteristiche contano per questa tesi (versione 0.9.16 ovunque):
+
+\begin{itemize}
+  \item \textbf{Modalità sincrona con passo temporale fisso.} Il server
+        avanza solo sui tick del client, a passo di fisica fisso
+        (\SI{0.05}{s} qui). La raccolta di esperienza è quindi
+        riproducibile nella struttura e indipendente dal rendering o
+        dalla velocità di orologio (\cref{sec:architecture}).
+  \item \textbf{Traffic Manager e controllo dei walker.} I veicoli
+        scriptati (NPC) sono guidati dal Traffic Manager di CARLA; i
+        pedoni sono attori \emph{walker} che accettano comandi di
+        controllo diretti, il che è ciò che rende possibile apprendere
+        policy pedonali (\cref{sec:obs-actions}).
+  \item \textbf{Città strutturalmente diverse.} L'addestramento usa
+        \emph{Town03}, descritta dalla documentazione ufficiale come
+        ``a larger, urban map with a roundabout and large
+        junctions''~\cite{carladocs}; il test di generalizzazione usa
+        \emph{Town05}, una ``squared-grid town with cross junctions and
+        a bridge'', con più corsie per direzione~\cite{carladocs}. I
+        layout differiscono in natura, non solo in dimensione, rendendo
+        il trasferimento Town03$\to$Town05 un test genuino di
+        generalizzazione di mappa (\cref{sec:generalization}).
+\end{itemize}
+
+Due note di scope. Primo, in questa tesi CARLA fornisce fisica, dinamica
+del mondo e traffico --- non percezione: gli agenti osservano feature di
+stato privilegiate (\cref{sec:obs-actions}), non flussi camera o lidar,
+quindi tutti i risultati riguardano la decisione sotto interazione, non
+la visione. Secondo, anche in modalità sincrona e con tutti i seed
+fissati, CARLA sotto carico multi-agente non è deterministico da run a
+run; questa variabilità irriducibile è quantificata con repliche a seed
+identico e usata come metro per ogni effetto riportato in seguito
+(\cref{sec:iterations}, \cref{sec:threats}).

@@ -12,4 +12,5 @@
 *.fls
 *.fdb_latexmk
 *.synctex.gz
-main.pdf
+main_en.pdf
+main_it.pdf

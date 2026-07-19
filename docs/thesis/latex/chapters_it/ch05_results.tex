@@ -1,0 +1,716 @@
+% ============================================================
+% Capitolo 5 — Risultati (traduzione italiana di
+% chapters/ch05_results.tex; label invariati; include le correzioni
+% post GNN-B a §5.3: quattro celle, 137–142K / 162–175K)
+% Ogni numero ricalcolato da episodes.jsonl su disco
+% (docs/thesis/data/campaign_consolidation.json).
+% ============================================================
+\chapter{Risultati}
+\label{ch:results}
+
+Questo capitolo riporta i risultati della campagna in nove viste: il
+pilota di aprile (\cref{sec:pilot}), integrità e setup
+(\cref{sec:integrity}), efficienza campionaria
+(\cref{sec:sample-efficiency}), prestazione finale
+(\cref{sec:final-performance}), comportamento entro la run
+(\cref{sec:behavior}), generalizzazione di mappa
+(\cref{sec:generalization}), l'asse architetturale
+(\cref{sec:arch-axis}), i limiti strutturali dei pedoni
+(\cref{sec:ped-limits}) e i verdetti rispetto alle ipotesi
+(\cref{sec:findings}).
+
+% Fonti: ricalcolato da disco 2026-07-14 (9 run × episodes.jsonl,
+% dedup + solo route_complete; integrità 6/6, 0 righe malformate).
+% Figura: docs/thesis/scripts/make_pilot_collapse_fig.py.
+\section{Pilota architetturale preliminare (aprile 2026)}
+\label{sec:pilot}
+
+Prima delle correzioni di correttezza della \cref{sec:bugs}, nove run
+(aprile--inizio maggio 2026) hanno incrociato encoder del critic e
+regimi di addestramento nell'ambiente di prima generazione: seed 42,
+budget di $1$M o $3$M passi, osservazioni veicolo dell'era 44D e il
+route planner pre-correzione. Sono riportate qui come studio
+preliminare --- non perché i loro confronti reggano (non reggono), ma
+perché hanno motivato la metodologia del \cref{ch:methodology} e
+forniscono l'esempio cautelativo più chiaro di questa tesi sulle
+metriche aggregate. Tutti e nove i log superano le verifiche di
+integrità della \cref{sec:metrics}; la \cref{tab:pilot} riporta le
+metriche cumulative ricalcolate.
+
+\begin{table}[t]
+  \centering\small
+  \caption{Run del pilota di aprile 2026, ricalcolate da disco
+  (cumulative, a livello di agente; \%). Tutte le run: seed 42, Town03,
+  ambiente pre-correzione della lunghezza dei percorsi. La velocità per
+  record non era ancora loggata in quest'era. $^{a}$~architettura non
+  etichettata nei metadati della run (vecchio schema di configurazione);
+  confermata MLP dall'autore. $^{b}$~variante con encoder del critic ad
+  attenzione e PopArt abilitati. $^{c}$~fermata a $\approx$2.7M di 3M.}
+  \label{tab:pilot}
+  \begin{tabular}{@{}llllrrrrrr@{}}
+    \toprule
+    Run & Regime & Critic & Passi & Ep. & \multicolumn{4}{c}{Veicoli} & Ped. \\
+    \cmidrule(lr){6-9}\cmidrule(l){10-10}
+    & & & & & SR & s$+$t & coll. & off. & SR \\
+    \midrule
+    0406 & curr.\ & MLP & 1M & 1062 & 1.2 & 46.4 & 31.8 & 20.7 & 82.4 \\
+    0411 & curr.\ & MLP & 3M & 3047 & 2.0 & 53.2 & 30.6 & 14.2 & 67.4 \\
+    0425 & curr.\ & GNN & 3M & 3015 & 1.2 & 70.8 & 19.5 & 8.6 & 70.6 \\
+    0430 & curr.\ & GNN$^{b}$ & 3M & 2188 & 1.8 & 50.9 & 28.9 & 18.5 & 66.2 \\
+    0504 & curr.\ & GNN & 3M$^{c}$ & 2730 & 3.9 & 64.3 & 21.1 & 10.8 & 75.4 \\
+    0405 & batch & MLP & 1M & 1066 & 1.9 & 42.3 & 38.3 & 17.6 & 77.0 \\
+    0408 & batch & MLP$^{a}$ & 3M & 3038 & 0.2 & 57.8 & 28.2 & 13.8 & 72.5 \\
+    0421 & batch & GNN & 3M & 3078 & 2.7 & 49.5 & 30.5 & 17.4 & 74.4 \\
+    0502 & batch & GNN & 3M & 3054 & 3.0 & 58.2 & 23.6 & 15.3 & 74.4 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Quattro osservazioni, in ordine decrescente di certezza:
+
+\begin{enumerate}
+  \item \textbf{I veicoli sedevano al pavimento in ogni cella} (SR
+        0.2--3.9\%). Al pavimento, la metrica di successo non ha spazio
+        per esprimere differenze: qualunque effetto architettura o
+        regime possano aver avuto è compresso sotto il rumore. Il
+        confronto architetturale del pilota sui veicoli è quindi
+        \emph{non informativo} --- il controesempio che motiva
+        l'esecuzione della campagna principale nel regime di fascia
+        media. Il pavimento stesso è stato poi ricondotto al difetto di
+        lunghezza dei percorsi della \cref{sec:bugs}.
+  \item \textbf{I pedoni hanno appreso} (SR 66--82\%): la piattaforma
+        era addestrabile per la classe più semplice anche in
+        quest'era, localizzando il fallimento nel task veicolo anziché
+        nello stack --- e illustrando perché tutto il reporting è per
+        classe (\cref{sec:metrics}).
+  \item \textbf{Una firma architetturale qualitativa.} Tra le run
+        curriculum, la run con critic GNN semplice (0425) mostra il
+        profilo di fallimento più difensivo delle nove: il più alto
+        stuck$+$timeout (70.8\%) con la collisione più bassa (19.5\%) e
+        l'offroad più basso (8.6\%), contro 53.2/30.6/14.2\% della
+        controparte MLP (0411). A SR di pavimento questo è al più
+        generatore di ipotesi; se una firma architetturale dipendente
+        dal regime ricompaia sul trunk sano è esattamente la domanda
+        H3, ripresa nella \cref{sec:arch-axis}.
+  \item \textbf{Gli aggregati cumulativi possono nascondere un
+        collasso.} La run 0504 è stata segnalata durante
+        l'addestramento come collassata a metà corsa --- eppure il suo
+        SR veicoli \emph{cumulativo} (3.9\%) è il più alto di tutte e
+        nove. La \cref{fig:pilot-collapse} risolve il paradosso: la run
+        ha sostenuto un SR a finestra del 10--14\% per circa 500
+        episodi, poi è crollata bruscamente quasi a zero attorno
+        all'episodio 1{.}100 senza mai riprendersi; il dato cumulativo è
+        interamente ereditato dalla fase pre-collasso. Questa lezione
+        --- la competenza corrente va misurata su una finestra, non
+        dalla nascita --- ha plasmato direttamente la metrica di sblocco
+        a finestra della \cref{sec:regimes} e il reporting per quartili
+        della \cref{sec:metrics}.
+\end{enumerate}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\textwidth]{pilot_collapse_timeseries}
+  \caption{SR veicoli a finestra (finestra di 100 episodi) per le due
+  run pilota GNN-curriculum semplici. La run 0504 (tratteggiata)
+  sostiene il 10--14\% per $\approx$500 episodi, collassa attorno
+  all'episodio 1{.}100 e non si riprende mai --- pur chiudendo con l'SR
+  cumulativo \emph{più alto} del pilota (3.9\%, \cref{tab:pilot}). Gli
+  aggregati cumulativi ereditano la storia; il rilevamento dei collassi
+  richiede viste a finestra.}
+  \label{fig:pilot-collapse}
+\end{figure}
+
+% Fonti per §5.2–5.4, §5.6: docs/thesis/data/campaign_consolidation.json,
+% ricalcolato da disco 2026-07-15 da docs/thesis/scripts/
+% consolidate_campaign.py (dedup, solo route_complete, per classe).
+\section{Integrità della campagna e riepilogo del setup}
+\label{sec:integrity}
+
+La \cref{tab:runmatrix} elenca le run della campagna. Tutte sono state
+lanciate sullo stesso trunk (commit \texttt{7defb03}) con seed 999; i
+diff di configurazione confermano che le celle differiscono solo nei
+flag di regime ed encoder del critic (\cref{sec:campaign}). Tutti e
+quattro i log di addestramento e tutti e quattro i log di valutazione
+superano ogni condizione di integrità della \cref{sec:metrics}:
+esattamente sei record per episodio ovunque, zero righe malformate, zero
+valori non finiti. Un'anomalia benigna è a registro: la valutazione
+GNN-curriculum ha mantenuto 401 episodi dopo la deduplica (un episodio
+easy in più), uno spostamento di peso dello $0.25$\% senza effetto alla
+precisione riportata.
+
+\begin{table}[t]
+  \centering\small
+  \caption{Matrice delle run di campagna (tutte: 3M passi, Town03, seed
+  999, trunk \texttt{7defb03}). L'esposizione di livello realizzata è
+  riportata come quote easy/medium/hard degli episodi.}
+  \label{tab:runmatrix}
+  \begin{tabular}{@{}llrrlll@{}}
+    \toprule
+    Cella & Run ID & Episodi & Record & Mix di livelli (\%) & Integrità & Eval finale \\
+    \midrule
+    MLP-curr.\ & 20260622\_171626 & 3220 & 19{.}320 & 32.5/45.8/21.6 & OK & 400 ep, fatta \\
+    MLP-batch  & 20260623\_171855 & 3180 & 19{.}080 & 35.3/32.8/31.9 & OK & 400 ep, fatta \\
+    GNN-curr.\ & 20260630\_181143 & 3293 & 19{.}758 & 32.4/37.4/30.1 & OK & 401 ep, fatta \\
+    GNN-batch  & 20260714\_155209 & 3168 & 19{.}008 & 35.4/32.8/31.8 & OK & 400 ep, fatta \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+L'esposizione realizzata rispecchia i due design: entrambe le run batch
+restano entro $\approx 2$ punti percentuali dall'uniforme $1/3$ per
+livello, con tutti e tre i livelli presenti entro i primi venti episodi;
+le run curriculum concentrano l'esposizione easy/medium all'inizio e
+raggiungono hard solo dopo i loro sblocchi
+(\cref{sec:sample-efficiency}), chiudendo con quote hard del 21.6\%
+(MLP) e 30.1\% (GNN).
+
+% ------------------------------------------------------------
+\section{Efficienza campionaria}
+\label{sec:sample-efficiency}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{learning_curves}
+  \caption{Tasso di successo a finestra (100 episodi) rispetto ai passi
+  d'ambiente, tutte e quattro le celle. Avvertenza importante: ogni
+  curva è misurata sul \emph{mix di livelli concorrente} di quella run
+  --- gated per le celle curriculum, uniforme per batch --- quindi i
+  confronti verticali tra bracci non sono omogenei finché il curriculum
+  non ha sbloccato tutti i livelli; il confronto a distribuzione
+  appaiata è la valutazione finale (\cref{sec:final-performance}).}
+  \label{fig:learning-curves}
+\end{figure}
+
+\paragraph{Fase iniziale: decollo indistinguibile.}
+Tutte e quattro le celle salgono alla stessa velocità: l'SR veicoli a
+finestra di 100 episodi supera per la prima volta il 30\% dopo
+137--142K passi e il 50\% dopo 162--175K passi in ogni cella --- uno
+scarto sotto l'8\%, ben dentro il rumore. La parte notevole è
+\emph{su che cosa} ogni policy lo ha superato: le celle curriculum su
+esposizione solo-easy, le celle batch sul mix uniforme completo che
+include percorsi da \SI{100}{m}. A parità di budget, il decollo del
+tasso di successo iniziale non è stato il fattore discriminante tra i
+regimi in questa campagna.
+
+\paragraph{Tempi di sblocco (celle curriculum).}
+Medium si è sbloccato praticamente nello stesso punto in entrambe le run
+curriculum (episodio 842 di 3220, 26.1\%, MLP; episodio 860 di 3293,
+26.1\%, GNN). Hard, invece, si è sbloccato molto prima sotto il critic
+GNN: episodio 1{.}910 (58.0\% dell'addestramento) contro 2{.}286
+(71.0\%) per MLP --- quest'ultimo coerente con lo scatto del cap di
+pressione al 70\% del budget più che con il gate di competenza
+(\cref{sec:regimes}), mentre la cella GNN ha raggiunto il gate hard per
+competenza. Il risultato è visibile nelle quote di esposizione della
+\cref{tab:runmatrix}: la policy GNN-curriculum ha visto $\approx 40$\%
+episodi hard in più della controparte MLP.
+
+\paragraph{Dopo il decollo.}
+Da $\approx 0.5$M passi le curve batch si assestano sotto le due curve
+curriculum --- MLP-batch nel modo più visibile
+(\cref{fig:learning-curves}) --- che si seguono da vicino; tutte le
+curve derivano verso il basso a fine addestramento man mano che i mix
+del curriculum si induriscono (celle curriculum) e che il successo a
+finestra dei pedoni declina --- le dinamiche entro la run sono
+analizzate nella \cref{sec:behavior}.
+
+% ------------------------------------------------------------
+\section{Prestazione cumulativa finale}
+\label{sec:final-performance}
+
+\begin{table}[t]
+  \centering\small
+  \caption{Metriche cumulative di addestramento per cella (a livello di
+  agente, \%; velocità in km/h per i veicoli, m/s per i pedoni).}
+  \label{tab:cumulative}
+  \begin{tabular}{@{}lrrrrrrrr@{}}
+    \toprule
+    & \multicolumn{5}{c}{Veicoli} & \multicolumn{3}{c}{Pedoni} \\
+    \cmidrule(lr){2-6}\cmidrule(l){7-9}
+    Cella & SR & s$+$t & coll. & off. & vel. & SR & s$+$t & vel. \\
+    \midrule
+    MLP-curr.\ & 57.28 & 30.48 & 8.84 & 3.41 & 10.2 & 56.59 & 42.56 & 1.96 \\
+    MLP-batch  & 46.31 & 23.61 & 17.33 & 12.76 & 18.7 & 57.06 & 42.03 & 1.61 \\
+    GNN-curr.\ & 56.55 & 20.84 & 13.37 & 9.23 & 18.0 & 60.50 & 38.58 & 1.91 \\
+    GNN-batch  & 49.41 & 22.75 & 17.56 & 10.28 & 26.6 & 58.03 & 41.11 & 1.45 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering\small
+  \caption{Valutazione finale a 400 episodi, coppia MLP (a livello di
+  agente, \%). Scenari: easy/medium/hard su Town03, test su Town05.}
+  \label{tab:eval-mlp}
+  \begin{tabular}{@{}llrrrrr@{}}
+    \toprule
+    Scenario & Cella & SR veic. & s$+$t veic. & coll. veic. & off. veic. & SR ped. \\
+    \midrule
+    easy   & MLP-curr.\ & 60.33 & 28.00 & 7.33 & 4.33 & 58.00 \\
+           & MLP-batch  & 41.33 & 28.33 & 18.00 & 12.33 & 58.67 \\
+    medium & MLP-curr.\ & 51.67 & 36.00 & 9.00 & 3.33 & 40.67 \\
+           & MLP-batch  & 31.00 & 27.67 & 25.33 & 16.00 & 41.67 \\
+    hard   & MLP-curr.\ & 44.33 & 38.33 & 14.33 & 3.00 & 26.67 \\
+           & MLP-batch  & 29.00 & 29.67 & 23.33 & 18.00 & 32.33 \\
+    test   & MLP-curr.\ & 37.00 & 50.67 & 11.00 & 1.33 & 62.67 \\
+           & MLP-batch  & 18.00 & 39.00 & 37.33 & 5.67 & 63.00 \\
+    \midrule
+    tutti  & MLP-curr.\ & 48.33 & 38.25 & 10.42 & 3.00 & 47.00 \\
+           & MLP-batch  & 29.83 & 31.17 & 26.00 & 13.00 & 48.92 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering\small
+  \caption{Valutazione finale, coppia GNN (a livello di agente, \%;
+  stesso protocollo della \cref{tab:eval-mlp}; lo scenario easy di
+  GNN-curriculum mantiene 101 episodi, \cref{sec:integrity}). Analizzata
+  nella \cref{sec:arch-axis}.}
+  \label{tab:eval-gnn}
+  \begin{tabular}{@{}llrrrrr@{}}
+    \toprule
+    Scenario & Cella & SR veic. & s$+$t veic. & coll. veic. & off. veic. & SR ped. \\
+    \midrule
+    easy   & GNN-curr.\ & 52.48 & 22.11 & 13.53 & 11.88 & 71.95 \\
+           & GNN-batch  & 55.67 & 22.67 & 14.00 & 7.67 & 63.00 \\
+    medium & GNN-curr.\ & 42.33 & 19.67 & 24.67 & 13.33 & 53.67 \\
+           & GNN-batch  & 42.00 & 18.67 & 28.33 & 11.00 & 46.33 \\
+    hard   & GNN-curr.\ & 36.00 & 25.33 & 25.67 & 13.00 & 39.67 \\
+           & GNN-batch  & 33.33 & 22.67 & 28.33 & 15.67 & 31.33 \\
+    test   & GNN-curr.\ & 35.67 & 33.33 & 28.00 & 3.00 & 70.67 \\
+           & GNN-batch  & 25.67 & 31.33 & 37.00 & 6.00 & 54.00 \\
+    \midrule
+    tutti  & GNN-curr.\ & 41.65 & 25.10 & 22.94 & 10.31 & 59.02 \\
+           & GNN-batch  & 39.17 & 23.83 & 26.92 & 10.08 & 48.67 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Il contrasto primario, coppia MLP.}
+Nella valutazione finale a distribuzione appaiata
+(\cref{tab:eval-mlp}), la policy veicolo addestrata a curriculum
+completa il 48.33\% dei percorsi contro il 29.83\% del batch: $+18.5$
+punti percentuali, con lo stesso segno in \emph{tutti e quattro} gli
+scenari ($+19.0$, $+20.7$, $+15.3$, $+19.0$\,pp) e nel cumulativo di
+addestramento ($+11.0$\,pp, \cref{tab:cumulative}). Il margine è circa
+da due a quattro volte la banda delle repliche a seed identico della
+\cref{sec:iterations}, e la sua coerenza tra scenari, livelli di
+difficoltà e strati di misura è ciò che il design appaiato può offrire
+al posto della replicazione dei seed (\cref{sec:campaign}).
+
+\paragraph{Due modi diversi di fallire.}
+I regimi producono guide riconoscibilmente diverse
+(\cref{fig:failure-modes}). La policy batch è quasi due volte più
+veloce (18.7 contro 10.2 km/h in addestramento) ma converte quella
+mobilità in contatto: collisione 17.3\% contro 8.8\% e offroad 12.8\%
+contro 3.4\% in addestramento, che si allargano a collisione 26.0\%
+contro 10.4\% in valutazione. La policy curriculum fallisce
+principalmente per stallo (stuck$+$timeout 38.3\% contro 31.2\% in
+valutazione). Nessun profilo domina l'altro su ogni asse --- il
+curriculum scambia velocità per sicurezza --- ma sul criterio di
+successo rigoroso lo scambio si risolve chiaramente a suo favore.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{failure_modes}
+  \caption{Composizione delle terminazioni dei veicoli per cella, in
+  addestramento (cumulativo) e alla valutazione finale. Le due
+  grammatiche del fallimento sono visibili a colpo d'occhio: dominata
+  dallo stallo (giallo) in MLP-curriculum, dominata dal contatto
+  (rosso/viola) nelle celle batch, con le celle GNN intermedie.}
+  \label{fig:failure-modes}
+\end{figure}
+
+\paragraph{Pedoni: nessun effetto di regime.}
+Il successo dei pedoni è piatto tra i bracci ovunque: 56.6 contro
+57.1\% in addestramento, 47.0 contro 48.9\% in valutazione, ed entro
+$\pm 6$\,pp in ogni scenario. Il regime di addestramento, in questa
+piattaforma, è una variabile della policy veicolo; il task pedone appare
+insensibile all'ordinamento dei task. La struttura dei fallimenti dei
+pedoni è ripresa nella \cref{sec:ped-limits}.
+
+\paragraph{Le celle GNN a colpo d'occhio.}
+In addestramento, la cella GNN-curriculum atterra entro il rumore di
+MLP-curriculum sull'SR principale (56.55 contro 57.28\%)
+ridistribuendo però la massa dei fallimenti: meno stallo ($-9.6$\,pp
+stuck$+$timeout), più contatto ($+4.5$\,pp collisione, $+5.8$\,pp
+offroad) e velocità molto più alta (18.0 contro 10.2 km/h) --- più
+vicina alla mobilità delle celle batch con successo da curriculum.
+GNN-batch spinge le stesse tendenze oltre (26.6 km/h, la cella più
+veloce) \emph{battendo} al contempo MLP-batch sull'SR di addestramento
+di $+3.1$\,pp e in valutazione di $+9.3$\,pp (\cref{tab:eval-gnn}).
+L'encoder del critic, dunque, plasma il profilo di rischio e
+interagisce con il regime; la lettura architetturale completa è nella
+\cref{sec:arch-axis}.
+
+% Fonti: campaign_consolidation.json + analisi ad-hoc per livello×quartile
+% (ricalcolata 2026-07-16; le traiettorie Q easy controllano il mix).
+\section{Analisi comportamentale}
+\label{sec:behavior}
+
+\subsection{Dinamica entro la run: erosione, non solo indurimento del mix}
+\label{sec:erosion}
+
+Ogni curva di apprendimento della \cref{fig:learning-curves} deriva
+verso il basso dopo il suo picco iniziale. Per le celle curriculum
+questo è in parte meccanico --- il loro mix concorrente si indurisce a
+ogni sblocco --- quindi la \cref{tab:quartiles} separa i due effetti:
+il pannello superiore riporta le traiettorie per quartile complessive,
+quello inferiore la traiettoria \emph{sui soli episodi easy}, dove il
+task è costante per costruzione.
+
+\begin{table}[t]
+  \centering\small
+  \caption{SR veicoli per quartile di addestramento (\%). Sopra: tutti
+  i livelli (confuso dal mix per le celle curriculum). Sotto: solo
+  episodi easy (controllato per livello; easy resta $\approx 30$\% del
+  mix dopo gli sblocchi). $\Delta$ = Q4 $-$ Q1.}
+  \label{tab:quartiles}
+  \begin{tabular}{@{}lrrrrr@{}}
+    \toprule
+    Cella & Q1 & Q2 & Q3 & Q4 & $\Delta$ \\
+    \midrule
+    \multicolumn{6}{@{}l}{\emph{Tutti i livelli}} \\
+    MLP-curr.\ & 68.9 & 61.1 & 54.4 & 44.7 & $-24.2$ \\
+    MLP-batch  & 58.7 & 45.9 & 41.8 & 38.7 & $-20.0$ \\
+    GNN-curr.\ & 66.6 & 62.2 & 54.5 & 42.9 & $-23.7$ \\
+    GNN-batch  & 50.5 & 54.6 & 47.5 & 45.1 & $-5.4$ \\
+    \midrule
+    \multicolumn{6}{@{}l}{\emph{Solo livello easy}} \\
+    MLP-curr.\ & 68.9 & 69.3 & 59.6 & 52.4 & $-16.5$ \\
+    MLP-batch  & 64.2 & 52.0 & 48.9 & 45.6 & $-18.6$ \\
+    GNN-curr.\ & 66.6 & 67.9 & 56.1 & 55.8 & $-10.8$ \\
+    GNN-batch  & 59.7 & 62.8 & 54.3 & 53.3 & $-6.4$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Il pannello controllato per livello mostra che l'indurimento del mix
+\emph{non} è tutta la storia: la prestazione a livello easy si erode
+entro ogni run, da $-6.4$\,pp (GNN-batch, la cella più stabile) a
+$-18.6$\,pp (MLP-batch). Le celle batch rendono il caso in modo pulito
+--- la loro distribuzione dei task è costante, quindi il loro declino è
+interamente degradazione entro la run --- e le celle curriculum lo
+riproducono sulla loro fetta easy. I pedoni si erodono ancora di più
+(SR pedoni a livello easy: $-31.8$\,pp in MLP-curriculum, da $-16$ a
+$-22$\,pp altrove). Due meccanismi candidati sono compatibili con i
+dati e non separabili a $n{=}1$: la co-adattazione tra classi (il
+comportamento dei pedoni degrada in parallelo e alimenta il canale di
+hazard dei veicoli, \cref{sec:obs-actions}) e lo schedule di annealing
+dell'entropia --- benché la transizione si completi solo all'83\% del
+budget, dentro Q4, mentre l'erosione inizia già in Q3, quindi
+l'annealing non può esserne l'unica causa. La conclusione pulita è
+architetturale: sotto il critic GNN l'erosione è dimezzata o meglio,
+qualunque ne sia il driver (\cref{sec:arch-axis}).
+
+\subsection{Quattro policy, due grammatiche del fallimento, un'eccezione}
+\label{sec:failure-grammars}
+
+La velocità media ordina le quattro celle: 10.2 (MLP-curr.), 18.0
+(GNN-curr.), 18.7 (MLP-batch), 26.6 km/h (GNN-batch); i fallimenti da
+contatto seguono lo stesso ordine (collisione in addestramento 8.8 /
+13.4 / 17.3 / 17.6\%), mentre lo stallo anti-correla (stuck$+$timeout
+30.5 / 20.8 / 23.6 / 22.8\%). Ciò che \emph{non} varia è la struttura
+interna dello stallo: in tutte e quattro le celle, le terminazioni
+stuck si decompongono quasi identicamente ($44$--$47$\% rilevatore di
+loop più non-progresso a basso completamento, $39$--$42$\% loop più
+non-progresso a completamento più alto, il resto minore), e i passi
+medi di non-progresso coprono una banda stretta 216--253. Regimi e
+critic cambiano \emph{quanto} una policy stalla, non \emph{come} stalla
+--- coerente con l'idea che lo stallo sia un attrattore unico
+(l'equilibrio difensivo della \cref{sec:iterations}) da cui
+l'addestramento o esce o non esce.
+
+\subsection{L'equilibrio difensivo non è intrinseco al curriculum}
+\label{sec:defensive-case}
+
+Il profilo lento-e-in-stallo appartiene a esattamente una cella:
+MLP-curriculum (10.2 km/h, stuck$+$timeout 30.5\%). La sua gemella
+curriculum sotto il critic GNN è quasi due volte più veloce (18.0 km/h)
+con un terzo di stallo in meno (20.8\%) allo stesso SR principale ---
+quindi l'equilibrio cauto documentato durante lo sviluppo (il gate di
+hazard che tiene fermi i veicoli, \cref{sec:iterations}) non è una
+proprietà dell'addestramento a curriculum in quanto tale. È un bacino
+in cui la run con critic MLP si è assestata e che la run con critic GNN
+ha evitato, plausibilmente perché la stima del valore su input
+strutturati per agente prezza diversamente il canale di hazard. A
+$n{=}1$ per cella questa resta un'interpretazione; ciò che i dati
+stabiliscono è che il regime da solo non determina l'equilibrio.
+
+\section{Generalizzazione: da Town03 a Town05}
+\label{sec:generalization}
+
+Lo scenario test colloca le stesse policy su Town05 --- un layout a
+griglia quadrata e più corsie, strutturalmente diverso da Town03
+(\cref{sec:carla-bg}) --- per 100 episodi con target di \SI{80}{m} e
+traffico come in addestramento. Tre osservazioni dalla coppia MLP
+(\cref{tab:eval-mlp}) e una quarta dalla coppia GNN
+(\cref{tab:eval-gnn}); la \cref{fig:town05} riassume il quadro del
+trasferimento.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.8\textwidth]{town05_bars}
+  \caption{SR veicoli: media degli scenari Town03 vs.\ test Town05, per
+  cella. Le celle curriculum calano meno; la coppia GNN è
+  indistinguibile in-domain (43.6 vs.\ 43.7\%) e si separa di 10\,pp
+  sulla mappa mai vista.}
+  \label{fig:town05}
+\end{figure}
+
+\paragraph{L'ordinamento sopravvive al cambio di mappa.}
+Il curriculum completa il 37.0\% dei percorsi su Town05 contro il
+18.0\% del batch ($+19.0$\,pp) --- essenzialmente lo stesso margine
+in-domain. Il calo assoluto dalla media degli scenari Town03 è quasi
+identico per i due bracci ($-15.1$\,pp da 52.1\% per il curriculum;
+$-15.8$\,pp da 33.8\% per il batch), quindi il vantaggio del curriculum
+non è un'idiosincrasia di Town03: si trasferisce per intero su strade
+mai viste in addestramento. Letto contro l'ipotesi H2, la copertura
+iniziale più ampia del regime batch non gli ha comprato \emph{alcun}
+vantaggio di generalizzazione --- semmai il calo relativo è peggiore
+dalla sua base più bassa ($-47$\% contro $-29$\% relativo).
+
+\paragraph{Le firme di fallimento si amplificano fuori distribuzione.}
+Ogni braccio fallisce su Town05 nel modo in cui fallisce a casa, solo
+di più: la policy curriculum stalla (stuck$+$timeout 50.7\%, il suo
+massimo ovunque) mantenendo basso il contatto (collisione 11.0\%,
+offroad 1.3\%); la policy batch si schianta (collisione 37.3\%, il suo
+massimo ovunque). Le strade nuove stressano esattamente l'asse su cui
+ogni policy già poggiava.
+
+\paragraph{Sotto il critic GNN, il vantaggio esiste \emph{solo} fuori
+distribuzione.}
+La coppia GNN affila il punto. In-domain i due bracci GNN sono gemelli
+statistici --- SR veicoli medio sugli scenari Town03 43.6\%
+(curriculum) contro 43.7\% (batch) --- eppure su Town05 si separano di
+$+10.0$\,pp (35.7 contro 25.7\%), con il calo su Town05 più piccolo di
+ogni cella per GNN-curriculum ($-7.9$\,pp) contro $-18.0$\,pp per
+GNN-batch. Dove la coppia MLP mostrava un vantaggio del curriculum che
+si trasferisce, la coppia GNN ne mostra uno che \emph{compare} solo nel
+trasferimento: evidenza con lo stesso segno che l'ordinamento dei task
+compra robustezza alle strade nuove, veicolata da due firme diverse.
+L'interazione è analizzata nella \cref{sec:arch-axis}.
+
+\paragraph{I pedoni si trasferiscono con facilità.}
+Il successo dei pedoni su Town05 (62.7 contro 63.0\%) supera i
+risultati hard di entrambi i bracci su Town03 di $\approx 30$\,pp ---
+i percorsi test da \SI{80}{m} sono più fattibili dei percorsi hard da
+\SI{100}{m} di Town03, indicando ancora la fattibilità dei percorsi,
+non la generalizzazione della policy, come collo di bottiglia dei
+pedoni (\cref{sec:ped-limits}).
+
+% Fonti: campaign_consolidation.json; delta ricalcolati 2026-07-16.
+\section{Asse architetturale: critic MLP vs GNN}
+\label{sec:arch-axis}
+
+L'asse secondario sostituisce solo l'encoder del critic
+(\cref{sec:critic-encoders}); actor, reward, ambiente e budget sono
+identici, quindi le differenze tra le colonne MLP e GNN delle tabelle
+precedenti misurano come la \emph{stima del valore} plasma ciò che gli
+stessi actor apprendono. Ne seguono due letture: l'effetto proprio
+dell'architettura entro ogni regime e --- la domanda H3 --- se
+l'effetto di regime sopravviva al cambio di critic.
+
+\paragraph{L'effetto di regime dipende dal critic.}
+La \cref{tab:interaction} condensa il risultato centrale della
+campagna. Sotto il critic MLP, il curriculum batte il batch con un
+margine ampio e coerente tra gli strati. Sotto il critic GNN lo stesso
+contrasto quasi svanisce: $+2.5$\,pp complessivi in valutazione ---
+dentro la banda di rumore a seed identico della \cref{sec:iterations}
+--- ed esattamente zero in-domain, dove i due bracci GNN sono gemelli
+statistici (media scenari Town03 43.60 contro 43.67\%). L'unica
+componente del vantaggio del curriculum che \emph{si replica in
+entrambe le architetture} è quella out-of-distribution: $+19.0$\,pp
+(MLP) e $+10.0$\,pp (GNN) su Town05. L'ipotesi H3 è quindi supportata
+nella sua forma forte: l'encoder del critic cambia non solo l'entità ma
+il luogo stesso dell'effetto di regime.
+
+\begin{table}[t]
+  \centering\small
+  \caption{L'interazione arch$\times$regime: SR veicoli
+  curriculum-meno-batch (pp) per strato di misura, entro ciascuna
+  architettura. Delta di valutazione dei pedoni aggiunto per
+  completezza.}
+  \label{tab:interaction}
+  \begin{tabular}{@{}lrr@{}}
+    \toprule
+    $\Delta$(curr.\ $-$ batch) & Coppia MLP & Coppia GNN \\
+    \midrule
+    Cumulativo di addestramento (veic.) & $+10.97$ & $+7.14$ \\
+    Valutazione complessiva (veic.) & $+18.50$ & $+2.48$ \\
+    Valutazione, media Town03 (veic.) & $+18.33$ & $-0.06$ \\
+    Valutazione, Town05 (veic.) & $+19.00$ & $+10.00$ \\
+    Valutazione complessiva (ped.) & $-1.92$ & $+10.35$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Da dove viene l'interazione.}
+La compressione è prodotta da due effetti architetturali asimmetrici,
+uno per regime. Entro il batch, il critic GNN \emph{aiuta}: $+3.1$\,pp
+in addestramento e $+9.3$\,pp in valutazione rispetto a MLP-batch,
+insieme alla dinamica entro la run più stabile della campagna (l'unica
+cella senza declino monotono dei quartili e con la più piccola erosione
+controllata per livello, \cref{tab:quartiles}). È coerente con il
+meccanismo che motiva i critic CTDE in primo luogo (\cref{sec:marl}):
+sotto una distribuzione mista con sei agenti interagenti, la stima
+strutturata del valore per agente dovrebbe aiutare di più dove il
+segnale di apprendimento è più rumoroso --- cioè il regime batch dal
+passo~0. Entro il curriculum, il critic GNN rimodella più che
+migliorare: evita l'equilibrio difensivo (\cref{sec:defensive-case}),
+sblocca hard per competenza anziché per cap di pressione
+(\cref{sec:sample-efficiency}), vede $\approx 40$\% episodi hard in più
+--- e converte tutto questo in mobilità e contatto anziché in successo
+(collisione in valutazione 22.9 contro 10.4\%, SR $-6.7$\,pp rispetto a
+MLP-curriculum). I pedoni mostrano l'interazione speculare: il critic
+GNN li solleva sotto curriculum ($+12.0$\,pp in valutazione, la miglior
+cella pedoni della campagna al 59.0\%) ma non sotto batch
+($-0.3$\,pp).
+
+\paragraph{La firma di aprile non ricompare.}
+La lettura qualitativa del pilota (\cref{sec:pilot}) ---
+GNN-curriculum come la cella più \emph{difensiva}, stallo massimo con
+contatto minimo --- si inverte sulla piattaforma sana: l'attuale
+GNN-curriculum è la cella curriculum \emph{meno} in stallo, con i tassi
+di contatto più alti. Una firma qualitativa misurata a SR di pavimento,
+in un ambiente pre-correzioni, non è sopravvissuta alle correzioni
+dell'ambiente --- un'altra istanza della regola di comparabilità tra
+ere della \cref{sec:bugs}, e un monito contro il leggere effetti di
+architettura da distribuzioni di task rotte.
+
+\paragraph{Avvertenze.}
+Tutto quanto sopra poggia su un contrasto appaiato per coppia di celle:
+il pattern di interazione è internamente coerente su quattro strati di
+misura ed entrambe le classi di agenti, ma le sue grandezze portano la
+consueta qualifica $n{=}1$ (\cref{sec:threats}). Il delta complessivo
+di $+2.5$\,pp della coppia GNN esplicitamente \emph{non} è rivendicato
+come vantaggio del curriculum; il risultato rivendicato è il suo
+contrasto con la coppia MLP e la componente Town05 replicata tra le
+architetture.
+
+% Fonti: campaign_consolidation.json (diagnostica percorsi ped. + SR
+% per livello, tutte e quattro le celle, ricalcolato 2026-07-16).
+\section{Limiti strutturali dei pedoni}
+\label{sec:ped-limits}
+
+I risultati dei pedoni vanno letti contro un vincolo che nessun regime
+di addestramento può rimuovere: la topologia dei marciapiedi di Town03
+spesso non può fornire il task nominale.
+
+\paragraph{Le diagnostiche sono invarianti per regime e architettura.}
+In tutte e quattro le celle le diagnostiche di generazione dei percorsi
+pedonali sono statisticamente indistinguibili --- percorsi under-target
+55.1--55.9\% dei record, flag too-short 7.9--9.2\%, percorsi da respawn
+13.4--14.1\%, e sorgenti divise in $\approx$40\% catene con
+attraversamenti / $\approx$46\% catene di solo marciapiede. Questa
+invarianza è il punto: questi numeri sono proprietà della mappa e del
+planner (\cref{sec:routes}), non delle policy, e fissano quindi un
+soffitto comune per ogni cella. La guardia di retrocessione
+\texttt{route\_short}, al contrario, scatta quasi mai (0.6\% dei record
+pedoni): i percorsi degeneri corti sono rari; i percorsi \emph{più
+corti del nominale ma sopra la guardia} sono la norma.
+
+\paragraph{Il successo collassa con la distanza target --- ovunque.}
+L'SR pedoni in addestramento cala monotonicamente con il livello in
+ogni cella (easy 70--83\%, medium 53--60\%, hard 29--44\%), e la
+valutazione a distribuzione appaiata riproduce il gradiente (easy
+58--72\%, medium 41--54\%, hard 27--40\%;
+\cref{tab:eval-mlp,tab:eval-gnn}). Un collasso che sopravvive a due
+architetture, due regimi e due strati di misura, mentre le diagnostiche
+dei percorsi restano costanti, è guidato dalla geometria del task: a
+target nominali di \SI{100}{m}, più della metà dei percorsi generati
+non può nemmeno raggiungere la lunghezza target, e quelli che la
+raggiungono richiedono lunghe catene di marciapiede fattibili che
+Town03 spesso non ha.
+
+\paragraph{Il controfattuale Town05.}
+Lo scenario test rende concreta l'attribuzione: su Town05 con target di
+\SI{80}{m}, l'SR pedoni balza a 54--71\% in ogni cella --- da 15 a
+31\,pp \emph{sopra} il risultato hard su Town03 di ciascuna cella, su
+una mappa mai vista in addestramento. Se il collasso medium/hard fosse
+un limite di policy, strade mai viste dovrebbero nuocere, non aiutare;
+invece una topologia di marciapiedi più trattabile recupera gran parte
+della perdita. Il vincolo stringente è la fattibilità, non la
+generalizzazione.
+
+\paragraph{Che cosa resta attribuibile alla policy.}
+Entro l'inviluppo di fattibilità, le differenze di policy sono visibili
+e coerenti con la \cref{sec:final-performance}: il passo di camminata
+copre 1.45--1.96 m/s tra le celle (tutte dentro la banda di comfort),
+le collisioni dei pedoni sono trascurabili ovunque (0.2--0.3\% --- i
+pedoni falliscono per tempo e percorso, non per contatto), e una cella
+si separa dal gruppo in valutazione (GNN-curriculum, SR pedoni 59.0\%
+contro 47--49\% altrove), un filo ripreso nella \cref{sec:arch-axis}.
+La conseguenza metodologica resta comunque: i tassi di successo
+medium/hard dei pedoni non sono una misura pulita della qualità della
+policy su questa piattaforma --- questa tesi confronta quindi i pedoni
+solo entro livello e tra bracci, e la riparazione della generazione dei
+percorsi è elencata come lavoro futuro (\cref{ch:conclusions}).
+
+\section{Risultati rispetto alle ipotesi}
+\label{sec:findings}
+
+La \cref{tab:hypotheses} chiude il capitolo rispetto alle ipotesi della
+\cref{sec:rq}. Due cose sopravvivono a ogni cella, ogni strato ed
+entrambe le architetture: il vantaggio del curriculum sulla mappa mai
+vista, e il ruolo del regime come variabile della policy \emph{veicolo}
+che rimodella la composizione dei fallimenti. Ciò che non è
+sopravvissuto è l'aspettativa popolare da entrambi i lati: il
+curriculum non ha appreso più in fretta all'inizio, e la copertura più
+ampia del batch non ha comprato robustezza.
+
+\begin{table}[t]
+  \centering\small
+  \caption{Ipotesi contro evidenza (contrasti appaiati, $n{=}1$ per
+  cella; delta in pp di SR veicoli salvo diversa indicazione).}
+  \label{tab:hypotheses}
+  \begin{tabular}{@{}p{2.2cm}p{4.6cm}p{2.2cm}p{4.0cm}@{}}
+    \toprule
+    Ipotesi & Predizione & Verdetto & Evidenza \\
+    \midrule
+    H1 (curriculum) & migliore efficienza campionaria \emph{iniziale} & rigettata &
+      decollo identico in tutte e quattro le celle (50\% a finestra a
+      162--175K passi; \cref{sec:sample-efficiency}) \\
+    & prestazione finale più alta & supportata sotto MLP; non sotto GNN
+      in-domain &
+      $+18.5$ (MLP) vs.\ $+2.5$ (GNN) in valutazione;
+      \cref{tab:interaction} \\
+    & rischio di plateau / oblio su hard & rimodellato &
+      l'erosione tardiva è reale ma \emph{di piattaforma}, anche nelle
+      celle batch; $\Delta$Q1$\to$Q4 controllato per livello da $-6$ a
+      $-19$\,pp (\cref{tab:quartiles}) \\
+    \addlinespace
+    H2 (batch) & piena copertura dal passo 0 & confermata (meccanica) &
+      tutti i livelli entro i primi 20 episodi; mix realizzato
+      $\approx$ uniforme (\cref{tab:runmatrix}) \\
+    & segnale iniziale più rumoroso & non visibile &
+      stesso decollo del curriculum sul mix più difficile
+      (\cref{sec:sample-efficiency}) \\
+    & copertura $\to$ robustezza su mappa nuova & rigettata &
+      calo su Town05 uguale o peggiore del curriculum in entrambe le
+      coppie ($-15.8$/$-18.0$ vs.\ $-15.1$/$-7.9$\,pp;
+      \cref{sec:generalization}) \\
+    \addlinespace
+    H3 (interazione) & l'effetto di regime può dipendere dall'encoder
+      del critic &
+      supportata (forma forte) &
+      effetto in-domain $+18.3$ (MLP) vs.\ $-0.1$ (GNN); solo la
+      componente Town05 si replica ($+19.0$/$+10.0$;
+      \cref{tab:interaction}) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Formulato come risposta alla domanda di ricerca: l'ordinamento dei task
+\emph{produce} un comportamento di guida multi-agente misurabilmente
+diverso a parità di budget --- ma non dove i curricula vengono di
+solito pubblicizzati. Non ha accelerato l'apprendimento iniziale; ha
+cambiato ciò a cui la policy veicolo è convergiuta (cauta-e-in-stallo
+contro veloce-e-in-collisione), ha lasciato i pedoni essenzialmente
+intatti, il suo vantaggio di successo in-domain esiste solo sotto il
+critic MLP, e il suo beneficio più portabile --- coerente in entrambe
+le architetture del critic --- è la robustezza su strade mai viste in
+addestramento. Ogni affermazione quantitativa qui sopra eredita la
+qualifica $n{=}1$-per-cella della \cref{sec:campaign};
+l'interpretazione di questi risultati è ripresa nel
+\cref{ch:discussion}.

@@ -64,8 +64,9 @@ the repository (\texttt{docs/EXPERIMENT\_REGISTRY.md}).
 \chapter{Full Configuration}
 \label{app:hyperparams}
 
-The three configuration files below are verbatim snapshots (2026-07-14)
-of the campaign trunk; the per-run \texttt{run\_config.json} written at
+The three configuration files below are snapshots (2026-07-14) of the
+campaign trunk, with comment lines re-wrapped and translated to English
+for presentation --- all keys and values are unchanged; the per-run \texttt{run\_config.json} written at
 launch is the authoritative record for any individual run and was used to
 verify that campaign cells differ only in the two experimental flags
 (\cref{sec:campaign}). The traffic and mixed level families in
@@ -190,7 +191,8 @@ i7-10870H (8 cores / 16 threads), \SI{16}{GB} RAM, NVIDIA GeForce RTX
 3080 Laptop GPU (\SI{8}{GB}), Windows 11. The resource envelope is part
 of the study's design constraints: it motivates the $3\times10^{5}$-step
 diagnostic budget of the gate protocol (\cref{sec:gate}) and the
-$n=3$-seed ceiling of the campaign.
+reduction of the campaign to a single seed per cell
+(\cref{sec:campaign}).
 
 \paragraph{Code version.}
 The campaign trunk is commit \texttt{7defb03} (merge of the crosswalk-cap
@@ -204,15 +206,15 @@ in this thesis is recomputed.
 Training (one per campaign cell; the four cells vary only
 \texttt{--mode} and \texttt{--use-gnn}):
 \begin{quote}\small\ttfamily
-python -m carla\_core.training.train\_carla\_mappo --mode curriculum
---difficulty path --timesteps 3000000 --seed 999 [--use-gnn]
+python -m carla\_core.training.train\_carla\_mappo --mode curriculum\\
+\hspace*{2em}--difficulty path --timesteps 3000000 --seed 999 [--use-gnn]
 \end{quote}
 Training writes a \texttt{final\_eval\_job.json} into the run directory;
 the final 400-episode evaluation (\cref{sec:eval-pipeline}) is launched
 with:
 \begin{quote}\small\ttfamily
-python -m carla\_core.training.evaluate\_carla\_mappo --job
-<run\_dir>/final\_eval\_job.json
+python -m carla\_core.training.evaluate\_carla\_mappo\\
+\hspace*{2em}--job <run\_dir>/final\_eval\_job.json
 \end{quote}
 Static recomputation from logs and thesis figures:
 \begin{quote}\small\ttfamily
