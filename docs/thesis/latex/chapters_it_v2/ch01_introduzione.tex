@@ -1,0 +1,239 @@
+% ============================================================
+% v2 — Capitolo 1: Introduzione
+% Blocco I di IV (intro -> progetto -> evoluzioni -> conclusione)
+% Budget: ~4 pagine. Include i fondamenti essenziali, ridotti a
+% ciò che serve effettivamente nei capitoli successivi.
+% ============================================================
+\chapter{Introduzione}
+\label{ch:intro}
+
+\section{Motivazione e domanda di ricerca}
+\label{sec:motivazione}
+
+L'apprendimento per rinforzo (\emph{reinforcement learning}, RL)
+addestra politiche di controllo per tentativi ed errori, e in qualunque
+dominio non banale il progettista incontra una decisione di scheduling
+prima ancora del primo passo di gradiente: quando i task da padroneggiare
+coprono un intervallo di difficoltà, \emph{in quale ordine vanno
+presentati}? Due risposte sono naturali e opposte. Il \emph{curriculum
+learning} li presenta dal facile al difficile, sulla falsariga della
+pedagogia umana: si costruisce competenza dove il successo è
+raggiungibile, poi la si estende. L'\emph{addestramento misto}
+(mixed-batch) li presenta tutti fin dall'inizio, ed è l'analogo diretto
+dell'addestramento su un dataset mescolato, default indiscusso
+dell'apprendimento supervisionato.
+
+Le due strategie consumano lo stesso budget di calcolo: scegliere tra
+loro è, in linea di principio, gratuito. Se la scelta cambia ciò che la
+policy appresa fa, allora è tra le leve più economiche a disposizione di
+chi progetta un sistema di RL --- ed è anche tra le meno caratterizzate
+nei contesti \emph{multi-agente}, dove quasi nessuna delle assunzioni
+della letteratura sui curricula (apprendista singolo, reward sparse,
+ambiente stazionario) continua a valere.
+
+La guida autonoma urbana è un banco di prova esigente per porre la
+domanda: offre un asse di difficoltà naturale e continuo (la lunghezza
+del percorso), agenti eterogenei con vincoli fisici diversi, una
+tensione strutturale tra prestazione e sicurezza --- le policy più
+veloci completano più percorsi \emph{e} urtano più cose --- e un test
+out-of-distribution canonico, guidare su una città mai vista in
+addestramento. È inoltre intrinsecamente multi-agente: le policy non si
+limitano a condividere un mondo, ma plasmano l'ambiente l'una
+dell'altra mentre apprendono.
+
+\begin{quote}
+  \emph{Il curriculum learning da easy a medium a hard produce un
+  comportamento di guida multi-agente misurabilmente diverso rispetto
+  all'addestramento mixed-batch, a parità di budget di addestramento?}
+\end{quote}
+
+La domanda riguarda deliberatamente il \emph{comportamento} e non una
+singola classifica di tassi di successo: il confronto è valutato lungo
+quattro assi --- efficienza campionaria iniziale, prestazione finale con
+la sua composizione dei fallimenti, dinamica entro la run e
+generalizzazione a una mappa nuova --- sempre separando veicoli e
+pedoni. Tre ipotesi falsificabili strutturano l'analisi:
+
+\begin{itemize}
+  \item \textbf{H1 (curriculum).} L'esposizione graduale produce una
+        migliore efficienza campionaria iniziale, perché i task facili
+        offrono successi raggiungibili da cui partire; con il rischio
+        noto di plateau od oblio sui task difficili introdotti tardi.
+  \item \textbf{H2 (misto).} L'esposizione uniforme copre l'intera
+        distribuzione dei task dal passo zero, al costo di un segnale
+        iniziale più rumoroso; il suo payoff atteso è la robustezza.
+  \item \textbf{H3 (interazione, secondaria).} L'entità --- forse la
+        direzione --- dell'effetto di regime può dipendere da come viene
+        stimato il valore: nelle architetture ad addestramento
+        centralizzato è il \emph{critic} a digerire la struttura
+        multi-agente, e sostituirne l'encoder può cambiare ciò che
+        l'ordinamento produce.
+\end{itemize}
+
+\section{Fondamenti essenziali}
+\label{sec:fondamenti}
+
+Questa sezione introduce solo i concetti effettivamente usati nel
+seguito, ciascuno alla profondità alla quale serve.
+
+\paragraph{RL, valore e vantaggio.}
+Il RL formalizza la decisione sequenziale come processo decisionale di
+Markov $(\mathcal{S}, \mathcal{A}, P, r, \gamma)$~\cite{sutton2018rl}:
+un agente agisce tramite una policy $\pi(a \mid s)$ e massimizza il
+ritorno atteso scontato
+$J(\pi) = \mathbb{E}_{\pi}[\sum_{t \geq 0} \gamma^{t} r(s_t,a_t)]$. Lo
+sconto fissa un orizzonte decisionale effettivo di $\approx 1/(1-\gamma)$
+passi: non è una costante cosmetica, perché la piattaforma del
+\cref{ch:piattaforma} usa $\gamma = 0.997$, cioè $\approx 333$ passi, su
+episodi lunghi fino a mille passi. Il \emph{vantaggio}
+$A^{\pi}(s,a) = Q^{\pi}(s,a) - V^{\pi}(s)$ misura quanto un'azione sia
+migliore della media della policy in quello stato, e il teorema del
+gradiente di policy fornisce
+$\nabla_{\theta} J = \mathbb{E}_{\pi_\theta}[\nabla_{\theta}\log\pi_{\theta}(a_t\mid s_t)\,A^{\pi}(s_t,a_t)]$.
+Poiché stimare $A$ con ritorni Monte Carlo grezzi produce alta varianza,
+si sottrae una baseline appresa: i metodi \emph{actor--critic}
+addestrano perciò l'actor $\pi_\theta$ e il critic $V_\phi$ --- e questa
+divisione del lavoro è l'aggancio all'architettura multi-agente, perché
+il critic è un dispositivo del solo addestramento e può quindi ricevere
+informazione che l'actor non vede mai.
+
+\paragraph{PPO, GAE ed entropia.}
+Gli aggiornamenti di gradiente ``vanilla'' sono fragili, perché un
+singolo passo troppo grande può far collassare una policy funzionante.
+PPO~\cite{schulman2017ppo} lo evita con un obiettivo surrogato clippato:
+detto $\rho_t(\theta) = \pi_{\theta}(a_t\mid s_t)/\pi_{\theta_{\text{old}}}(a_t\mid s_t)$
+il rapporto di importanza,
+\begin{equation}
+  L^{\mathrm{CLIP}}(\theta) =
+  \mathbb{E}_t\!\left[\min\bigl(\rho_t A_t,\;
+  \operatorname{clip}(\rho_t,\, 1-\varepsilon,\, 1+\varepsilon)\, A_t\bigr)\right],
+\end{equation}
+il che rimuove ogni incentivo a spostare il rapporto oltre
+$[1-\varepsilon, 1+\varepsilon]$ e permette più epoche di gradiente su
+ogni batch senza aggiornamenti distruttivi. I vantaggi $A_t$ provengono
+da GAE~\cite{schulman2016gae}, che con i residui temporali
+$\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$ pone
+$A_t = \sum_{l \geq 0} (\gamma\lambda)^{l}\delta_{t+l}$, dove $\lambda$
+scambia bias e varianza tra il TD a un passo e i ritorni Monte Carlo, e
+la cui qualità dipende direttamente da quella del critic. Un bonus di
+entropia sostiene infine l'esplorazione penalizzando il collasso
+prematuro della policy.
+
+\paragraph{MARL, CTDE e MAPPO.}
+Con $N$ agenti in un unico ambiente l'MDP si generalizza a un
+\emph{gioco di Markov}, e sorgono due difficoltà strutturali. La prima è
+la \emph{non-stazionarietà}: dal punto di vista di ciascun agente gli
+altri sono parte dell'ambiente e stanno apprendendo, quindi la dinamica
+effettiva cambia nel tempo e l'esperienza raccolta sotto vecchie policy
+dei co-giocatori diventa fuorviante~\cite{lowe2017maddpg}. La seconda è
+l'\emph{attribuzione del merito}: il ritorno di ogni agente dipende
+dalle azioni di tutti. La risoluzione ormai standard sfrutta la
+divisione actor--critic: si addestrano i critic con accesso a
+informazione globale, mantenendo gli actor condizionati sulle sole
+osservazioni locali~\cite{lowe2017maddpg}. Il critic assorbe la
+non-stazionarietà, mentre l'esecuzione resta pienamente decentralizzata
+perché i critic vengono scartati dopo l'addestramento: è il paradigma
+\emph{centralized training, decentralized execution} (CTDE), usato in
+tutta questa tesi. MAPPO~\cite{yu2022surprising} lo istanzia con actor
+PPO e funzione di valore centralizzata, e Yu et al.\ mostrano che questa
+combinazione minimale eguaglia o supera i metodi off-policy sui
+benchmark cooperativi standard purché i dettagli implementativi siano
+corretti --- fra i quali proprio il design dell'input del critic. Nel
+critic più semplice quell'input è la concatenazione piatta delle
+osservazioni di tutti gli agenti; le alternative strutturate le trattano
+come nodi di un grafo, ed è il confronto tra queste due famiglie a
+costituire l'asse secondario di questa tesi (\cref{sec:critic}).
+
+\paragraph{Curriculum learning e la sua condizione di controllo.}
+L'idea che l'apprendimento migliori quando gli esempi sono presentati in
+un ordine sensato precede il deep learning: gli esperimenti
+\emph{starting small} di Elman mostrarono reti ricorrenti capaci di
+apprendere una grammatica complessa solo quando la complessità
+dell'input cresceva incrementalmente~\cite{elman1993starting}, e Bengio
+et al.~\cite{bengio2009curriculum} diedero poi alla strategia il nome di
+curriculum learning, inquadrandola come metodo di continuazione in cui
+gli esempi facili definiscono una versione più liscia dell'obiettivo.
+Nel RL il progettista controlla non solo
+l'ordine dei dati ma la distribuzione dei \emph{task}, il che rende i
+curricula al tempo stesso più potenti e più difficili da progettare;
+nella tassonomia della survey di Narvekar et
+al.~\cite{narvekar2020curriculum} il meccanismo della \cref{sec:regimi}
+è uno schema di \emph{sequenziamento} basato sulla prestazione su un
+insieme fisso di task. La motivazione riguarda in larga parte
+l'esplorazione: sui task difficili una policy debole può non
+sperimentare praticamente mai il successo, e quindi non ricevere segnale
+di apprendimento. Tre modi di fallimento noti hanno plasmato il design
+del \cref{ch:piattaforma} --- l'\emph{oblio} della competenza precedente
+sotto distribuzione spostata~\cite{french1999catastrophic}, lo
+\emph{stallo} su un gate mai soddisfatto e la \emph{mis-calibrazione}
+del gate stesso --- e sono esattamente i rischi che H1 mette alla prova.
+Ogni affermazione sull'ordinamento richiede però una baseline in cui
+esso è \emph{assente}, ed è la condizione che il braccio batch
+implementa.
+
+\paragraph{Il simulatore CARLA.}
+CARLA~\cite{dosovitskiy2017carla} è un simulatore open-source di guida
+urbana su Unreal Engine~4, distribuito come server che ospita mondo e
+fisica e pilotato da client via API Python. Conta qui per tre ragioni
+(versione 0.9.16 ovunque): la \emph{modalità sincrona a passo fisso}
+rende la raccolta di esperienza indipendente dal rendering; i pedoni
+sono attori \emph{walker} ad azionamento diretto, il che rende possibile
+apprenderne le policy; e le città fornite differiscono \emph{in natura}
+e non solo in dimensione --- l'addestramento usa \emph{Town03}, ``a
+larger, urban map with a roundabout and large junctions'', il test di
+generalizzazione \emph{Town05}, una ``squared-grid town with cross
+junctions and a bridge'' a più corsie per direzione~\cite{carladocs}.
+Anche in modalità sincrona e con tutti i seed fissati, infine, CARLA
+sotto carico multi-agente non è deterministico da run a run: una
+variabilità irriducibile quantificata e usata come metro per ogni
+effetto riportato (\cref{sec:gate}).
+
+\section{Approccio, contributi e struttura}
+\label{sec:approccio}
+
+Tutti gli esperimenti girano su Town03, con Town05 riservata al solo
+test di generalizzazione. Sei agenti apprendono simultaneamente in un
+unico mondo condiviso --- tre veicoli e tre pedoni, ciascuno con un
+percorso proprio a ogni episodio --- un design che chiamiamo
+\emph{copertura parallela dei task} e che è la cornice fissa di entrambi
+i bracci sperimentali, non una variabile. Le policy sono addestrate con
+MAPPO in regime CTDE, con una policy condivisa per classe e un critic
+centralizzato che vede le osservazioni di tutti gli agenti solo durante
+l'addestramento; la difficoltà è la lunghezza target del percorso
+(30/60/\SI{100}{m}) e il successo è il completamento rigoroso del
+percorso assegnato.
+
+I due regimi condividono ogni componente tranne la regola di selezione
+del livello: il braccio \emph{curriculum} parte dal solo easy e sblocca
+i livelli successivi attraverso un gate di competenza a finestra, il
+braccio \emph{batch} alterna uniformemente tutti i livelli fin dal primo
+episodio. La campagna finale è un fattoriale $2 \times 2$ --- \{critic
+MLP, critic GNN\} $\times$ \{curriculum, batch\} --- di quattro run da
+tre milioni di passi a seed singolo appaiato, ciascuna seguita da una
+valutazione di 400 episodi che include Town05. Con una run per cella
+ogni contrasto è un caso di studio appaiato, letto contro una banda di
+varianza misurata su repliche a seed identico; il contrasto primario è
+però osservato \emph{due volte}, una per architettura del critic.
+Anticipando il \cref{ch:risultati}: la clausola di efficienza di H1 e
+quella di robustezza di H2 falliscono entrambe, mentre H3 regge in forma
+forte.
+
+I contributi sono quattro: \textbf{(i)} un framework di confronto
+controllato a parità di budget, con run appaiate per seed e regole di
+misura rigorose per agente; \textbf{(ii)} una metodologia di sviluppo
+guidata da gate con un registro onesto di modifiche promosse, rigettate
+e consapevolmente mantenute, in cui i difetti di validità dell'ambiente
+--- incluso uno che ha spostato la metrica principale di $\approx 50$
+punti percentuali senza alcun cambiamento di policy --- sono documentati
+con le loro firme di rilevamento; \textbf{(iii)} una caratterizzazione
+empirica di che cosa fa l'ordinamento dei task, ossia nessun effetto di
+efficienza iniziale ma selezione tra equilibri di guida
+qualitativamente diversi; e \textbf{(iv)} l'evidenza che gli effetti di
+regime sono condizionati dalla stima del valore.
+
+La tesi prosegue in quattro blocchi. I
+\cref{ch:piattaforma,ch:metodo,ch:risultati} descrivono il progetto:
+rispettivamente la piattaforma sperimentale, il metodo di misura con il
+design della campagna, e i risultati con la loro interpretazione. Il
+\cref{ch:evoluzioni} raccoglie le possibili evoluzioni del lavoro e il
+\cref{ch:conclusioni} conclude.

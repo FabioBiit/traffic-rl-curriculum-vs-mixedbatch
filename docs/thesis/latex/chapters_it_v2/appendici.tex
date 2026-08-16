@@ -1,0 +1,172 @@
+% ============================================================
+% v2 — Appendici A–B (snelle, fuori conteggio pagine)
+% A: iperparametri e configurazione (tabellati anziché dump YAML)
+% B: riproducibilità
+% Valori verificati dagli snapshot in latex/configs/ (2026-07-14).
+% ============================================================
+
+\chapter{Osservazioni e reward per componente}
+\label{app:obs-reward}
+
+Le due tabelle che seguono danno il dettaglio per componente degli spazi
+di osservazione (\cref{sec:osservazioni}) e della funzione di reward
+(\cref{sec:reward}), la cui struttura e il cui razionale sono descritti
+nel \cref{ch:piattaforma}. Tutti i valori sono verificati dal codice del
+trunk di campagna.
+
+\input{chapters_it_v2/tab_obs_reward}
+
+\chapter{Registro condensato degli esperimenti}
+\label{app:registro}
+
+La \cref{tab:candidati} elenca i candidati valutati durante la fase di
+sviluppo guidata da gate (\cref{sec:gate}) con il verdetto e l'esito di
+sintesi. Le run A/B sono da $3\times10^{5}$ passi, seed 999, bloccate su
+easy salvo diversa indicazione; i delta sono rispetto alla baseline
+appaiata della loro era e \emph{non} sono confrontabili tra versioni
+dell'ambiente (\cref{sec:validita}). Il registro completo, con
+meccanismi e identificatori di run per candidato, è mantenuto nel
+repository.
+
+\begin{table}[h]
+  \centering\small
+  \caption{Registro condensato dei candidati.}
+  \label{tab:candidati}
+  \begin{tabular}{@{}p{4.0cm}p{2.4cm}p{2.3cm}p{3.9cm}@{}}
+    \toprule
+    Candidato & Tipo & Verdetto & Sintesi \\
+    \midrule
+    Correzione lunghezza percorsi & bug fix & adottato & $\approx +50$\,pp SR (cambio di distribuzione) \\
+    Correzione seed percorsi & bug fix & adottato & ripristina l'appaiamento A/B \\
+    Osservabilità 47D & osservazione & adottato & baseline sana, var.\ spiegata 0.983 \\
+    Blocco di reward shaping anti-stallo & reward & promosso & nucleo della \cref{sec:reward} \\
+    Rimozione guardia di progresso & reward & promosso & SR $+4.7$\,pp, s$+$t $-3.5$\,pp \\
+    Tolleranza hazard $0.75 \to 0.85$ & reward & promosso & 5/5: SR $+2.3$\,pp, s$+$t $-3.0$\,pp \\
+    Tetto attraversamenti $8 \to 3$ & percorsi & promosso & SR $+9.2$\,pp, coll.\ $-2.3$\,pp, off.\ $-2.2$\,pp \\
+    Schedule di entropia a frazione & ottimizzatore & promosso & meccanismo stabile, nessuna instabilità \\
+    Riparazione value loss & ottimizzatore & mantenuto (gate fallito) & var.\ spiegata $0 \to 0.87$; collisione $+3.3$\,pp \\
+    Sconto $0.99 \to 0.997$ & ottimizzatore & mantenuto (falsificato) & timeout $\to$ collisione $\approx$ 1:1 \\
+    Penalità di collisione $\times 10$ & reward & mantenuto (falsificato) & collisione piatta: limite di percezione, non di peso \\
+    Terminazione precoce da stuck & dinamica env & rigettato & SR $-2.9$\,pp, s$+$t $+7.1$\,pp \\
+    Retuning banda di passo pedoni & reward & rigettato & overshoot peggiore; declino in Q4 \\
+    \texttt{route\_short} come successo & misura & revertito & violava il criterio di successo \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\chapter{Configurazione e iperparametri}
+\label{app:config}
+
+La \cref{tab:iperparametri} riporta la configurazione completa delle
+quattro run di campagna. Tutti i valori sono identici tra le celle a
+meno dei due flag sperimentali (\texttt{mode} e \texttt{use\_gnn}),
+proprietà verificata con un diff diretto dei \texttt{run\_config.json}
+scritti al lancio, che restano il riferimento autoritativo per ogni
+singola run. Le famiglie di livelli per densità di traffico e miste sono
+definite in configurazione ma inutilizzate in questa tesi
+(\cref{sec:campagna}).
+
+\begin{table}[h]
+  \centering\small
+  \caption{Configurazione delle run di campagna.}
+  \label{tab:iperparametri}
+  \begin{tabular}{@{}llp{6.4cm}@{}}
+    \toprule
+    Gruppo & Parametro & Valore \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Ottimizzazione (PPO/MAPPO)}} \\
+    & learning rate & $5\times10^{-4}$ \\
+    & $\gamma$ & 0.997 \\
+    & GAE $\lambda$ & 0.95 \\
+    & clip PPO $\varepsilon$ & 0.2 \\
+    & penalità KL & attiva; target 0.02, coefficiente iniziale 0.3 \\
+    & gradient clipping & 0.5 \\
+    & \texttt{vf\_clip\_param} & $10^{6}$ (clamp non vincolante) \\
+    & \texttt{vf\_loss\_coeff} & 0.05 \\
+    & coefficiente di entropia & schedule a frazione del budget: $0.03$ a $0.0$, $0.005$ a $0.83$ \\
+    \addlinespace
+    \multicolumn{3}{@{}l}{\emph{Rollout e batching}} \\
+    & frammento di rollout & 200 passi \\
+    & batch di addestramento & 8{.}000 passi \\
+    & minibatch SGD & 256 \\
+    & epoche SGD per batch & 15 \\
+    & budget totale & $3\times10^{6}$ passi d'ambiente \\
+    & frequenza di checkpoint & ogni $10^{5}$ passi \\
+    \addlinespace
+    \multicolumn{3}{@{}l}{\emph{Modello}} \\
+    & actor (entrambe le classi) & MLP, 2 strati nascosti da 256 \\
+    & critic MLP & $225 \to 256 \to 256 \to 1$ \\
+    & critic GNN & embedding di nodo 64, 2 layer di message passing, aggregazione a media, ELU \\
+    & PopArt, attenzione & disabilitati \\
+    \addlinespace
+    \multicolumn{3}{@{}l}{\emph{Curriculum}} \\
+    & finestra di competenza & 50 episodi (deve essere piena) \\
+    & metrica di sblocco & minimo dell'SR a finestra sulle due policy \\
+    & soglia medium / hard & 0.70 / 0.60 \\
+    & quota minima di budget & easy $\geq 0.20$ prima di medium; medium $\geq 0.28$ prima di hard \\
+    & cap di pressione & medium al 30\% del budget, hard al 70\% \\
+    & pesi di campionamento & $1.00 / 1.17 / 1.17$ ($\to 0.30/0.35/0.35$) \\
+    & vincoli di budget & easy $\leq 0.30$, medium $\leq 0.35$, hard $\geq 0.35$ \\
+    & probation & 2 blocchi dopo lo sblocco (1 dopo un cap); peso hard $0.85$ \\
+    \addlinespace
+    \multicolumn{3}{@{}l}{\emph{Batch}} \\
+    & campionamento & mescolamento stratificato senza reinserimento, finestra 3 \\
+    \addlinespace
+    \multicolumn{3}{@{}l}{\emph{Livelli (difficoltà = lunghezza percorso)}} \\
+    & easy / medium / hard & Town03, \SI{30}{m} / \SI{60}{m} / \SI{100}{m} \\
+    & test (solo valutazione) & Town05, \SI{80}{m} \\
+    & traffico NPC & 15 veicoli, 30 pedoni in ogni livello \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\chapter{Riproducibilità}
+\label{app:riproducibilita}
+
+\paragraph{Stack software.}
+CARLA 0.9.16 (server e API Python); Python 3.11.9; PyTorch 2.7
+(CUDA 12.6); Ray/RLlib 2.10.0. Addestramento e simulatore girano sulla
+stessa macchina.
+
+\paragraph{Hardware.}
+Tutte le run sono state eseguite su una singola macchina di classe
+laptop: Intel Core i7-10870H (8 core / 16 thread), \SI{16}{GB} di RAM,
+NVIDIA GeForce RTX 3080 Laptop GPU (\SI{8}{GB}), Windows 11.
+L'inviluppo di risorse è parte dei vincoli di design dello studio:
+motiva il budget diagnostico da $3\times10^{5}$ passi del protocollo di
+gate (\cref{sec:gate}) e la riduzione della campagna a un singolo seed
+per cella (\cref{sec:campagna}).
+
+\paragraph{Versione del codice e dati grezzi.}
+Il trunk di campagna è il commit \texttt{7defb03}; i commit successivi
+fino alla stesura di questa tesi toccano solo documentazione e tooling
+di visualizzazione. Ogni directory di run conserva il proprio
+\texttt{run\_config.json}, i checkpoint e \texttt{episodes.jsonl} --- i
+record grezzi a livello di agente da cui ogni numero di questa tesi è
+ricalcolato. Le quattro run di campagna sono
+\texttt{20260622\_171626} (MLP-curriculum),
+\texttt{20260623\_171855} (MLP-batch),
+\texttt{20260630\_181143} (GNN-curriculum) e
+\texttt{20260714\_155209} (GNN-batch).
+
+\paragraph{Comandi.}
+Addestramento (uno per cella; le quattro celle variano solo
+\texttt{--mode} e \texttt{--use-gnn}):
+\begin{quote}\small\ttfamily
+python -m carla\_core.training.train\_carla\_mappo --mode curriculum\\
+\hspace*{2em}--difficulty path --timesteps 3000000 --seed 999 [--use-gnn]
+\end{quote}
+L'addestramento scrive un \texttt{final\_eval\_job.json} nella directory
+della run; la valutazione finale a 400 episodi si lancia con:
+\begin{quote}\small\ttfamily
+python -m carla\_core.training.evaluate\_carla\_mappo\\
+\hspace*{2em}--job <run\_dir>/final\_eval\_job.json
+\end{quote}
+
+\paragraph{Seed.}
+Campagna: un unico seed di esperimento (999), appaiato tra le quattro
+celle; i seed dei percorsi per agente ne derivano deterministicamente
+(\cref{sec:mondo}). Si noti che il seeding \emph{non} rende identiche le
+run CARLA (\cref{sec:minacce}): riproducibilità qui significa riprodurre
+la \emph{distribuzione} degli esiti, e ogni aggregato riportato a
+partire dai log archiviati.

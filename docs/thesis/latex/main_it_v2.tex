@@ -1,0 +1,208 @@
+% ============================================================
+% Curriculum vs Mixed-Batch Training in MARL for Urban Driving
+% Tesi di laurea triennale — VERSIONE 2 (italiano, 30 pagine)
+%
+% Struttura in quattro blocchi:
+%   I   Introduzione            (cap. 1)
+%   II  Il progetto             (cap. 2–4)
+%   III Possibili evoluzioni    (cap. 5)
+%   IV  Conclusioni             (cap. 6)
+% Frontespizio, sommario, indice, acronimi, appendici e bibliografia
+% sono FUORI dal conteggio delle 30 pagine di contenuto.
+%
+% Build: pdflatex main_it_v2 + biber main_it_v2 + pdflatex x2
+%        (oppure: latexmk -pdf main_it_v2)
+% ============================================================
+\documentclass[12pt,a4paper,oneside]{report}
+
+% --- Encoding & language ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[english,italian]{babel}
+\usepackage{csquotes}
+
+% --- Layout ---
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{microtype}
+
+% --- Math, tables, units, figures ---
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{verbatim}
+\usepackage{siunitx}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+
+% --- Bibliography ---
+\usepackage[style=numeric-comp,sorting=none,backend=biber]{biblatex}
+\addbibresource{bibliography.bib}
+
+% --- Colors, links, cross-references (hyperref near the end) ---
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+% Le stringhe italiane di cleveref sono incomplete (niente "chapter") e
+% vengono applicate a \begin{document}, sovrascrivendo definizioni date
+% nel preambolo. Registriamo quindi le nostre DOPO il suo hook.
+\AtBeginDocument{%
+  \crefname{chapter}{Capitolo}{Capitoli}%
+  \Crefname{chapter}{Capitolo}{Capitoli}%
+  \crefname{section}{Sezione}{Sezioni}%
+  \Crefname{section}{Sezione}{Sezioni}%
+  \crefname{subsection}{Sezione}{Sezioni}%
+  \Crefname{subsection}{Sezione}{Sezioni}%
+  \crefname{figure}{Figura}{Figure}%
+  \Crefname{figure}{Figura}{Figure}%
+  \crefname{table}{Tabella}{Tabelle}%
+  \Crefname{table}{Tabella}{Tabelle}%
+  \crefname{equation}{Equazione}{Equazioni}%
+  \Crefname{equation}{Equazione}{Equazioni}%
+  \crefname{appendix}{Appendice}{Appendici}%
+  \Crefname{appendix}{Appendice}{Appendici}%
+}
+
+% --- Note di lavoro: marcatori TODO rossi, rimuovere prima della consegna ---
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% Le tabelle di questa tesi sono dense: si allarga la tolleranza sui
+% float per evitare pagine mezze vuote in attesa di collocamento.
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.75}
+\renewcommand{\textfraction}{0.1}
+\renewcommand{\floatpagefraction}{0.8}
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{4}
+
+% ============================================================
+\begin{document}
+
+% Front matter: numeri di pagina romani (il frontespizio conta come i);
+% la numerazione araba riparte dal Capitolo 1.
+\pagenumbering{roman}
+
+% ----------------- Frontespizio (template ufficiale UniMarconi) --
+\begin{titlepage}
+  \centering
+  \includegraphics[height=2.0cm]{logo_unimarconi}\par
+  \vspace{1.5cm}
+  {\large\bfseries UNIVERSIT\`A DEGLI STUDI GUGLIELMO MARCONI\par}
+  \vspace{0.9cm}
+  {\bfseries DIPARTIMENTO DI INGEGNERIA\par}
+  \vspace{0.9cm}
+  {\bfseries CORSO DI LAUREA IN INTELLIGENZA ARTIFICIALE (L-8)\par}
+  \vfill
+  {\Large\itshape ``Curriculum e mixed-batch learning a
+  confronto nel Reinforcement Learning multi-agente per la guida
+  autonoma in ambiente simulato urbano''\par}
+  \vfill
+  {\large
+   \begin{minipage}[t]{0.50\textwidth}
+     \raggedright
+     Relatore:\\[1.2em]
+     Prof.\ Stefano Aldegheri
+   \end{minipage}%
+   \hfill
+   \begin{minipage}[t]{0.40\textwidth}
+     \raggedright
+     Candidato:\\[1.2em]
+     Fabio Carapelle
+   \end{minipage}\par}
+  \vfill
+  {\footnotesize ANNO ACCADEMICO 2025/2026\par}
+\end{titlepage}
+% l'ambiente titlepage azzera il contatore; il frontespizio conta come i
+\setcounter{page}{2}
+
+% ----------------- Sommario ---------------------------------
+\clearpage
+\null\vfil
+\begin{center}%
+  \bfseries \abstractname
+\end{center}
+L'ordine in cui i task di addestramento vengono presentati è una
+decisione di progetto nell'apprendimento per rinforzo i cui effetti sono
+raramente isolati nei contesti multi-agente. Questa tesi confronta il
+\emph{curriculum learning} --- progressione da facile a difficile,
+condizionata dalla competenza misurata --- con l'addestramento
+\emph{mixed-batch}, che alterna uniformemente tutte le difficoltà, per
+la guida urbana in CARLA, con sei agenti (tre veicoli e tre pedoni) che
+apprendono simultaneamente in un unico mondo condiviso con MAPPO e
+critic centralizzato. Una campagna $2\times2$ appaiata per seed incrocia
+i due regimi con due encoder del critic (MLP e GNN) a tre milioni di
+passi per run, su una piattaforma irrobustita da un protocollo di
+sviluppo guidato da gate e misurata con un criterio di successo
+rigoroso, con repliche a seed identico a fornire una banda di rumore
+esplicita.
+
+L'ordinamento dei task non ha accelerato l'apprendimento iniziale: tutte
+le celle hanno superato le stesse soglie di competenza agli stessi
+conteggi di passi. Ha invece selezionato \emph{che cosa} la policy è
+diventata. Con il critic MLP il curriculum ha prodotto un guidatore
+cauto e incline allo stallo, il batch uno veloce e incline alle
+collisioni; sul criterio di successo il curriculum ha prevalso di
+$+18.5$ punti percentuali di successo dei veicoli in valutazione, con lo
+stesso segno in tutti gli scenari. Con il critic GNN l'effetto in-domain
+è svanito ($-0.1$\,pp) --- una forte interazione
+architettura$\times$regime --- mentre lo stesso encoder ha migliorato
+nettamente la cella batch. L'unica componente che si replica in entrambe
+le architetture è il vantaggio del curriculum su una città mai vista in
+addestramento ($+19.0$ e $+10.0$\,pp), contro l'intuizione che una
+copertura più ampia compri robustezza. I pedoni sono risultati vincolati
+dalla fattibilità dei percorsi più che dal regime. L'ordinamento dei
+task, in questo contesto, è un selettore di equilibri il cui beneficio
+in-domain dipende dalla stima del valore --- e il cui beneficio
+portabile è la generalizzazione.
+\par\vfil\null
+
+\tableofcontents
+
+% ----------------- Acronimi ---------------------------------
+\chapter*{Acronimi}
+\addcontentsline{toc}{chapter}{Acronimi}
+\begin{tabular}{ll}
+CTDE  & Centralized Training with Decentralized Execution \\
+GAE   & Generalized Advantage Estimation \\
+GNN   & Graph Neural Network \\
+MAPPO & Multi-Agent Proximal Policy Optimization \\
+MARL  & Multi-Agent Reinforcement Learning \\
+MLP   & Multi-Layer Perceptron \\
+NPC   & Non-Player Character (partecipante al traffico con comportamento scriptato) \\
+PPO   & Proximal Policy Optimization \\
+RL    & Reinforcement Learning \\
+SR    & Success Rate (tasso di successo) \\
+TM    & (CARLA) Traffic Manager \\
+\end{tabular}
+
+% ----------------- Corpo della tesi (30 pagine) --------------
+\clearpage
+\pagenumbering{arabic}
+
+% Blocco I — Introduzione
+\input{chapters_it_v2/ch01_introduzione}
+
+% Blocco II — Il progetto
+\input{chapters_it_v2/ch02_piattaforma}
+\input{chapters_it_v2/ch03_metodo}
+\input{chapters_it_v2/ch04_risultati}
+
+% Blocco III — Possibili evoluzioni
+\input{chapters_it_v2/ch05_evoluzioni}
+
+% Blocco IV — Conclusioni
+\input{chapters_it_v2/ch06_conclusioni}
+
+% ----------------- Appendici (fuori conteggio) ---------------
+\appendix
+\input{chapters_it_v2/appendici}
+
+% ----------------- Bibliografia (fuori conteggio) ------------
+\printbibliography[heading=bibintoc]
+
+\end{document}

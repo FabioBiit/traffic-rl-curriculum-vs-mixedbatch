@@ -1,0 +1,214 @@
+% ============================================================
+% v2 — Capitolo 3: Il progetto — metodo e campagna
+% Blocco II di IV. Budget: ~4 pagine.
+% Include, condensati: regole di misura, protocollo a gate,
+% i tre episodi di validità dell'ambiente (con il pilota di aprile
+% ridotto a un paragrafo) e il design della campagna 2x2.
+% ============================================================
+\chapter{Il progetto --- metodo e campagna}
+\label{ch:metodo}
+
+La piattaforma del \cref{ch:piattaforma} non è stata progettata in un
+solo passaggio: è il prodotto di una campagna iterativa in cui ogni
+modifica doveva superare un gate quantitativo predefinito prima di
+entrare nel trunk. Questo capitolo documenta le regole di misura
+(\cref{sec:metriche}), il protocollo di gate con il registro delle
+iterazioni (\cref{sec:gate}), i difetti di validità trovati e corretti
+lungo il percorso (\cref{sec:validita}) e il design della campagna di
+confronto finale (\cref{sec:campagna}).
+
+% ------------------------------------------------------------
+\section{Metriche e regole di misura}
+\label{sec:metriche}
+
+\paragraph{Unità di misura e integrità.}
+L'unità di analisi è il \emph{record a livello di agente}: una voce JSON
+per agente per episodio, sei per episodio. Tutti gli aggregati sono
+calcolati dopo deduplica per identificatore di episodio e di agente ---
+in valutazione lo scenario fa parte della chiave. Due condizioni di
+integrità sono imposte prima che qualunque numero venga riportato:
+esattamente sei record per episodio, e nessun valore non finito. Una run
+che fallisce una delle due non viene analizzata oltre.
+
+\paragraph{Criterio di successo rigoroso.}
+Un agente ha successo se e solo se la sua ragione di terminazione è
+\texttt{route\_complete}; in particolare \texttt{route\_short} ---
+raggiungere la fine di un percorso degenere troppo corto --- \emph{non}
+è successo. La regola è stata messa alla prova durante lo sviluppo, dove
+una modifica che contava \texttt{route\_short} come successo è stata
+introdotta e poi revertita, mantenendo il criterio rigoroso al costo di
+numeri assoluti più bassi. È un pregio, non un difetto: lontano dal
+pavimento e dal soffitto la metrica conserva spazio per muoversi in
+entrambe le direzioni.
+
+\paragraph{Tre viste di reporting.}
+Ogni risultato è riportato per veicoli e pedoni separatamente, più una
+vista combinata: le due classi hanno task, spazi di azione e limiti
+strutturali diversi, e il registro mostra effetti di regime che esistono
+per una sola classe. Il successo congiunto a livello di episodio non è
+mai usato, perché con agenti correlati compone i fallimenti in modo
+moltiplicativo e nasconde la struttura di classe. I valori cumulativi
+sono l'aggregazione primaria, il successo a finestra scorrevole è usato
+solo dal gate del curriculum, e la dinamica entro la run è mostrata
+dividendo l'addestramento in quartili (Q1--Q4). La \cref{tab:metriche}
+definisce le metriche usate nel \cref{ch:risultati}.
+
+\begin{table}[t]
+  \centering\small
+  \caption{Catalogo delle metriche. Tutti i tassi sono quote dei record
+  a livello di agente.}
+  \label{tab:metriche}
+  \begin{tabular}{@{}p{3.4cm}p{9.4cm}@{}}
+    \toprule
+    Metrica & Definizione \\
+    \midrule
+    Tasso di successo (SR) & record con \texttt{route\_complete} \\
+    Collisione / offroad & record con \texttt{collision} / \texttt{offroad} (offroad solo veicoli) \\
+    Stuck / timeout & record troncati con completamento $< 0.3$ o loop attivo / con completamento $\geq 0.3$; la somma s$+$t è il target primario anti-stallo \\
+    Completamento / efficienza di percorso & frazione di waypoint consumati; lunghezza ottima completata su distanza percorsa, con tetto a 1 e valore 0 per i record stuck \\
+    Velocità media & km/h per i veicoli, m/s per i pedoni \\
+    Diagnostica dei percorsi & quote di sorgente, flag under-target e too-short, attraversamenti, passi di non-progresso \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ------------------------------------------------------------
+\section{Protocollo di sviluppo guidato da gate}
+\label{sec:gate}
+
+La varianza da run a run in questo ambiente è grande e il budget di
+calcolo non permetteva di replicare ogni modifica candidata. Il
+protocollo adottato in risposta ha quattro regole. \textbf{(1) Una
+manopola alla volta}: ogni candidato è un diff stretto e isolato
+comportamentalmente --- un singolo termine di reward, una singola
+soglia, un singolo gruppo di osservazioni. \textbf{(2) A/B appaiato a
+budget diagnostico fisso}: ogni candidato gira per $3\times10^{5}$ passi
+contro la baseline corrente del trunk, con lo stesso seed e --- grazie al
+seeding deterministico dei percorsi (\cref{sec:mondo}) --- una sequenza
+di percorsi appaiata per costruzione; le run di sviluppo erano bloccate
+su easy salvo quando il candidato riguardava il curriculum stesso.
+\textbf{(3) Un gate
+quantitativo predefinito}: per le modifiche orientate ai veicoli il
+candidato è promosso solo se, rispetto alla baseline appaiata, l'SR
+veicoli migliora di almeno $+2.0$\,pp, stuck$+$timeout migliora di
+almeno $-2.0$\,pp, collisione e offroad peggiorano ciascuno di non più
+di $+1.0$\,pp, ed entrambe le condizioni di integrità valgono; le
+modifiche che toccano macchinari condivisi portano una condizione
+laterale \emph{must-not-collapse} sull'altra classe, e un gate fallito
+significa revert. \textbf{(4) Meccanismo ed esito registrati
+separatamente}: il registro annota se il meccanismo inteso si è
+verificato e se il gate comportamentale è passato --- i due spesso
+dissentono, e alcune manopole che hanno fallito il gate sono state
+consapevolmente mantenute, con l'ipotesi registrata come falsificata,
+perché revertirle avrebbe ripristinato un difetto o perché il
+fallimento stesso era informativo.
+
+Lo sviluppo è proceduto in sei fasi; il registro completo dei candidati
+è nell'\cref{app:registro}. Un \emph{pilota architetturale} di nove run
+(aprile 2026) ha incrociato encoder del critic e regimi nell'era
+pre-correzioni: i dati erano integri, ma i veicoli restavano a un tasso
+di successo prossimo a zero (0.2--3.9\%) in ogni cella, rendendo il
+confronto non informativo e reindirizzando lo sforzo verso la validità
+dell'ambiente. Sono seguite una fase di \emph{correttezza}, una di
+\emph{osservabilità} (feature veicolo consapevoli del percorso, poi
+l'estensione a 47D che chiude il gap di aliasing di stato), una
+sequenza di \emph{iterazioni su ottimizzatore e reward} dagli esiti
+misti, una fase sull'\emph{accoppiamento tra classi} --- pedoni più
+veloci saturano il canale di hazard dei veicoli e possono spingerli in
+un equilibrio difensivo a velocità zero attraverso il gate
+\texttt{safe\_to\_push}, risolto alzandone la soglia da 0.75 a 0.85 ---
+e infine la \emph{meccanica del curriculum}, con l'ultima modifica
+entrata nel trunk prima della campagna: il tetto agli attraversamenti
+pedonali portato da otto a tre.
+
+Un ultimo dato di questa fase è il metro di tutta la tesi. Tre repliche
+a lunghezza piena ($3\times10^{6}$ passi) dell'\emph{identico} trunk
+pre-campagna, con codice, configurazione e seed byte-identici, hanno
+prodotto tassi di successo cumulativi dei veicoli tra 52.2 e 62.4\%:
+CARLA sotto carico multi-agente non è deterministico da run a run
+nemmeno in modalità sincrona con tutti i seed fissati. Questa banda di
+$\sim$10\,pp è il riferimento contro cui ogni effetto del
+\cref{ch:risultati} viene letto, e motiva sia il design appaiato sia la
+cautela attribuita ai delta a replica singola.
+
+% ------------------------------------------------------------
+\section{Validità dell'ambiente: bug trovati e corretti}
+\label{sec:validita}
+
+In una piattaforma multi-agente custom l'apparato di misura è parte
+dell'esperimento. Tre episodi durante lo sviluppo hanno prodotto
+apparenti effetti di policy che erano in realtà artefatti; sono
+riportati qui sia perché hanno plasmato il protocollo finale, sia perché
+le loro firme di rilevamento possono essere utili ad altri.
+
+\paragraph{Lunghezza dei percorsi: un cambio di distribuzione dei task.}
+Il route planner poteva emettere percorsi molto più lunghi del target di
+livello, quindi episodi nominalmente ``easy'' spesso non erano facili.
+Imporre i limiti $[0.5, 2.0]\times$ il target (\cref{sec:percorsi}) ha
+spostato l'SR cumulativo di addestramento dei veicoli di
+$\approx +50$\,pp \emph{senza alcuna modifica alla policy o alla
+reward}, e il pavimento dei veicoli del pilota di aprile è stato poi
+ricondotto proprio a questo difetto. È l'evidenza interna più forte per
+una regola usata in tutta la tesi: \emph{mai confrontare numeri assoluti
+tra versioni dell'ambiente; ancorare le affermazioni a contrasti
+appaiati entro una versione}.
+
+\paragraph{Seeding dei percorsi: appaiamento rotto.}
+I seed dei percorsi per agente derivavano originariamente dalla
+\texttt{hash()} built-in di Python, che è salata per processo: due run
+nominalmente identiche estraevano sequenze di percorsi \emph{diverse},
+degradando silenziosamente ogni confronto A/B. La correzione deriva i
+seed da una \texttt{SeedSequence} esplicita (\cref{sec:mondo}); la
+lezione è che l'appaiamento va costruito e verificato, non assunto.
+
+\paragraph{Pipeline di valutazione: collasso della misura.}
+La prima valutazione di checkpoint ha restituito un tasso di successo
+esattamente del 33.33\% in \emph{ogni} scenario: uno dei tre veicoli a
+completare, ogni episodio. Questo pattern troppo pulito per essere vero
+ha esposto quattro difetti accoppiati: il seed di scenario per episodio
+era costante, quindi ogni episodio rigiocava la stessa configurazione di
+traffico; la policy era valutata sulla sua media deterministica,
+collassando la gaussiana su una singola traiettoria; il sottoprocesso
+non inizializzava mai il logger; e il seed torch era costante tra i
+sottoprocessi. Tutti e quattro sono stati corretti e il protocollo
+stocastico della \cref{sec:critic} è diventato lo standard; nessuna di
+queste correzioni tocca l'addestramento, e nessuna affermazione di
+policy è derivata da esse. La lezione generale: la validità della misura
+va stabilita \emph{prima} del tuning, e risultati implausibilmente
+regolari sono un segnale di rilevamento, non una buona notizia.
+
+% ------------------------------------------------------------
+\section{Design della campagna finale}
+\label{sec:campagna}
+
+L'esperimento finale è un fattoriale $2 \times 2$ --- \{encoder del
+critic MLP, GNN\} $\times$ \{curriculum, mixed-batch\} --- di quattro
+run da $3\times10^{6}$ passi ciascuna, tutte sullo stesso trunk
+congelato, con un unico seed (999) appaiato tra le quattro celle e la
+difficoltà definita dalla lunghezza del percorso. Le configurazioni sono
+byte-identiche tra le celle salvo i due flag sperimentali. Il design era
+originariamente dimensionato a tre seed appaiati per cella; l'asse di
+replicazione è stato eliminato per ragioni di budget di calcolo, poiché
+ogni run occupa l'unica macchina disponibile per circa due giorni
+(\cref{app:riproducibilita}). La riduzione è dichiarata qui anziché
+nascosta: con un seed per cella, ogni contrasto del \cref{ch:risultati}
+è un \emph{caso di studio appaiato}, non la stima di una distribuzione.
+
+\paragraph{Contrasti.}
+Il contrasto primario è curriculum contro mixed-batch \emph{entro}
+architettura, ed è osservato \emph{due volte} --- una per ciascuna
+architettura del critic, addestrata indipendentemente --- quindi la
+replicazione tra architetture sostituisce in parte quella sui seed: un
+effetto che compare con lo stesso segno in entrambe le coppie è molto
+più difficile da attribuire al rumore di quanto lo sarebbe un contrasto
+singolo. Il contrasto secondario è critic MLP contro GNN \emph{entro}
+regime; la lettura dell'interazione (H3) è solo direzionale a questa
+dimensione campionaria. Nessuna inferenza statistica formale è
+rivendicata: gli effetti sono letti contro la banda delle repliche a
+seed identico della \cref{sec:gate}.
+
+La campagna \emph{non} mette invece alla prova: famiglie di difficoltà
+basate sulla densità di traffico o su assi misti; l'encoder del critic ad
+attenzione e la normalizzazione PopArt (disponibili, disabilitati);
+architetture degli actor (sempre MLP); ablazioni del numero di agenti
+(sempre $3+3$); o coppie di mappe oltre Town03 $\to$ Town05.

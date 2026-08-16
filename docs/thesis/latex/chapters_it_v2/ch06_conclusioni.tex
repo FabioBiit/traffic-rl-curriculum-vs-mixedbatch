@@ -1,0 +1,81 @@
+% ============================================================
+% v2 — Capitolo 6: Conclusioni
+% Blocco IV di IV. Budget: ~2 pagine.
+% ============================================================
+\chapter{Conclusioni}
+\label{ch:conclusioni}
+
+Questa tesi ha chiesto se ordinare i task di addestramento dal facile al
+difficile produca un comportamento di guida multi-agente misurabilmente
+diverso rispetto al presentare tutte le difficoltà insieme, a parità di
+budget, in un ambiente CARLA a mondo condiviso addestrato con MAPPO. La
+risposta è sì --- ma non lungo l'asse su cui i curricula vengono di
+solito proposti.
+
+\paragraph{L'ordinamento non ha accelerato l'apprendimento.}
+Tutte e quattro le celle della campagna hanno raggiunto le stesse soglie
+iniziali di competenza agli stessi conteggi di passi, con uno scarto
+sotto l'8\% (\cref{sec:efficienza}), e questo pur avendole superate su
+mix di difficoltà completamente diversi. La spiegazione più plausibile è
+che il reward shaping denso di questa piattaforma fornisca già segnale
+di apprendimento anche sui task difficili, rendendo superfluo l'avvio
+graduale: una condizione di scope su H1, non una confutazione del
+curriculum learning in generale.
+
+\paragraph{L'ordinamento ha selezionato ciò che la policy è diventata.}
+Sotto il critic MLP il curriculum ha prodotto un guidatore cauto e
+incline allo stallo e il batch uno veloce e incline alle collisioni; sul
+criterio di successo rigoroso lo scambio si è risolto a favore del
+curriculum di $+18.5$\,pp in valutazione, coerentemente in tutti e
+quattro gli scenari (\cref{sec:prestazione}). L'ordinamento dei task
+agisce cioè da \emph{selettore di equilibri} sul trade-off
+velocità--sicurezza, più che da acceleratore.
+
+\paragraph{L'effetto è condizionato dalla stima del valore.}
+Sotto un critic GNN l'effetto di regime in-domain è svanito
+($-0.1$\,pp) mentre l'architettura ha recuperato la cella batch e
+rimodellato la cella curriculum: una forte interazione
+architettura$\times$regime (\cref{sec:asse-arch}). Il regime di
+addestramento non è quindi una leva indipendente dal resto dello stack,
+e riportarne l'effetto senza dichiarare l'architettura del critic è
+riportarne solo metà.
+
+\paragraph{Il beneficio portabile è la generalizzazione.}
+L'unica componente del vantaggio del curriculum replicata in entrambe le
+architetture è il margine su una città mai vista in addestramento
+($+19.0$ e $+10.0$\,pp su Town05), ottenuta contro l'intuizione
+copertura-implica-robustezza che motivava H2
+(\cref{sec:generalizzazione}). È il risultato che questa tesi difende
+con più forza, perché è l'unico osservato due volte in modo
+indipendente.
+
+\paragraph{Specificità di classe e limiti della piattaforma.}
+I pedoni sono risultati in larga parte insensibili al regime, vincolati
+dalla fattibilità dei percorsi più che dalla qualità della policy
+(\cref{sec:pedoni}); e ogni cella ha mostrato erosione tardiva entro la
+run a livello di task fissato, indipendente dal regime
+(\cref{sec:dinamica}). Le scelte di regime calibrate sulla classe forte
+non vanno assunte trasferibili alla debole.
+
+\bigskip
+
+Oltre ai risultati, la tesi contribuisce l'apparato che li ha resi
+misurabili: un framework di confronto a parità di budget con
+configurazioni appaiate per seed e byte-identiche; un protocollo di
+sviluppo guidato da gate con un registro esplicito di modifiche
+promosse, rigettate e consapevolmente mantenute; un resoconto
+documentato di come i difetti di validità dell'ambiente possano
+mascherarsi da effetti di policy, con le loro firme di rilevamento; e un
+metro di varianza da repliche a seed identico contro cui ogni
+affermazione viene letta. In un contesto in cui un singolo bug del
+simulatore ha spostato la metrica principale di cinquanta punti
+percentuali senza che nulla cambiasse nella policy, questa disciplina di
+misura --- e non un singolo numero --- è ciò che rende il confronto
+significativo.
+
+Resta il limite che la tesi dichiara apertamente e che il
+\cref{ch:evoluzioni} mette in cima all'elenco: con una run per cella,
+ogni contrasto è un caso di studio appaiato letto contro una banda di
+rumore, non la stima di una distribuzione. La replicazione sui seed
+della matrice $2\times2$ è il passo che trasformerebbe le conclusioni
+qui riportate da direzioni ben corroborate in effetti quantificati.

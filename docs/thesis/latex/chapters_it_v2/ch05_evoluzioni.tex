@@ -1,0 +1,100 @@
+% ============================================================
+% v2 — Capitolo 5: Possibili evoluzioni
+% Blocco III di IV. Budget: ~2 pagine.
+% Le sette direzioni della v1 (§7.2), riorganizzate in tre gruppi
+% per prossimità al lavoro svolto anziché in lista piatta.
+% ============================================================
+\chapter{Possibili evoluzioni}
+\label{ch:evoluzioni}
+
+Le direzioni che seguono sono ordinate per prossimità: prima quelle che
+consolidano l'evidenza già raccolta, poi quelle che rimuovono i limiti
+noti della piattaforma, infine quelle che estendono la domanda a un
+terreno nuovo. Le prime due categorie sono realizzabili sul codice
+esistente e su un budget di calcolo confrontabile con quello di questa
+tesi, la terza no.
+
+\section{Consolidare l'evidenza}
+\label{sec:evo-evidenza}
+
+\paragraph{Replicazione dei seed.}
+È l'estensione più diretta e la più importante. Il design è stato
+tagliato da tre seed appaiati per cella a uno per ragioni di calcolo
+(\cref{sec:campagna}), e questa riduzione è la fonte principale di
+cautela in tutta la tesi. Rieseguire la matrice $2\times2$ a $n{=}3$
+trasformerebbe i casi di studio appaiati in stime di distribuzione e
+metterebbe alla prova direttamente l'entità dell'interazione
+architettura$\times$regime, che è oggi il risultato più forte e al tempo
+stesso il meno replicato. Il costo è noto e lineare: otto run da tre
+milioni di passi in aggiunta alle quattro esistenti.
+
+\paragraph{Spiegare l'erosione.}
+La degradazione entro la run controllata per livello
+(\cref{tab:quartili}) è presente in tutte le celle e dimezzata sotto il
+critic relazionale, e la tesi ne identifica due cause candidate senza
+poterle separare. Due ablazioni mirate lo farebbero: congelare una
+classe di agenti a metà addestramento isolerebbe la co-adattazione tra
+classi, e spostare l'ancora dell'annealing di entropia isolerebbe lo
+schedule di esplorazione. Entrambe sono modifiche di poche righe sulla
+piattaforma esistente e girano al budget diagnostico del protocollo di
+gate.
+
+\paragraph{Selezione del checkpoint.}
+Poiché i numeri finali sottostimano i picchi di metà addestramento in
+ogni cella (\cref{sec:discussione}), un'analisi che valuti il
+\emph{miglior} checkpoint anziché l'ultimo direbbe se l'ordinamento dei
+task cambi anche il punto in cui la competenza culmina, e non solo
+quello in cui atterra. I checkpoint intermedi sono già su disco: è
+un'estensione della sola pipeline di valutazione.
+
+\section{Rimuovere i limiti della piattaforma}
+\label{sec:evo-piattaforma}
+
+\paragraph{Generazione dei percorsi pedonali.}
+Con più della metà dei percorsi pedonali sotto target su Town03
+(\cref{sec:pedoni}), un planner consapevole della fattibilità ---
+esplorazione più profonda delle ramificazioni, target adattivi per
+regione di spawn, rinuncia esplicita quando la topologia locale non
+sostiene la distanza richiesta --- è la correzione d'ambiente a maggior
+leva: renderebbe interpretabili i tassi di successo medium e hard che
+questa tesi è costretta a leggere solo entro livello, oggi vincolati da
+un soffitto comune a tutte le celle.
+
+\paragraph{Co-design di reward e curriculum.}
+Il tuning della reward guidato da gate è girato per lo più su
+configurazioni bloccate su easy (\cref{sec:minacce}), quindi lo shaping
+del trunk può essere implicitamente sbilanciato verso i percorsi corti.
+Ricalibrare i termini chiave sul mix completo quantificherebbe quanto
+dell'effetto di regime sia mediato dalla calibrazione della reward, e
+metterebbe alla prova la spiegazione avanzata per il fallimento di H1.
+
+\section{Estendere la domanda}
+\label{sec:evo-estensioni}
+
+\paragraph{Estensioni architetturali sul critic.}
+L'infrastruttura espone già encoder basati su attenzione (GAT) e la
+normalizzazione del valore PopArt dietro flag di configurazione
+(\cref{sec:critic}). Vista la forza dell'interazione osservata con
+l'encoder del critic, queste non sono aggiunte esotiche ma le celle
+successive naturali della stessa matrice: se sostituire un MLP con un
+message passing a media sposta il \emph{luogo} dell'effetto di regime,
+la domanda immediatamente successiva è se un'aggregazione pesata da
+attenzione lo sposti ancora.
+
+\paragraph{Curricula adattivi.}
+Il gate di competenza di questa tesi è un sequenziatore fisso a due
+soglie. Curricula che adattano le quote di livello in continuo --- per
+esempio campionando in proporzione al progresso di apprendimento
+misurato per livello --- metterebbero alla prova se l'effetto di
+selezione dell'equilibrio sopravviva a un ordinamento a grana molto più
+fine, o se dipenda proprio dalla discontinuità degli sblocchi.
+
+\paragraph{Scalare la cornice.}
+La copertura parallela dei task è stata fissata a $3{+}3$ agenti.
+Scalare il mondo condiviso verso decine di agenti --- dove la struttura
+relazionale del critic GNN dovrebbe contare di più --- trasforma la
+cornice di coesistenza stessa in una variabile sperimentale, e sposta il
+lavoro dalla caratterizzazione di un effetto alla sua legge di scala. È
+l'unica direzione che richiede un'infrastruttura di calcolo
+sostanzialmente diversa da quella usata qui
+(\cref{app:riproducibilita}).

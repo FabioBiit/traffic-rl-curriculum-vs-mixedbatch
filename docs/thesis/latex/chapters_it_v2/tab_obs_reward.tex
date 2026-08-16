@@ -1,0 +1,59 @@
+\begin{table}[h]
+  \centering\small
+  \caption{Layout delle osservazioni. Le barre indicano costanti di
+  normalizzazione; le feature dei vicini sono nel sistema di riferimento
+  dell'ego. TTC $=$ time-to-collision.}
+  \label{tab:obs}
+  \begin{tabular}{@{}llp{8.0cm}@{}}
+    \toprule
+    Dim. & Gruppo & Contenuto \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Veicolo (47D)}} \\
+    0--12  & Ego e percorso   & velocità (/30), accelerazione (/10), modulo (/120 km/h), heading; distanza (/\SI{50}{m}) e bearing al waypoint successivo; offset laterale in corsia; progresso continuo \\
+    13--23 & Semaforo, vicini & flag e stato del semaforo; 3 veicoli più prossimi entro \SI{50}{m} (offset long.\ e lat.\ /50, velocità relativa /30) \\
+    24--33 & Anteprima e geometria & sterzo precedente; waypoint $+1/+3/+5$; errore di heading; angolo curva imminente; errore laterale con segno \\
+    34--43 & Pedoni e hazard  & 2 pedoni più prossimi, stesse 3 feature; rischio TTC e occupazione del corridoio, vs.\ veicoli e vs.\ pedoni \\
+    44--46 & Progresso/tempo  & passi senza progresso (/300); flag anti-loop; tempo rimanente \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Pedone (26D)}} \\
+    0--11  & Ego e waypoint   & posizione ($x,y$ /500, $z$ /50); velocità (/5); vettore frontale; distanza (/\SI{100}{m}) e bearing al waypoint; flag marciapiede \\
+    12--17 & Veicoli vicini   & 2 più prossimi entro \SI{50}{m}: stesse 3 feature \\
+    18--25 & Percorso e hazard & completamento; waypoint $+1/+3$ (/100); errore di heading; rischio TTC e occupazione vs.\ veicoli \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering\small
+  \caption{Componenti della reward. Le righe veicolo ``gated'' sono
+  sospese durante l'attesa a un semaforo rosso/giallo; le righe marcate
+  $^{\dagger}$ richiedono inoltre $\mathit{safe\_to\_push}$
+  ($\mathit{hazard} < 0.85$) e allineamento al percorso $> 0.25$.}
+  \label{tab:reward}
+  \begin{tabular}{@{}p{3.2cm}p{5.2cm}p{4.4cm}@{}}
+    \toprule
+    Componente & Trigger & Valore \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Veicolo}} \\
+    Waypoint raggiunto / saltato & per waypoint avanzato / saltato & $+100$ / $-10$ \\
+    Progresso denso       & variazione della distanza dal waypoint & $+4.0$ per metro guadagnato \\
+    Collisione            & primo contatto (terminale) & $-500$ \\
+    Fuori corsia / eccesso di velocità & $>$ \SI{2}{m} dal centro corsia \ / \ $v > 50$ km/h & $-0.5$ per metro \ / \ $-0.10$ per km/h \\
+    Inattività (gated)    & velocità $< 2.5$ km/h & $-0.15$ \\
+    Bonus di partenza (gated$^{\dagger}$) & acceleratore da fermo & $(0.20 + 0.30\,u)\cdot\text{thr}\cdot\text{align}$, freno simmetrico; $u = \min(\text{no-progress}/200, 1)$ \\
+    Shaping velocità minima (gated$^{\dagger}$) & velocità sotto / sopra 8 km/h & $-0.04\,(8 - v)\cdot\text{align}$ / $+0.15\cdot\text{align}$ \\
+    Rampa di non-progresso (gated) & $>$ 100 passi senza waypoint & $-0.004$ per passo, tetto $-1.0$ \\
+    Sterzo fluido / a strattoni & $|\Delta \text{steer}| < 0.1$ a $> 5$ km/h \ / \ $> 0.5$ & $+0.1$ / $-0.3$ \\
+    Anti-loop             & rilevatore di loop attivo & $-1.0$ \\
+    \midrule
+    \multicolumn{3}{@{}l}{\emph{Pedone}} \\
+    Waypoint raggiunto / saltato & per waypoint avanzato / saltato & $+50$ / $-10$ \\
+    Progresso denso       & variazione della distanza dal waypoint & $+2.0$ per metro guadagnato \\
+    Collisione            & primo contatto (terminale) & $-50$ \\
+    Marciapiede / carreggiata & per passo su marciapiede / corsia & $+0.2$ / $-0.3$ \\
+    Passo di camminata    & velocità $\in [1.2, 2.6]$ m/s & $+0.3$ \\
+    Inattività / corsa    & velocità $< 0.15$ m/s \ / \ $> 3.0$ m/s & $-0.15$ / $-0.7$ per m/s oltre \\
+    Anti-loop             & rilevatore di loop attivo & $-1.0$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
