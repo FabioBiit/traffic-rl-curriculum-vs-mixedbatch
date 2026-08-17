@@ -127,38 +127,32 @@
   \bfseries \abstractname
 \end{center}
 L'ordine in cui i task di addestramento vengono presentati è una
-decisione di progetto nell'apprendimento per rinforzo i cui effetti sono
+decisione di progetto nel Reinforcement Learning i cui effetti sono
 raramente isolati nei contesti multi-agente. Questa tesi confronta il
-\emph{curriculum learning} --- progressione da facile a difficile,
-condizionata dalla competenza misurata --- con l'addestramento
-\emph{mixed-batch}, che alterna uniformemente tutte le difficoltà, per
-la guida urbana in CARLA, con sei agenti (tre veicoli e tre pedoni) che
-apprendono simultaneamente in un unico mondo condiviso con MAPPO e
-critic centralizzato. Una campagna $2\times2$ appaiata per seed incrocia
-i due regimi con due encoder del critic (MLP e GNN) a tre milioni di
-passi per run, su una piattaforma irrobustita da un protocollo di
-sviluppo guidato da gate e misurata con un criterio di successo
-rigoroso, con repliche a seed identico a fornire una banda di rumore
-esplicita.
-
+\emph{curriculum learning} --- progressione dei task da facile, medio 
+a difficile, condizionata dalla competenza misurata --- con l'addestramento
+\emph{mixed-batch}, che alterna uniformemente tutte le difficoltà fin dall'inizio, 
+per la guida autonoma in un contesto urbano simulato (CARLA), con sei agenti 
+(tre veicoli e tre pedoni) che apprendono simultaneamente come muoversi in un unico 
+mondo condiviso sfruttando l'algoritmo MAPPO ed un critic centralizzato. 
+Una campagna $2\times2$ appaiata per seed incrocia i due regimi con due encoder 
+del critic (MLP e GNN) a tre milioni di passi per run, su una piattaforma irrobustita 
+da un protocollo di sviluppo guidato da gate e misurata con un criterio di successo
+rigoroso, con repliche a seed identico a fornire una banda di rumore esplicita.
 L'ordinamento dei task non ha accelerato l'apprendimento iniziale: tutte
 le celle hanno superato le stesse soglie di competenza agli stessi
 conteggi di passi. Ha invece selezionato \emph{che cosa} la policy è
-diventata. Con il critic MLP il curriculum ha prodotto un guidatore
-cauto e incline allo stallo, il batch uno veloce e incline alle
-collisioni; sul criterio di successo il curriculum ha prevalso di
-$+18.5$ punti percentuali di successo dei veicoli in valutazione, con lo
-stesso segno in tutti gli scenari. Con il critic GNN l'effetto in-domain
-è svanito ($-0.1$\,pp) --- una forte interazione
-architettura$\times$regime --- mentre lo stesso encoder ha migliorato
-nettamente la cella batch. L'unica componente che si replica in entrambe
-le architetture è il vantaggio del curriculum su una città mai vista in
-addestramento ($+19.0$ e $+10.0$\,pp), contro l'intuizione che una
-copertura più ampia compri robustezza. I pedoni sono risultati vincolati
-dalla fattibilità dei percorsi più che dal regime. L'ordinamento dei
-task, in questo contesto, è un selettore di equilibri il cui beneficio
-in-domain dipende dalla stima del valore --- e il cui beneficio
-portabile è la generalizzazione.
+diventata. Con il critic MLP/GNN il curriculum ha prodotto un guidatore
+cauto e con più successi, il batch invece uno veloce e incline alle collisioni;
+Sul criterio di successo, il curriculum ha prevalso di $+18.5$ punti percentuali ponderati
+in valutazione dei veicoli. In entrambe le architetture del critic il curriculum ha prevalso su una città
+mai vista in addestramento ($+19.0$ e $+10.0$\,pp). 
+I pedoni sono risultati vincolati dalla fattibilità dei percorsi più che dal regime e per questo 
+non sono stati tenuti prettamente "rilevanti" al fine della valutazione, ma sono stati considerati per
+evidenziare come diversi attori influenzino gli altri all'interno del mondo usando un criterio di CTDE. 
+L'ordinamento dei task, in questo contesto, è un selettore di equilibri il cui beneficio
+in-domain dipende dalla stima del valore --- e il cui output più evidente è la generalizzazione ed un tempo di 
+esecuzione della run minore a parità di budget a favore del training curriculum.
 \par\vfil\null
 
 \tableofcontents
