@@ -188,6 +188,7 @@ le traiettorie per quartile complessive, quello inferiore la traiettoria
   livelli (confuso dal mix per le celle curriculum). Sotto: solo episodi
   easy, controllato per livello (easy resta $\approx 30$\% del mix dopo
   gli sblocchi). $\Delta$ = Q4 $-$ Q1.}
+
   \label{tab:quartili}
   \begin{tabular}{@{}lrrrrr@{}}
     \toprule
@@ -208,21 +209,17 @@ le traiettorie per quartile complessive, quello inferiore la traiettoria
   \end{tabular}
 \end{table}
 
-\paragraph{Erosione, non solo indurimento del mix.}
+\paragraph{Erosione run}
 Il pannello controllato per livello mostra che l'indurimento del mix
 \emph{non} è tutta la storia: la prestazione a livello easy si erode
 entro ogni run, da $-6.4$\,pp (GNN-batch, la cella più stabile) a
-$-18.6$\,pp (MLP-batch). Le celle batch rendono il caso in modo pulito,
-perché la loro distribuzione dei task è costante e il loro declino è
-quindi interamente degradazione entro la run; i pedoni si erodono ancora
-di più, fino a $-31.8$\,pp. Due meccanismi candidati sono compatibili
+$-18.6$\,pp (MLP-batch). Due meccanismi candidati sono compatibili
 con i dati e non separabili a $n{=}1$: la co-adattazione tra classi,
-poiché il comportamento dei pedoni degrada in parallelo e alimenta il
+il comportamento dei pedoni degrada in parallelo e alimenta il
 canale di hazard dei veicoli, e l'annealing dell'entropia --- che però
 si completa solo dentro Q4, mentre l'erosione inizia già in Q3, e non
 può quindi esserne l'unica causa. La conclusione pulita è
-architetturale: sotto il critic GNN l'erosione è dimezzata o meglio,
-qualunque ne sia il driver.
+architetturale e si evince che sotto il critic GNN l'erosione è dimezzata.
 
 \paragraph{Due grammatiche del fallimento, un attrattore comune.}
 La velocità media ordina le quattro celle --- 10.2 (MLP-curr.), 18.0
@@ -231,8 +228,8 @@ da contatto seguono lo stesso ordine, mentre lo stallo anti-correla. Ciò
 che \emph{non} varia è la struttura interna dello stallo: in tutte e
 quattro le celle le terminazioni stuck si decompongono quasi
 identicamente e i passi medi di non-progresso coprono una banda stretta.
-Regimi e critic cambiano \emph{quanto} una policy stalla, non
-\emph{come} stalla. Coerentemente, il profilo lento-e-in-stallo
+Regimi e critic cambiano \emph{quanto} una policy si blocchi, non il
+\emph{come}. Coerentemente, il profilo lento-e-in-stallo
 appartiene a esattamente una cella, MLP-curriculum: la sua gemella sotto
 il critic GNN è quasi due volte più veloce con un terzo di stallo in
 meno, allo stesso SR principale. L'equilibrio cauto documentato durante
@@ -264,14 +261,7 @@ Il curriculum completa il 37.0\% dei percorsi su Town05 contro il 18.0\%
 del batch ($+19.0$\,pp): essenzialmente lo stesso margine in-domain. Il
 calo assoluto dalla media degli scenari Town03 è quasi identico per i
 due bracci ($-15.1$ contro $-15.8$\,pp), quindi il vantaggio del
-curriculum non è un'idiosincrasia di Town03: si trasferisce per intero
-su strade mai viste. Letta contro H2, la copertura iniziale più ampia
-del regime batch non gli ha comprato \emph{alcun} vantaggio di
-generalizzazione --- semmai il calo relativo è peggiore, dalla sua base
-più bassa ($-47$\% contro $-29$\%). Ogni braccio, inoltre, fallisce su
-Town05 nel modo in cui fallisce a casa, solo di più: la policy
-curriculum stalla (stuck$+$timeout 50.7\%), la policy batch si schianta
-(collisione 37.3\%).
+curriculum si trasferisce per intero su strade mai viste.
 
 \paragraph{Sotto il critic GNN il vantaggio esiste \emph{solo} fuori distribuzione.}
 La coppia GNN affila il punto. In-domain i due bracci sono gemelli
@@ -288,7 +278,7 @@ indicando ancora la fattibilità dei percorsi, non la generalizzazione
 della policy, come loro collo di bottiglia (\cref{sec:pedoni}).
 
 % ------------------------------------------------------------
-\section{Asse architetturale: critic MLP contro GNN}
+\section{Asse architetturale: critic MLP e GNN}
 \label{sec:asse-arch}
 
 L'asse secondario sostituisce solo l'encoder del critic; actor, reward,
@@ -302,6 +292,7 @@ actor apprendono.
   curriculum-meno-batch (pp) per strato di misura, entro ciascuna
   architettura. Il delta di valutazione dei pedoni è aggiunto per
   completezza.}
+
   \label{tab:interazione}
   \begin{tabular}{@{}lrr@{}}
     \toprule
@@ -425,7 +416,8 @@ architetture: il vantaggio del curriculum sulla mappa mai vista, e il
 ruolo del regime come variabile della policy \emph{veicolo} che rimodella
 la composizione dei fallimenti. Ciò che non è sopravvissuto è
 l'aspettativa popolare da entrambi i lati: il curriculum non ha appreso
-più in fretta all'inizio, e la copertura più ampia del batch non ha
+più in fretta all'inizio (però a parità di budget ha prodotto una policy più efficente 
+e con circa 1h in meno di addestramento totale), e la copertura più ampia del batch non ha
 comprato robustezza.
 
 % ------------------------------------------------------------

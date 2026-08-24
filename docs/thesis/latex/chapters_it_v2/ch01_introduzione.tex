@@ -13,29 +13,23 @@
 L'apprendimento per rinforzo (\emph{reinforcement learning}, RL)
 addestra politiche di controllo per tentativi ed errori, e in qualunque
 dominio non banale il progettista incontra una decisione di scheduling
-prima ancora del primo passo di gradiente: quando i task da padroneggiare
+prima ancora del primo passo del gradiente: quando i task da padroneggiare
 coprono un intervallo di difficoltà, \emph{in quale ordine vanno
 presentati}? Due risposte sono naturali e opposte. Il \emph{curriculum
 learning} li presenta dal facile al difficile, sulla falsariga della
 pedagogia umana: si costruisce competenza dove il successo è
 raggiungibile, poi la si estende. L'\emph{addestramento misto}
-(mixed-batch) li presenta tutti fin dall'inizio, ed è l'analogo diretto
-dell'addestramento su un dataset mescolato, default indiscusso
-dell'apprendimento supervisionato.
+(mixed-batch) invece li presenta tutti fin dall'inizio in modo casuale.
 
-Le due strategie consumano lo stesso budget di calcolo: scegliere tra
-loro è, in linea di principio, gratuito. Se la scelta cambia ciò che la
+A livello progettuale-sperimentale le due strategie consumano lo stesso 
+budget di calcolo. Se la scelta dell'approccio cambia ciò che la
 policy appresa fa, allora è tra le leve più economiche a disposizione di
-chi progetta un sistema di RL --- ed è anche tra le meno caratterizzate
-nei contesti \emph{multi-agente}, dove quasi nessuna delle assunzioni
-della letteratura sui curricula (apprendista singolo, reward sparse,
-ambiente stazionario) continua a valere.
+chi progetta un sistema di RL.
 
 La guida autonoma urbana è un banco di prova esigente per porre la
 domanda: offre un asse di difficoltà naturale e continuo (la lunghezza
 del percorso), agenti eterogenei con vincoli fisici diversi, una
-tensione strutturale tra prestazione e sicurezza --- le policy più
-veloci completano più percorsi \emph{e} urtano più cose --- e un test
+tensione strutturale tra prestazione e sicurezza più un test
 out-of-distribution canonico, guidare su una città mai vista in
 addestramento. È inoltre intrinsecamente multi-agente: le policy non si
 limitano a condividere un mondo, ma plasmano l'ambiente l'una
@@ -59,10 +53,10 @@ pedoni. Tre ipotesi falsificabili strutturano l'analisi:
         migliore efficienza campionaria iniziale, perché i task facili
         offrono successi raggiungibili da cui partire; con il rischio
         noto di plateau od oblio sui task difficili introdotti tardi.
-  \item \textbf{H2 (misto).} L'esposizione uniforme copre l'intera
+  \item \textbf{H2 (batch).} L'esposizione uniforme copre l'intera
         distribuzione dei task dal passo zero, al costo di un segnale
         iniziale più rumoroso; il suo payoff atteso è la robustezza.
-  \item \textbf{H3 (interazione, secondaria).} L'entità --- forse la
+  \item \textbf{H3 (encoder).} L'entità --- la
         direzione --- dell'effetto di regime può dipendere da come viene
         stimato il valore: nelle architetture ad addestramento
         centralizzato è il \emph{critic} a digerire la struttura
@@ -73,9 +67,6 @@ pedoni. Tre ipotesi falsificabili strutturano l'analisi:
 \section{Fondamenti essenziali}
 \label{sec:fondamenti}
 
-Questa sezione introduce solo i concetti effettivamente usati nel
-seguito, ciascuno alla profondità alla quale serve.
-
 \paragraph{RL, valore e vantaggio.}
 Il RL formalizza la decisione sequenziale come processo decisionale di
 Markov $(\mathcal{S}, \mathcal{A}, P, r, \gamma)$~\cite{sutton2018rl}:
@@ -85,20 +76,20 @@ $J(\pi) = \mathbb{E}_{\pi}[\sum_{t \geq 0} \gamma^{t} r(s_t,a_t)]$. Lo
 sconto fissa un orizzonte decisionale effettivo di $\approx 1/(1-\gamma)$
 passi: non è una costante cosmetica, perché la piattaforma del
 \cref{ch:piattaforma} usa $\gamma = 0.997$, cioè $\approx 333$ passi, su
-episodi lunghi fino a mille passi. Il \emph{vantaggio}
+episodi lunghi fino a 1000 passi. Il \emph{vantaggio}
 $A^{\pi}(s,a) = Q^{\pi}(s,a) - V^{\pi}(s)$ misura quanto un'azione sia
 migliore della media della policy in quello stato, e il teorema del
 gradiente di policy fornisce
 $\nabla_{\theta} J = \mathbb{E}_{\pi_\theta}[\nabla_{\theta}\log\pi_{\theta}(a_t\mid s_t)\,A^{\pi}(s_t,a_t)]$.
 Poiché stimare $A$ con ritorni Monte Carlo grezzi produce alta varianza,
 si sottrae una baseline appresa: i metodi \emph{actor--critic}
-addestrano perciò l'actor $\pi_\theta$ e il critic $V_\phi$ --- e questa
-divisione del lavoro è l'aggancio all'architettura multi-agente, perché
-il critic è un dispositivo del solo addestramento e può quindi ricevere
+addestrano l'actor $\pi_\theta$ e il critic $V_\phi$ --- e questa
+divisione del lavoro è l'aggancio all'architettura multi-agente, 
+il critic è un dispositivo attivo solo nel train e può quindi ricevere
 informazione che l'actor non vede mai.
 
 \paragraph{PPO, GAE ed entropia.}
-Gli aggiornamenti di gradiente ``vanilla'' sono fragili, perché un
+Gli aggiornamenti del gradiente ``vanilla'' sono fragili, perché un
 singolo passo troppo grande può far collassare una policy funzionante.
 PPO~\cite{schulman2017ppo} lo evita con un obiettivo surrogato clippato:
 detto $\rho_t(\theta) = \pi_{\theta}(a_t\mid s_t)/\pi_{\theta_{\text{old}}}(a_t\mid s_t)$
@@ -120,9 +111,9 @@ entropia sostiene infine l'esplorazione penalizzando il collasso
 prematuro della policy.
 
 \paragraph{MARL, CTDE e MAPPO.}
-Con $N$ agenti in un unico ambiente l'MDP si generalizza a un
-\emph{gioco di Markov}, e sorgono due difficoltà strutturali. La prima è
-la \emph{non-stazionarietà}: dal punto di vista di ciascun agente gli
+Con $N$ agenti in un unico ambiente l'MDP (Markov Decision Process) si 
+generalizza a un\emph{gioco di Markov}, e sorgono due difficoltà strutturali. 
+La prima è la \emph{non-stazionarietà}: dal punto di vista di ciascun agente gli
 altri sono parte dell'ambiente e stanno apprendendo, quindi la dinamica
 effettiva cambia nel tempo e l'esperienza raccolta sotto vecchie policy
 dei co-giocatori diventa fuorviante~\cite{lowe2017maddpg}. La seconda è
@@ -151,10 +142,10 @@ un ordine sensato precede il deep learning: gli esperimenti
 apprendere una grammatica complessa solo quando la complessità
 dell'input cresceva incrementalmente~\cite{elman1993starting}, e Bengio
 et al.~\cite{bengio2009curriculum} diedero poi alla strategia il nome di
-curriculum learning, inquadrandola come metodo di continuazione in cui
-gli esempi facili definiscono una versione più liscia dell'obiettivo.
+curriculum learning, inquadrandola come metodo di apprendimento in cui
+gli esempi facili favoriscono il raggiungimento dell'obiettivo.
 Nel RL il progettista controlla non solo
-l'ordine dei dati ma la distribuzione dei \emph{task}, il che rende i
+l'ordine dei dati, ma la distribuzione dei \emph{task}, il che rende i
 curricula al tempo stesso più potenti e più difficili da progettare;
 nella tassonomia della survey di Narvekar et
 al.~\cite{narvekar2020curriculum} il meccanismo della \cref{sec:regimi}
@@ -210,13 +201,7 @@ braccio \emph{batch} alterna uniformemente tutti i livelli fin dal primo
 episodio. La campagna finale è un fattoriale $2 \times 2$ --- \{critic
 MLP, critic GNN\} $\times$ \{curriculum, batch\} --- di quattro run da
 tre milioni di passi a seed singolo appaiato, ciascuna seguita da una
-valutazione di 400 episodi che include Town05. Con una run per cella
-ogni contrasto è un caso di studio appaiato, letto contro una banda di
-varianza misurata su repliche a seed identico; il contrasto primario è
-però osservato \emph{due volte}, una per architettura del critic.
-Anticipando il \cref{ch:risultati}: la clausola di efficienza di H1 e
-quella di robustezza di H2 falliscono entrambe, mentre H3 regge in forma
-forte.
+valutazione di 400 episodi che include Town05.
 
 I contributi sono quattro: \textbf{(i)} un framework di confronto
 controllato a parità di budget, con run appaiate per seed e regole di
@@ -236,4 +221,4 @@ La tesi prosegue in quattro blocchi. I
 rispettivamente la piattaforma sperimentale, il metodo di misura con il
 design della campagna, e i risultati con la loro interpretazione. Il
 \cref{ch:evoluzioni} raccoglie le possibili evoluzioni del lavoro e il
-\cref{ch:conclusioni} conclude.
+\cref{ch:conclusioni} le conclusioni.

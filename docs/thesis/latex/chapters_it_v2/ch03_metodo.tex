@@ -34,12 +34,11 @@ che fallisce una delle due non viene analizzata oltre.
 Un agente ha successo se e solo se la sua ragione di terminazione è
 \texttt{route\_complete}; in particolare \texttt{route\_short} ---
 raggiungere la fine di un percorso degenere troppo corto --- \emph{non}
-è successo. La regola è stata messa alla prova durante lo sviluppo, dove
+è pass. La regola è stata messa alla prova durante lo sviluppo, dove
 una modifica che contava \texttt{route\_short} come successo è stata
 introdotta e poi revertita, mantenendo il criterio rigoroso al costo di
-numeri assoluti più bassi. È un pregio, non un difetto: lontano dal
-pavimento e dal soffitto la metrica conserva spazio per muoversi in
-entrambe le direzioni.
+numeri assoluti più bassi. Questo approccio è risultato un pregio architetturale
+poiché le metriche sono risultate più accurate e robuste.
 
 \paragraph{Tre viste di reporting.}
 Ogni risultato è riportato per veicoli e pedoni separatamente, più una
@@ -52,6 +51,7 @@ sono l'aggregazione primaria, il successo a finestra scorrevole è usato
 solo dal gate del curriculum, e la dinamica entro la run è mostrata
 dividendo l'addestramento in quartili (Q1--Q4). La \cref{tab:metriche}
 definisce le metriche usate nel \cref{ch:risultati}.
+
 
 \begin{table}[t]
   \centering\small
@@ -72,18 +72,19 @@ definisce le metriche usate nel \cref{ch:risultati}.
   \end{tabular}
 \end{table}
 
+
 % ------------------------------------------------------------
 \section{Protocollo di sviluppo guidato da gate}
 \label{sec:gate}
 
-La varianza da run a run in questo ambiente è grande e il budget di
+La varianza da run a run in questo ambiente è risultata elevata e il budget di
 calcolo non permetteva di replicare ogni modifica candidata. Il
-protocollo adottato in risposta ha quattro regole. \textbf{(1) Una
-manopola alla volta}: ogni candidato è un diff stretto e isolato
-comportamentalmente --- un singolo termine di reward, una singola
-soglia, un singolo gruppo di osservazioni. \textbf{(2) A/B appaiato a
-budget diagnostico fisso}: ogni candidato gira per $3\times10^{5}$ passi
-contro la baseline corrente del trunk, con lo stesso seed e --- grazie al
+protocollo adottato in risposta ha quattro regole. \textbf{(1) Finetuning sequenziale}: 
+ogni candidato è isolato comportamentalmente --- un singolo termine di reward, 
+una singola soglia, un singolo gruppo di osservazioni. 
+\textbf{(2) A/B appaiato a budget diagnostico fisso}: 
+ogni candidato gira per $3\times10^{5}$ passi contro la baseline 
+corrente del trunk, con lo stesso seed e --- grazie al
 seeding deterministico dei percorsi (\cref{sec:mondo}) --- una sequenza
 di percorsi appaiata per costruzione; le run di sviluppo erano bloccate
 su easy salvo quando il candidato riguardava il curriculum stesso.
@@ -98,8 +99,8 @@ laterale \emph{must-not-collapse} sull'altra classe, e un gate fallito
 significa revert. \textbf{(4) Meccanismo ed esito registrati
 separatamente}: il registro annota se il meccanismo inteso si è
 verificato e se il gate comportamentale è passato --- i due spesso
-dissentono, e alcune manopole che hanno fallito il gate sono state
-consapevolmente mantenute, con l'ipotesi registrata come falsificata,
+dissentono, e ed alcuni finetuning che hanno fallito i gate sono stati 
+mantenuti consapevolmente con l'ipotesi registrata come falsificata,
 perché revertirle avrebbe ripristinato un difetto o perché il
 fallimento stesso era informativo.
 
@@ -155,11 +156,11 @@ appaiati entro una versione}.
 
 \paragraph{Seeding dei percorsi: appaiamento rotto.}
 I seed dei percorsi per agente derivavano originariamente dalla
-\texttt{hash()} built-in di Python, che è salata per processo: due run
-nominalmente identiche estraevano sequenze di percorsi \emph{diverse},
-degradando silenziosamente ogni confronto A/B. La correzione deriva i
-seed da una \texttt{SeedSequence} esplicita (\cref{sec:mondo}); la
-lezione è che l'appaiamento va costruito e verificato, non assunto.
+\texttt{hash()} built-in di Python: due run nominalmente identiche 
+estraevano sequenze di percorsi \emph{diverse}, degradando silenziosamente 
+ogni confronto A/B. La correzione deriva i seed da una \texttt{SeedSequence} 
+esplicita (\cref{sec:mondo}); la lezione è che l'appaiamento va costruito e 
+verificato, non assunto.
 
 \paragraph{Pipeline di valutazione: collasso della misura.}
 La prima valutazione di checkpoint ha restituito un tasso di successo

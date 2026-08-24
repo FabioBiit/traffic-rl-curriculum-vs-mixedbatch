@@ -11,8 +11,8 @@
 
 Questo capitolo descrive la piattaforma su cui poggia l'esperimento: un
 ambiente di apprendimento per rinforzo multi-agente costruito su CARLA,
-in cui tre veicoli e tre pedoni sono addestrati congiuntamente con MAPPO
-sotto due regimi alternativi --- curriculum e mixed-batch --- che
+in cui tre veicoli e tre pedoni sono addestrati congiuntamente con l'algoritmo
+MAPPO sotto due regimi alternativi --- curriculum e mixed-batch --- che
 condividono ogni altro componente dello stack. L'obiettivo di design è
 che il regime sia l'\emph{unica} variabile indipendente
 dell'esperimento: tutto ciò che è documentato qui è comune a entrambi i
@@ -34,7 +34,7 @@ simulazione a RLlib come interfaccia multi-agente con sei agenti
 apprendenti: a ogni reset spawna gli agenti, assegna a ciascuno un
 percorso individuale (\cref{sec:percorsi}) e configura lo scenario
 secondo il livello selezionato dal manager curriculum/batch
-(\cref{sec:regimi}); un episodio dura al più mille passi di controllo,
+(\cref{sec:regimi}); un episodio dura al più 1000 passi di controllo,
 cioè \SI{50}{s} di tempo simulato.
 
 Lo \textbf{stack di apprendimento} è MAPPO su Ray/RLlib 2.10.0 con
@@ -112,14 +112,16 @@ regimi: parte della cornice sperimentale, non una variabile.
 
 \paragraph{Percorsi per agente e seeding.}
 A ogni reset ciascun agente riceve un percorso indipendente la cui
-lunghezza target è fissata dal livello attivo. La generazione è seedata
-deterministicamente per agente con una sequenza costruita da
+lunghezza target è fissata dal livello attivo. La generazione ha un seed
+deterministico per agente con una sequenza costruita da:
+
 $\langle\text{seed traffico},\ \text{contatore di reset},\
-\mathrm{crc32}(\text{id agente})\rangle$, cosicché due run lanciate con
-lo stesso seed sullo stesso codice vedano la stessa sequenza di
-estrazioni e le estrazioni siano disaccoppiate tra agenti. È questa
-proprietà a rendere i confronti A/B appaiati \emph{per costruzione}, e
-su di essa il protocollo del \cref{ch:metodo} fa affidamento.
+\mathrm{crc32}(\text{id agente})\rangle$
+
+cosicché due run lanciate con lo stesso seed sullo stesso codice vedano 
+la stessa sequenza di estrazioni e le estrazioni siano disaccoppiate tra 
+agenti. È questa proprietà a rendere i confronti A/B appaiati \emph{per costruzione}, 
+e su di essa il protocollo del \cref{ch:metodo} fa affidamento.
 
 \paragraph{Tassonomia delle terminazioni.}
 Ogni agente termina il proprio episodio in modo indipendente con
@@ -140,8 +142,8 @@ quindi esattamente sei record a livello di agente.
 Ogni agente riceve un vettore di osservazione compatto e specifico per
 classe, con tutte le componenti normalizzate in $[-1,1]$ e sanificate
 contro valori non finiti: 47 dimensioni per i veicoli, 26 per i pedoni
-(\cref{tab:obs}). Tre scelte di design meritano un commento. Anzitutto,
-oltre alla cinematica dell'ego e dei vicini più prossimi, entrambe le
+(\cref{tab:obs}). Il design architetturale è strutturato come segue:
+cinematica dell'ego e dei vicini più prossimi, in cui entrambe le
 classi osservano una breve \emph{anteprima} del proprio percorso ---
 offset relativi dei waypoint successivi nel riferimento dell'ego ---
 insieme all'errore di heading e, per i veicoli, all'angolo della curva
@@ -233,9 +235,7 @@ agente, con tutti gli altri parametri di scenario tenuti costanti: i tre
 livelli di addestramento collocano i target di veicoli e pedoni a 30
 (easy), 60 (medium) e \SI{100}{m} (hard), sempre su Town03 e sempre con
 lo stesso traffico scriptato; un quarto livello di sola valutazione
-(\emph{test}) usa Town05 con target di \SI{80}{m}. La configurazione
-definisce anche famiglie di livelli in cui la difficoltà varia per
-densità di traffico anziché per lunghezza, in questa tesi non usate.
+(\emph{test}) usa Town05 con target di \SI{80}{m}.
 
 I percorsi dei veicoli sono pianificati sulla topologia stradale con il
 global route planner di CARLA: le destinazioni candidate sono campionate
@@ -283,7 +283,7 @@ competente \emph{adesso} mentre la sua media dalla nascita è ancora ben
 sotto soglia. La seconda sono i \emph{cap di pressione}: se una soglia
 non viene mai raggiunta, il livello si sblocca comunque una volta
 consumata una quota fissa del budget (30\% per medium, 70\% per hard),
-così che il braccio curriculum non possa stallare terminalmente su easy.
+così che il braccio curriculum non possa fermarsi e terminalmente su easy.
 Una volta sbloccati, i livelli sono campionati con pesi che normalizzano
 a $0.30/0.35/0.35$, e quelli appena sbloccati passano per una breve fase
 di \emph{probation} a pressione ridotta (\cref{fig:fsm}).
@@ -291,12 +291,13 @@ di \emph{probation} a pressione ridotta (\cref{fig:fsm}).
 \paragraph{Braccio batch: alternanza stratificata.}
 Il braccio mixed-batch è il \emph{controllo senza ordinamento}: tutti e
 tre i livelli sono disponibili dal primo episodio, campionati per
-mescolamento stratificato senza reinserimento con finestra tre --- ogni
+mescolamento stratificato senza reinserimento con finestra --- ogni
 finestra consecutiva di tre episodi è una permutazione uniformemente
 casuale di \{easy, medium, hard\}. Ne risulta esposizione uniforme
 $1/3$ con sbilanciamento massimo di un episodio per campionatore,
 evitando sia la deriva del campionamento i.i.d.\ sia qualunque
 ordinamento deterministico fisso.
+
 
 \begin{figure}[t]
   \centering
@@ -324,6 +325,7 @@ ordinamento deterministico fisso.
   il budget.}
   \label{fig:fsm}
 \end{figure}
+
 
 Sotto questa costruzione i due bracci consumano lo stesso budget sulla
 stessa distribuzione di task in attesa; ciò che differisce è
@@ -355,8 +357,8 @@ il proprio embedding con la media degli embedding degli altri agenti
 valore. La maschera di vitalità guida aggregazione e pooling, così che
 gli agenti terminati escano dal riassunto del critic invece di
 contribuire slot stantii. La codebase fornisce anche un encoder ad
-attenzione e la normalizzazione PopArt dietro flag; entrambi restano
-disabilitati in tutta questa tesi.
+attenzione e la normalizzazione PopArt dietro flag (entrambi disabilitati 
+e lasciati come finetuning futuro)
 
 \paragraph{Ottimizzazione.}
 Tutte le run della campagna condividono la stessa configurazione,
