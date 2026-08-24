@@ -82,7 +82,7 @@ diagnostica di generazione del percorso. Tutti i risultati del
 \end{figure}
 
 % ------------------------------------------------------------
-\section{Un mondo condiviso: la copertura parallela dei task}
+\section{Mondo condiviso: la copertura parallela dei task}
 \label{sec:mondo}
 
 I sei agenti apprendenti non cooperano verso un obiettivo congiunto: a
@@ -113,11 +113,9 @@ regimi: parte della cornice sperimentale, non una variabile.
 \paragraph{Percorsi per agente e seeding.}
 A ogni reset ciascun agente riceve un percorso indipendente la cui
 lunghezza target è fissata dal livello attivo. La generazione ha un seed
-deterministico per agente con una sequenza costruita da:
-
+deterministico per agente con una sequenza costruita da: 
 $\langle\text{seed traffico},\ \text{contatore di reset},\
-\mathrm{crc32}(\text{id agente})\rangle$
-
+\mathrm{crc32}(\text{id agente})\rangle$ 
 cosicché due run lanciate con lo stesso seed sullo stesso codice vedano 
 la stessa sequenza di estrazioni e le estrazioni siano disaccoppiate tra 
 agenti. È questa proprietà a rendere i confronti A/B appaiati \emph{per costruzione}, 
