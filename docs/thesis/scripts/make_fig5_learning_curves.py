@@ -14,13 +14,27 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# La figura viene inclusa a \textwidth (453.5pt = 6.30in) senza riscalatura:
+# generandola gia' a quella misura, 1pt qui e' 1pt sulla pagina e le etichette
+# escono davvero a 9pt contro i 12pt del corpo (prima 10pt scalati 0.60 -> 6pt).
+# fonttype 42 incorpora TrueType al posto dei Type 3.
+matplotlib.rcParams.update({
+    "font.size": 9,
+    "axes.titlesize": 9,
+    "axes.labelsize": 9,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "legend.fontsize": 8,
+    "pdf.fonttype": 42,
+})
+
 REPO = Path(__file__).resolve().parents[3]
 EXP = REPO / "carla_core" / "experiments"
 RUNS = {
     "MLP-curriculum": (EXP / "curriculum/EVAL_DONE_comparison_3M_MLP/carla_mappo_20260622_171626/episodes.jsonl", "tab:blue", "-"),
     "MLP-batch": (EXP / "batch/EVAL_DONE_comparison_3M_MLP/carla_mappo_20260623_171855/episodes.jsonl", "tab:orange", "--"),
-    "GNN-curriculum": (EXP / "curriculum/GNN/carla_mappo_20260630_181143/episodes.jsonl", "tab:green", "-"),
-    "GNN-batch": (EXP / "batch/carla_mappo_20260714_155209/episodes.jsonl", "tab:red", "--"),
+    "GNN-curriculum": (EXP / "curriculum/EVAL_DONE_comparison_3M_GNN/carla_mappo_20260630_181143/episodes.jsonl", "tab:green", "-"),
+    "GNN-batch": (EXP / "batch/EVAL_DONE_comparison_3M_GNN/carla_mappo_20260714_155209/episodes.jsonl", "tab:red", "--"),
 }
 WINDOW = 100
 OUT = REPO / "docs/thesis/latex/figures/learning_curves.pdf"
@@ -66,7 +80,7 @@ def curves(path):
 
 
 def main():
-    fig, axes = plt.subplots(1, 2, figsize=(10.5, 3.6), sharex=True)
+    fig, axes = plt.subplots(1, 2, figsize=(6.3, 2.8), sharex=True)
     for label, (path, color, style) in RUNS.items():
         data = curves(path)
         for ax, c, title in ((axes[0], "veh", "Vehicles"), (axes[1], "ped", "Pedestrians")):

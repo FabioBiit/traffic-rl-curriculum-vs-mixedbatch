@@ -209,7 +209,7 @@ le traiettorie per quartile complessive, quello inferiore la traiettoria
   \end{tabular}
 \end{table}
 
-\paragraph{Erosione run}
+\paragraph{Erosione entro la run.}
 Il pannello controllato per livello mostra che l'indurimento del mix
 \emph{non} è tutta la storia: la prestazione a livello easy si erode
 entro ogni run, da $-6.4$\,pp (GNN-batch, la cella più stabile) a
@@ -244,10 +244,12 @@ da solo non determina l'equilibrio.
 
 Lo scenario test colloca le stesse policy su Town05 --- layout a griglia
 quadrata e più corsie, strutturalmente diverso da Town03 --- per 100
-episodi con target di \SI{80}{m} e traffico come in addestramento.
+episodi con target di \SI{80}{m} e traffico come in addestramento. La
+\cref{fig:town05} riassume il quadro per cella.
 
 \begin{figure}[t]
   \centering
+  \captionsetup{width=0.72\textwidth}  % la figura e' larga 0.70\textwidth
   \includegraphics[width=0.70\textwidth]{town05_bars}
   \caption{SR veicoli: media degli scenari Town03 contro test Town05,
   per cella. Le celle curriculum calano meno; la coppia GNN è
@@ -383,7 +385,7 @@ livello e tra bracci.
   \caption{Ipotesi contro evidenza (contrasti appaiati, $n{=}1$ per
   cella; delta in pp di SR veicoli salvo diversa indicazione).}
   \label{tab:ipotesi}
-  \begin{tabular}{@{}p{2.0cm}p{4.3cm}p{2.3cm}p{4.2cm}@{}}
+  \begin{tabular}{@{}L{2.0cm}L{4.3cm}L{2.3cm}L{4.2cm}@{}}
     \toprule
     Ipotesi & Predizione & Verdetto & Evidenza \\
     \midrule
@@ -411,7 +413,8 @@ livello e tra bracci.
   \end{tabular}
 \end{table}
 
-Due cose sopravvivono a ogni cella, ogni strato ed entrambe le
+La \cref{tab:ipotesi} confronta ciascuna predizione con l'evidenza
+raccolta. Due cose sopravvivono a ogni cella, ogni strato ed entrambe le
 architetture: il vantaggio del curriculum sulla mappa mai vista, e il
 ruolo del regime come variabile della policy \emph{veicolo} che rimodella
 la composizione dei fallimenti. Ciò che non è sopravvissuto è

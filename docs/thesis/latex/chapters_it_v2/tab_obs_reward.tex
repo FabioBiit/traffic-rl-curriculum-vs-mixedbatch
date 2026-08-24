@@ -1,10 +1,10 @@
-\begin{table}[h]
+\begin{table}[!htbp]
   \centering\small
   \caption{Layout delle osservazioni. Le barre indicano costanti di
   normalizzazione; le feature dei vicini sono nel sistema di riferimento
   dell'ego. TTC $=$ time-to-collision.}
   \label{tab:obs}
-  \begin{tabular}{@{}llp{8.0cm}@{}}
+  \begin{tabular}{@{}llL{10.2cm}@{}}
     \toprule
     Dim. & Gruppo & Contenuto \\
     \midrule
@@ -23,14 +23,14 @@
   \end{tabular}
 \end{table}
 
-\begin{table}[h]
+\begin{table}[!htbp]
   \centering\small
   \caption{Componenti della reward. Le righe veicolo ``gated'' sono
   sospese durante l'attesa a un semaforo rosso/giallo; le righe marcate
-  $^{\dagger}$ richiedono inoltre $\mathit{safe\_to\_push}$
+  $^{\dagger}$ richiedono inoltre \texttt{safe\_to\_push}
   ($\mathit{hazard} < 0.85$) e allineamento al percorso $> 0.25$.}
   \label{tab:reward}
-  \begin{tabular}{@{}p{3.2cm}p{5.2cm}p{4.4cm}@{}}
+  \begin{tabular}{@{}L{3.5cm}L{5.7cm}L{4.8cm}@{}}
     \toprule
     Componente & Trigger & Valore \\
     \midrule

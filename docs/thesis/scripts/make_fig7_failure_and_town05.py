@@ -13,6 +13,20 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# Le figure vengono generate alla loro misura finale sulla pagina, cosi' il
+# corpo dichiarato qui e' quello che si legge sulla carta: failure_modes a
+# \textwidth (6.30in), town05_bars a 0.70\textwidth (4.41in). Prima erano
+# generate piu' grandi e riscalate a 0.66/0.69, con etichette a 5.3-6.9pt.
+matplotlib.rcParams.update({
+    "font.size": 9,
+    "axes.titlesize": 9,
+    "axes.labelsize": 9,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "legend.fontsize": 8,
+    "pdf.fonttype": 42,
+})
+
 REPO = Path(__file__).resolve().parents[3]
 CONS = json.load(open(REPO / "docs/thesis/data/campaign_consolidation.json"))
 CELLS = ["MLP-C", "MLP-B", "GNN-C", "GNN-B"]
@@ -47,7 +61,7 @@ def stacked(ax, layer, title):
     ax.grid(axis="y", alpha=0.25, linewidth=0.5)
 
 
-fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.6), sharey=True)
+fig, axes = plt.subplots(1, 2, figsize=(6.3, 2.9), sharey=True)
 stacked(axes[0], "train", "Training (cumulative)")
 stacked(axes[1], "eval", "Final evaluation (400 ep)")
 axes[0].set_ylabel("vehicle records (%)")
@@ -61,7 +75,7 @@ t03 = [sum(CONS[c]["eval"]["scenarios"][s]["veh"]["sr"] for s in ("easy", "mediu
        for c in CELLS]
 t05 = [CONS[c]["eval"]["scenarios"]["test"]["veh"]["sr"] for c in CELLS]
 
-fig2, ax = plt.subplots(figsize=(6.4, 3.4))
+fig2, ax = plt.subplots(figsize=(4.4, 2.9))
 x = range(len(CELLS))
 w = 0.36
 ax.bar([i - w / 2 for i in x], t03, width=w, label="Town03 (scenario avg)", color="#5b83c0")

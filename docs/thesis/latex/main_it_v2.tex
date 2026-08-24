@@ -27,12 +27,28 @@
 \usepackage{setspace}
 \onehalfspacing
 \usepackage{microtype}
+% lmtt in T1 ha la legatura "--" -> en-dash: nei blocchi \ttfamily i flag da
+% riga di comando (--mode, --difficulty, ...) uscivano come "-mode". La
+% disattiviamo per la sola famiglia monospaziata.
+\DisableLigatures{encoding = T1, family = tt*}
+% Usato nelle colonne p{} strette delle tabelle: la giustificazione su misure
+% cosi' corte produce spazi dilatati (29 Underfull \hbox).
+\usepackage{ragged2e}
+% Ultima risorsa prima di sforare il margine: consente a TeX di allargare gli
+% spazi anziche' produrre un Overfull. Non puo' mascherare le scatole
+% indivisibili (math inline, \texttt lunghi), che restano segnalate nel log.
+\setlength{\emergencystretch}{1.5em}
 
 % --- Math, tables, units, figures ---
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \graphicspath{{figures/}}
 \usepackage{booktabs}
+\usepackage{array}
+% Colonna a larghezza fissa NON giustificata: su misure di 2--4cm la
+% giustificazione apre spazi enormi tra le parole. Sostituisce p{} nelle
+% tabelle a colonne strette (3.1, 4.4, A.1, A.2, B.1, C.1).
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
 \usepackage{longtable}
 \usepackage{verbatim}
 \usepackage{siunitx}
@@ -42,10 +58,21 @@
 % --- Bibliography ---
 \usepackage[style=numeric-comp,sorting=none,backend=biber]{biblatex}
 \addbibresource{bibliography.bib}
+% URL ed eprint in bibliografia erano composti in \ttfamily senza punti di
+% rottura: la voce CARLA sforava il margine destro di 16.7pt e l'arXiv id
+% 1707.06347 si spezzava dopo il punto. Queste penalita' abilitano le rotture.
+\setcounter{biburlnumpenalty}{7000}
+\setcounter{biburlucpenalty}{8000}
+\setcounter{biburllcpenalty}{7000}
 
 % --- Colors, links, cross-references (hyperref near the end) ---
 \usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}
+\usepackage{xurl}   % dopo hyperref: consente la rottura degli URL lunghi
+% Le didascalie occupavano tutta la \textwidth anche sopra oggetti molto piu'
+% stretti (fino a 136pt di differenza). Le si restringe leggermente.
+\usepackage{caption}
+\captionsetup{width=0.90\textwidth}
 \usepackage[capitalise,noabbrev]{cleveref}
 % Le stringhe italiane di cleveref sono incomplete (niente "chapter") e
 % vengono applicate a \begin{document}, sovrascrivendo definizioni date
@@ -66,6 +93,10 @@
   \crefname{appendix}{Appendice}{Appendici}%
   \Crefname{appendix}{Appendice}{Appendici}%
 }
+
+% I pattern di sillabazione attivi sono italiani e spezzavano male i termini
+% inglesi nelle tabelle: "messa-ge", "po-licy".
+\hyphenation{mes-sage pass-ing pol-icy batch cur-ric-u-lum base-line}
 
 % --- Note di lavoro: marcatori TODO rossi, rimuovere prima della consegna ---
 \newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
@@ -123,6 +154,8 @@
 % ----------------- Sommario ---------------------------------
 \clearpage
 \null\vfil
+\phantomsection
+\addcontentsline{toc}{chapter}{\abstractname}
 \begin{center}%
   \bfseries \abstractname
 \end{center}
@@ -148,7 +181,7 @@ Sul criterio di successo, il curriculum ha prevalso di $+18.5$ punti percentuali
 in valutazione dei veicoli. In entrambe le architetture del critic il curriculum ha prevalso su una città
 mai vista in addestramento ($+19.0$ e $+10.0$\,pp). 
 I pedoni sono risultati vincolati dalla fattibilità dei percorsi più che dal regime e per questo 
-non sono stati tenuti prettamente "rilevanti" al fine della valutazione, ma sono stati considerati per
+non sono stati tenuti prettamente \enquote{rilevanti} al fine della valutazione, ma sono stati considerati per
 evidenziare come diversi attori influenzino gli altri all'interno del mondo usando un criterio di CTDE. 
 L'ordinamento dei task, in questo contesto, è un selettore di equilibri il cui beneficio
 in-domain dipende dalla stima del valore --- e il cui output più evidente è la generalizzazione ed un tempo di 
@@ -160,7 +193,10 @@ esecuzione della run minore a parità di budget a favore del training curriculum
 % ----------------- Acronimi ---------------------------------
 \chapter*{Acronimi}
 \addcontentsline{toc}{chapter}{Acronimi}
-\begin{tabular}{ll}
+% \noindent + colonna a larghezza fissa: con {ll} la riga NPC eccedeva
+% \textwidth (Overfull 10.24pt) e usciva nel margine destro.
+\noindent\begin{tabular}{@{}l@{\hspace{1.5em}}%
+  >{\raggedright\arraybackslash}p{0.78\textwidth}@{}}
 CTDE  & Centralized Training with Decentralized Execution \\
 GAE   & Generalized Advantage Estimation \\
 GNN   & Graph Neural Network \\

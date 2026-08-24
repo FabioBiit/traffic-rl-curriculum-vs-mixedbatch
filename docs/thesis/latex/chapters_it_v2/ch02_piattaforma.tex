@@ -113,10 +113,14 @@ regimi: parte della cornice sperimentale, non una variabile.
 \paragraph{Percorsi per agente e seeding.}
 A ogni reset ciascun agente riceve un percorso indipendente la cui
 lunghezza target è fissata dal livello attivo. La generazione ha un seed
-deterministico per agente con una sequenza costruita da: 
-$\langle\text{seed traffico},\ \text{contatore di reset},\
-\mathrm{crc32}(\text{id agente})\rangle$ 
-cosicché due run lanciate con lo stesso seed sullo stesso codice vedano 
+deterministico per agente con una sequenza costruita da:
+% fuori riga: inline la tripla e' una scatola indivisibile da ~200pt che
+% sforava il margine destro di 37.9pt.
+\[
+  \langle\text{seed traffico},\ \text{contatore di reset},\
+  \mathrm{crc32}(\text{id agente})\rangle
+\]
+cosicché due run lanciate con lo stesso seed sullo stesso codice vedano
 la stessa sequenza di estrazioni e le estrazioni siano disaccoppiate tra 
 agenti. È questa proprietà a rendere i confronti A/B appaiati \emph{per costruzione}, 
 e su di essa il protocollo del \cref{ch:metodo} fa affidamento.
@@ -205,7 +209,7 @@ legittimamente a un semaforo rosso o giallo. Lo scalare
 $\mathit{hazard} = \max(\text{TTC}_{\mathrm{veh}}, \text{occ}_{\mathrm{veh}},
 \text{TTC}_{\mathrm{ped}}, \text{occ}_{\mathrm{ped}})$ riassume il canale
 di anteprima della \cref{sec:osservazioni}, e un booleano
-$\mathit{safe\_to\_push} = (\mathit{hazard} < 0.85)$ fa da gate ai
+\texttt{safe\_to\_push} $= (\mathit{hazard} < 0.85)$ fa da gate ai
 termini di spinta: una penalità di inattività sotto 2.5~km/h; un bonus
 di partenza proporzionale ad acceleratore, allineamento e a un fattore
 di urgenza crescente con il tempo trascorso senza progresso; e uno
@@ -355,8 +359,8 @@ il proprio embedding con la media degli embedding degli altri agenti
 valore. La maschera di vitalità guida aggregazione e pooling, così che
 gli agenti terminati escano dal riassunto del critic invece di
 contribuire slot stantii. La codebase fornisce anche un encoder ad
-attenzione e la normalizzazione PopArt dietro flag (entrambi disabilitati 
-e lasciati come finetuning futuro)
+attenzione e la normalizzazione PopArt dietro flag (entrambi disabilitati
+e lasciati come finetuning futuro).
 
 \paragraph{Ottimizzazione.}
 Tutte le run della campagna condividono la stessa configurazione,
